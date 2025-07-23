@@ -31,12 +31,14 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 
 ## Controls
 
-### Default Player 1
+### Default Player 1 (Joystick support only for SDL version; haven't figured out the joystick and keyboard fighting for the same freaking keys)
 - **Arrow Keys** - D-pad
 - **Z** - A button  
 - **X** - B button
 - **[** - Select
 - **]** - Start
+
+
 
 ### Default Player 2  
 - **WASD** - D-pad
@@ -89,10 +91,11 @@ Example:
 
 - **Mapper 0 (NROM)** - Basic support
 - **Mapper 1 (MMC1)** - Buggy banking
-- **Mapper 2 (UxROM)** - Sprite issues  
+- **Mapper 2 (UxROM)** - Sprite issues but games like Final Fantasy and Duckhunt boot fine and are playable.
 - **Mapper 3 (CNROM)** - Basic CHR banking
 - **Mapper 4 (MMC3)** - Very buggy IRQ timing
-- **Mapper 66 (GxROM)** - Limited support
+- **Mapper 9 (MMC2)** - It will boot Punch out but the graphics are wrong
+- **Mapper 66 (GxROM)** - Seems fully supported (Super Mario Bros + Duck Hunt work even though the zapper doesn't work so you can't actually kill the ducks)
 
 ## Known Issues
 
