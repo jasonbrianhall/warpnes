@@ -111,9 +111,9 @@ $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/
 	$(BUILD_DIR_LINUX_ALLEGRO_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_ALLEGRO_DEBUG)/source/SMB \
 	$(BUILD_DIR_WIN_ALLEGRO_DEBUG)/source/Emulation $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/source/SMB)
 
-# Default target - build SDL versions for Linux
+# Default target - build Allegro versions for Linux
 .PHONY: all
-all: linux-sdl
+all: linux-allegro
 
 # Main build targets
 .PHONY: linux

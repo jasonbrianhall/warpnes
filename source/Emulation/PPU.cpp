@@ -215,14 +215,6 @@ uint8_t PPU::readCHR(int index)
             // Calculate which tile is being read
             uint16_t tileIndex = (index % 0x1000) / 16;  // Which tile (0-255) within 4KB bank
             
-            // Add debug output for tiles $FD and $FE
-            static int debugCount = 0;
-            if ((tileIndex == 0xFD || tileIndex == 0xFE) && debugCount < 20) {
-                printf("PPU: Reading tile $%02X from address $%04X, bank %d\n", 
-                       tileIndex, index, (index < 0x1000) ? 0 : 1);
-                debugCount++;
-            }
-            
             // Only check for latch tiles $FD and $FE
             if (tileIndex == 0xFD || tileIndex == 0xFE) {
                 engine.checkCHRLatch(index, tileIndex);
@@ -1677,16 +1669,6 @@ void PPU::renderBackgroundScanline(int scanline) {
 void PPU::renderSpriteScanline(int scanline) {
     // Render sprites for this scanline in reverse priority order
 
-/*static int debugCount = 0;
-if (debugCount < 100 && scanline == 100) {  // Check middle of screen
-    printf("Scanline %d sprites: ", scanline);
-    for (int i = 0; i < 8; i++) {  // Check first 8 sprites
-        printf("S%d:Y=%d,T=%02X,A=%02X,X=%d ", i, oam[i*4], oam[i*4+1], oam[i*4+2], oam[i*4+3]);
-    }
-    printf("\n");
-    debugCount++;
-}*/
-
     for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
         uint8_t spriteY = oam[spriteIndex * 4];
         uint8_t tileIndex = oam[spriteIndex * 4 + 1];
@@ -1755,17 +1737,6 @@ if (debugCount < 100 && scanline == 100) {  // Check middle of screen
             uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
                                   ((color32 & 0x00FC00) >> 5) | 
                                   ((color32 & 0x0000F8) >> 3);
-
-/*if (spriteIndex < 4 && scanline >= 88 && scanline <= 104) {
-    printf("Drawing sprite %d: scanline=%d, pixel=(%d,%d), color=0x%04X\n", 
-           spriteIndex, scanline, xPixel, yPixel, spritePixel);
-}*/
-
-/*if (spriteIndex < 4 && scanline == 96) {
-    printf("Sprite %d palette 3 colors: %02X %02X %02X %02X\n", 
-           spriteIndex, palette[0x10+12], palette[0x10+13], palette[0x10+14], palette[0x10+15]);
-printf("Color 0x30 = 0x%08X, RGB565 = 0x%04X\n", paletteRGB[0x30], spritePixel);
-}*/
             
             // Check background priority using the new mask system
             if (behindBackground) {
