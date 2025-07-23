@@ -1,6 +1,6 @@
-# Super Mario Bros NES Emulator
+# WarpNES Emulator
 
-A 6502 CPU emulator that can run some classic NES games, built with Allegro 4 for both DOS and Linux platforms.
+A 6502 CPU emulator that can run some classic NES games, built with Allegro 4 or SDL for both DOS and Linux platforms (DOS version is very slow, almost unusable as of now because I removed sprite cacheing [plan to readd later])
 
 ## ⚠️ Important Disclaimer
 
@@ -65,21 +65,24 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 make
 ```
 
+Their is also a make help for building other versions.
+
 ## Requirements
 
-- **Allegro 4.x** development libraries
+- **Allegro 4.x** development libraries (for DOS and Linux versions)
+- ** SDL ** Linux/Windows version
 - **Docker** (required for DOS builds)
 - **GCC** for Linux builds
 
 ## Usage
 
 ```bash
-./smbe <rom_file.nes>
+./warpnes-sdl <rom_file.nes>
 ```
 
 Example:
 ```bash
-./smbe smb.nes
+./warpnes-sdl smb.nes
 ```
 
 ## Supported Mappers
