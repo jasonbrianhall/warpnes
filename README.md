@@ -70,7 +70,7 @@ Their is also a make help for building other versions.
 ## Requirements
 
 - **Allegro 4.x** development libraries (for DOS and Linux versions)
-- **SDL** Linux/Windows version (I actually built a SDL to Allegro 4 wrapper so it can compile in DOS but it's very slow and didn't implement sound)
+- **SDL** Linux/Windows version (I actually built a SDL to Allegro 4 wrapper so it can compile in DOS (very minimal) but it's very slow and didn't implement sound [SDL to Allegro 4 Wrapper](https://github.com/jasonbrianhall/super_mario_brothers/tree/main/SDL_Allegro_Wrapper))
 - **Docker** (required for DOS builds)
 - **GCC** for Linux builds
 
