@@ -1,3 +1,9 @@
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <string>
 #include "SMBEmulator.hpp"
 #include "../Configuration.hpp"
 #include "../Emulation/APU.hpp"
@@ -10,12 +16,7 @@
 
 #include "../Emulation/PPU.hpp"
 #include "../Zapper.hpp"
-#include <chrono>
-#include <cstdint>
-#include <cstring>
-#include <fstream>
-#include <iostream>
-#include <string>
+
 
 // 6502 instruction cycle counts
 const uint8_t SMBEmulator::instructionCycles[256] = {

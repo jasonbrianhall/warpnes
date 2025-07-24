@@ -1,11 +1,12 @@
 #ifndef SMB_EMULATOR_HPP
 #define SMB_EMULATOR_HPP
 
-#include "../Zapper.hpp"
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include "../Zapper.hpp"
+
 
 // Forward declarations
 class APU;
