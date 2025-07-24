@@ -209,6 +209,12 @@ uint8_t PPU::readCHR(int index)
 {
     if (index < 0x2000)
     {
+        // CRITICAL FIX: Check latch BEFORE reading data
+        if (engine.getMapper() == 9) {
+            engine.checkCHRLatch(index, 0);  // This may switch banks
+        }
+        
+        // NOW read from the correct (possibly switched) bank
         uint8_t result = engine.readCHRData(index);        
         return result;
     }

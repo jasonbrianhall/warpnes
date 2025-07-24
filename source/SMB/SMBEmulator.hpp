@@ -96,7 +96,7 @@ public:
   void stepPPUCycle();        // Step PPU one cycle
   void checkMMC3IRQ();        // Check for MMC3 IRQ timing
   void forceSRAMSave();
-  
+
   struct PPUCycleState {
     int scanline;
     int cycle;
@@ -112,12 +112,14 @@ public:
     bool lastA12State; // For MMC3 A12 tracking
   } ppuCycleState;
 
-    void scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer, int screenWidth, int screenHeight);
+  void scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
+                     int screenWidth, int screenHeight);
 
-    void initializeSRAM();
-    void loadSRAM();
-    void saveSRAM();
-    void cleanupSRAM();
+  void initializeSRAM();
+  void loadSRAM();
+  void saveSRAM();
+  void cleanupSRAM();
+  void handlePPUCHRRead(uint16_t address);
 
 private:
   // 6502 CPU state
@@ -329,7 +331,7 @@ private:
     uint8_t reserved[64]; // Future expansion
   };
 
-struct MMC1State {
+  struct MMC1State {
     uint8_t shiftRegister;
     uint8_t shiftCount;
     uint8_t control;
@@ -341,17 +343,17 @@ struct MMC1State {
     uint8_t currentCHRBank1;
 
     MMC1State() {
-        shiftRegister = 0x10;
-        shiftCount = 0;
-        control = 0x0C;
-        chrBank0 = 0;
-        chrBank1 = 0;
-        prgBank = 0;
-        currentPRGBank = 0;
-        currentCHRBank0 = 0;
-        currentCHRBank1 = 1;
+      shiftRegister = 0x10;
+      shiftCount = 0;
+      control = 0x0C;
+      chrBank0 = 0;
+      chrBank1 = 0;
+      prgBank = 0;
+      currentPRGBank = 0;
+      currentCHRBank0 = 0;
+      currentCHRBank1 = 1;
     }
-} mmc1;
+  } mmc1;
 
   void writeMMC1Register(uint16_t address, uint8_t value);
   void updateMMC1Banks();
@@ -383,7 +385,7 @@ struct MMC1State {
     uint8_t irqCounter;    // Internal counter
     bool irqEnable;        // $E000-$FFFE (even)
     bool irqReload;        // Flag to reload counter
-    bool irqPending; 
+    bool irqPending;
     // Current bank mappings
     uint8_t currentPRGBanks[4]; // 8KB banks at $8000, $A000, $C000, $E000
     uint8_t currentCHRBanks[8]; // 1KB banks at $0000-$1FFF
@@ -443,50 +445,46 @@ struct MMC1State {
   int nmiDelay;       // Cycles until NMI triggers
 
   uint64_t masterCycles;
-    
+
   void catchUpPPU();
   void checkPendingInterrupts();
-  uint8_t *sram;        // 8KB SRAM for battery saves
-  uint32_t sramSize;    // SRAM size (usually 8KB)
-  bool sramEnabled;     // SRAM read/write enabled
-  bool sramDirty;       // SRAM has been written to
-  std::string romBaseName;  // Base ROM filename for save files
-
+  uint8_t *sram;           // 8KB SRAM for battery saves
+  uint32_t sramSize;       // SRAM size (usually 8KB)
+  bool sramEnabled;        // SRAM read/write enabled
+  bool sramDirty;          // SRAM has been written to
+  std::string romBaseName; // Base ROM filename for save files
 
   struct MMC2State {
-    uint8_t prgBank;           // PRG bank register (8KB switchable)
-    uint8_t chrBank0FD;        // CHR bank when $FD is read from $0000-$0FFF
-    uint8_t chrBank0FE;        // CHR bank when $FE is read from $0000-$0FFF  
-    uint8_t chrBank1FD;        // CHR bank when $FD is read from $1000-$1FFF
-    uint8_t chrBank1FE;        // CHR bank when $FE is read from $1000-$1FFF
-    bool latch0;               // Current latch state for $0000-$0FFF (0=FD, 1=FE)
-    bool latch1;               // Current latch state for $1000-$1FFF (0=FD, 1=FE)
-    uint8_t mirroring;         // Mirroring control
-    
-    // Current effective CHR banks
-    uint8_t currentCHRBank0;   // Current 4KB bank at $0000-$0FFF
-    uint8_t currentCHRBank1;   // Current 4KB bank at $1000-$1FFF
-    
+    uint8_t prgBank;
+    uint8_t chrBank0FD;
+    uint8_t chrBank0FE;
+    uint8_t chrBank1FD;
+    uint8_t chrBank1FE;
+    bool latch0;
+    bool latch1;
+    uint8_t mirroring;
+
+    uint8_t currentCHRBank0;
+    uint8_t currentCHRBank1;
+
     MMC2State() {
-        prgBank = 0;
-        chrBank0FD = 0;
-        chrBank0FE = 0;
-        chrBank1FD = 0;
-        chrBank1FE = 0;
-        latch0 = false;  // Start with FD state
-        latch1 = false;  // Start with FD state
-        mirroring = 0;
-        latch0 = false;  // Start with FD state
-        latch1 = false;  // Start with FD state
-        currentCHRBank0 = 0;
-        currentCHRBank1 = 0;
+      prgBank = 0;
+      chrBank0FD = 0;
+      chrBank0FE = 0;
+      chrBank1FD = 0;
+      chrBank1FE = 0;
+      // CRITICAL: Initialize latches to FE state like FCEUX
+      latch0 = true; // Start with FE state (not FD)
+      latch1 = true; // Start with FE state (not FD)
+      mirroring = 0;
+      currentCHRBank0 = 0;
+      currentCHRBank1 = 0;
     }
-} mmc2;
+  } mmc2;
 
-void writeMMC2Register(uint16_t address, uint8_t value);
-void updateMMC2Banks();
-void checkMMC2CHRLatch(uint16_t address, uint8_t tileID);
-
+  void writeMMC2Register(uint16_t address, uint8_t value);
+  void updateMMC2Banks();
+  void checkMMC2CHRLatch(uint16_t address, uint8_t tileID);
 };
 
 #endif // SMB_EMULATOR_HPP
