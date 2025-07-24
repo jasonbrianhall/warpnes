@@ -1,11 +1,20 @@
 #ifndef PPU_HPP
 #define PPU_HPP
 
-#include <cstdint>
+#include "../SMB/SMBEmulator.hpp"
+
+#include "PPU.hpp"
+
+/*#include <cstdint>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <cstring>
+#include <cstring> */
+
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
 
 struct ComprehensiveTileCache {
     uint16_t pixels[64];        // Normal orientation only

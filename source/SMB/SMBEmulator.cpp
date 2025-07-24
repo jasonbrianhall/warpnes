@@ -1,6 +1,4 @@
-#include <chrono>
-#include <cstdint>
-#include <cstring>
+#include "../Emulation/PPU.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -14,7 +12,6 @@
 #include "../Emulation/ControllerSDL.hpp"
 #endif
 
-#include "../Emulation/PPU.hpp"
 #include "../Zapper.hpp"
 
 
