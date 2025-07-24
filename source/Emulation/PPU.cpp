@@ -209,18 +209,13 @@ uint8_t PPU::readCHR(int index)
 {
     if (index < 0x2000)
     {
-        uint8_t result = engine.readCHRData(index);
-        
+        // CRITICAL FIX: Check latch BEFORE reading data
         if (engine.getMapper() == 9) {
-            // Calculate which tile is being read
-            uint16_t tileIndex = (index % 0x1000) / 16;  // Which tile (0-255) within 4KB bank
-            
-            // Only check for latch tiles $FD and $FE
-            if (tileIndex == 0xFD || tileIndex == 0xFE) {
-                engine.checkCHRLatch(index, tileIndex);
-            }
+            engine.checkCHRLatch(index, 0);  // This may switch banks
         }
         
+        // NOW read from the correct (possibly switched) bank
+        uint8_t result = engine.readCHRData(index);        
         return result;
     }
     else
