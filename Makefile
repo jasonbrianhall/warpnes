@@ -52,7 +52,9 @@ COMMON_SOURCE_FILES = \
     source/Zapper.cpp \
     source/Emulation/WarpNES.cpp \
     source/Emulation/AllegroMidi.cpp \
-    source/Emulation/Battery.cpp
+    source/Emulation/Battery.cpp \
+    source/Emulation/MMC3.cpp
+
 
 # Platform-specific source files
 SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
