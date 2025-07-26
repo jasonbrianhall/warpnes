@@ -50,9 +50,9 @@ COMMON_SOURCE_FILES = \
     source/Emulation/APU.cpp \
     source/Emulation/PPU.cpp \
     source/Zapper.cpp \
-    source/SMB/SMBEmulator.cpp \
+    source/Emulation/SMBEmulator.cpp \
     source/Emulation/AllegroMidi.cpp \
-    source/SMB/Battery.cpp
+    source/Emulation/Battery.cpp
 
 # Platform-specific source files
 SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
