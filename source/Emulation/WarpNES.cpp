@@ -530,72 +530,10 @@ void WarpNES::handleNMI() {
   frameCycles += 7;
 }
 
-/*void WarpNES::update()
-{
-    if (!romLoaded) return;
-
-#ifdef __DJGPP__
-    // BIOS timer tick (each tick ≈ 55ms)
-    unsigned long ticksStart = (*(unsigned long*)MK_FP(0x40, 0x6C));
-#else
-    auto start = std::chrono::high_resolution_clock::now();
-#endif
-
-    if (needsCycleAccuracy()) {
-        updateCycleAccurate();
-    } else {
-        updateFrameBased();
-    }
-
-#ifdef __DJGPP__
-    unsigned long ticksEnd = (*(unsigned long*)MK_FP(0x40, 0x6C));
-    unsigned long ticksElapsed = ticksEnd - ticksStart;
-
-    std::ofstream logFile("timing.log", std::ios::app);
-    if (logFile.is_open()) {
-        logFile << "[DJGPP] WarpNES::update took approx " << (ticksElapsed *
-55)
-                << " ms (" << (needsCycleAccuracy() ? "Cycle Accurate" : "Frame
-Based") << ")\n"; logFile.close();
-    }
-#else
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end
-- start).count();
-
-    std::cout << "[WarpNES::update] took " << duration_us / 1000.0 << " ms
-("
-              << (needsCycleAccuracy() ? "Cycle Accurate" : "Frame Based") <<
-")\n"; #endif
-}*/
-
 void WarpNES::update() {
   if (!romLoaded)
     return;
   updateCycleAccurate();
-}
-
-bool WarpNES::needsCycleAccuracy() const {
-  return false;
-  if (zapperEnabled) {
-    return true;
-  };
-  switch (nesHeader.mapper) {
-  case 0: // NROM - no banking, use fast path
-    return false;
-  case 1: // MMC1 - banking but usually not mid-frame critical
-    return false;
-  case 2: // UxROM - CHR-RAM can be updated mid-frame!
-    return true;
-  case 3: // CNROM - banking but not usually mid-frame critical
-    return false;
-  case 4: // MMC3 - has IRQ timing that requires cycle accuracy
-    return true;
-  case 66: // GxROM - CHR banking can happen mid-frame!
-    return true;
-  default:
-    return true; // Be safe for unknown mappers
-  }
 }
 
 void WarpNES::updateFrameBased() {
@@ -2953,132 +2891,6 @@ void WarpNES::AXS(uint16_t addr) {
   updateZN(regX);
 }
 
-void WarpNES::writeMMC1Register(uint16_t address, uint8_t value) {
-  // CRITICAL: Handle reset condition first - this is where your bug was
-  if (value & 0x80) {
-    // Reset detected - clear shift register and set control register properly
-    mmc1.shiftRegister = 0x10;
-    mmc1.shiftCount = 0;
-
-    // CRITICAL FIX: Reset sets control to (control | 0x0C) - ensures mode 3
-    // Mode 3 = 16KB PRG mode with last bank fixed at $C000
-    mmc1.control = mmc1.control | 0x0C;
-
-    updateMMC1Banks();
-    return;
-  }
-
-  // Handle 32KB special case (for smaller ROMs)
-  if (prgSize == 32768) {
-    // Still process the write for CHR banking and control, but ignore PRG
-    // banking
-    mmc1.shiftRegister >>= 1;
-    mmc1.shiftRegister |= (value & 1) << 4;
-    mmc1.shiftCount++;
-
-    if (mmc1.shiftCount == 5) {
-      uint8_t data = mmc1.shiftRegister;
-      mmc1.shiftRegister = 0x10;
-      mmc1.shiftCount = 0;
-
-      if (address < 0xA000) {
-        mmc1.control = data;
-      } else if (address < 0xC000) {
-        mmc1.chrBank0 = data;
-      } else if (address < 0xE000) {
-        mmc1.chrBank1 = data;
-      }
-      updateMMC1Banks();
-    }
-    return;
-  }
-
-  // Normal MMC1 operation for larger ROMs
-  mmc1.shiftRegister >>= 1;
-  mmc1.shiftRegister |= (value & 1) << 4;
-  mmc1.shiftCount++;
-
-  if (mmc1.shiftCount == 5) {
-    uint8_t data = mmc1.shiftRegister;
-    mmc1.shiftRegister = 0x10;
-    mmc1.shiftCount = 0;
-
-    if (address < 0xA000) {
-      // Control register write
-      uint8_t oldControl = mmc1.control;
-      mmc1.control = data;
-    } else if (address < 0xC000) {
-      // CHR Bank 0
-      uint8_t oldBank = mmc1.chrBank0;
-      mmc1.chrBank0 = data;
-    } else if (address < 0xE000) {
-      // CHR Bank 1
-      uint8_t oldBank = mmc1.chrBank1;
-      mmc1.chrBank1 = data;
-    } else {
-      // PRG Bank
-      uint8_t oldBank = mmc1.prgBank;
-      mmc1.prgBank = data;
-    }
-
-    updateMMC1Banks();
-  }
-}
-
-void WarpNES::updateMMC1Banks() {
-  uint8_t totalPRGBanks = prgSize / 0x4000; // Number of 16KB PRG banks
-
-  // Handle 32KB PRG ROMs (no banking needed)
-  if (prgSize == 32768) {
-    mmc1.currentPRGBank = 0;
-    // Still need to handle CHR banking even for 32KB ROMs
-  } else {
-    // PRG banking logic
-    uint8_t prgMode = (mmc1.control >> 2) & 0x03;
-
-    switch (prgMode) {
-    case 0:
-    case 1:
-      // 32KB mode - switch entire 32KB (two 16KB banks)
-      mmc1.currentPRGBank = (mmc1.prgBank >> 1) % (totalPRGBanks / 2);
-      break;
-
-    case 2:
-      // 16KB mode: Fix FIRST bank at $8000, switch LAST bank at $C000
-      mmc1.currentPRGBank = 0; // First bank fixed at $8000
-      break;
-
-    case 3:
-    default:
-      // 16KB mode: Switch FIRST bank at $8000, fix LAST bank at $C000
-      mmc1.currentPRGBank = mmc1.prgBank % totalPRGBanks;
-      break;
-    }
-  }
-
-  // CHR banking - CRITICAL FIX FOR TETRIS
-  if (nesHeader.chrROMPages > 0) {
-    // CHR-ROM banking
-    uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks for MMC1
-
-    if (mmc1.control & 0x10) {
-      // 4KB CHR mode - independent 4KB banks
-      mmc1.currentCHRBank0 = mmc1.chrBank0 % totalCHRBanks;
-      mmc1.currentCHRBank1 = mmc1.chrBank1 % totalCHRBanks;
-    } else {
-      // 8KB CHR mode - chrBank0 selects 8KB (two consecutive 4KB banks)
-      uint8_t baseBank = (mmc1.chrBank0 & 0xFE); // Force even
-      mmc1.currentCHRBank0 = baseBank % totalCHRBanks;
-      mmc1.currentCHRBank1 = (baseBank + 1) % totalCHRBanks;
-    }
-
-  } else {
-    // CHR-RAM - no banking, direct access
-    mmc1.currentCHRBank0 = 0;
-    mmc1.currentCHRBank1 = 1;
-  }
-}
-
 void WarpNES::writeGxROMRegister(uint16_t address, uint8_t value) {
   uint8_t oldCHRBank = gxrom.chrBank;
 
@@ -3086,10 +2898,6 @@ void WarpNES::writeGxROMRegister(uint16_t address, uint8_t value) {
   gxrom.prgBank = (value >> 4) & 0x03; // Bits 4-5
   gxrom.chrBank = value & 0x03;        // Bits 0-1
 
-  // Invalidate cache if CHR bank changed
-  /*if (oldCHRBank != gxrom.chrBank) {
-      ppu->invalidateTileCache();
-  }*/
 }
 
 uint8_t WarpNES::readCHRData(uint16_t address) {

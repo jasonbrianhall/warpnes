@@ -425,7 +425,6 @@ private:
   } uxrom;
 
   void writeUxROMRegister(uint16_t address, uint8_t value);
-  bool needsCycleAccuracy() const;
   void updateFrameBased();
 
   // PPU cycle stepping methods
