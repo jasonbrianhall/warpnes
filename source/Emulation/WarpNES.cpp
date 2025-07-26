@@ -2891,15 +2891,6 @@ void WarpNES::AXS(uint16_t addr) {
   updateZN(regX);
 }
 
-void WarpNES::writeGxROMRegister(uint16_t address, uint8_t value) {
-  uint8_t oldCHRBank = gxrom.chrBank;
-
-  // Mapper 66: Write to $8000-$FFFF sets both PRG and CHR banks
-  gxrom.prgBank = (value >> 4) & 0x03; // Bits 4-5
-  gxrom.chrBank = value & 0x03;        // Bits 0-1
-
-}
-
 uint8_t WarpNES::readCHRData(uint16_t address) {
   if (address >= 0x2000)
     return 0;

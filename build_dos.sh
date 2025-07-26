@@ -104,6 +104,7 @@ case "${1:-dos}" in
             g++ -c /src/source/Emulation/PPU.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/PPU.o && \
             g++ -c /src/source/Emulation/WarpNES.cpp -I/src/$BUILD_DIR/source-install/include -DALLEGRO_BUILD -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/SMBEngine.o && \
             g++ -c /src/source/Emulation/Battery.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Battery.o && \
+            g++ -c /src/source/Emulation/GxROM.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/GxROM.o && \
             g++ -c /src/source/Emulation/MMC1.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC1.o && \
             g++ -c /src/source/Emulation/MMC2.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC2.o && \
             g++ -c /src/source/Emulation/MMC3.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC3.o && \
@@ -174,6 +175,7 @@ case "${1:-dos}" in
             g++ -c /src/source/Emulation/PPU.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/PPU.o && \
             g++ -c /src/source/Emulation/WarpNES.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/SMBEngine.o && \
             g++ -c /src/source/Emulation/Battery.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Battery.o && \
+            g++ -c /src/source/Emulation/GxROM.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/GxROM.o && \
             g++ -c /src/source/Emulation/MMC1.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC1.o && \
             g++ -c /src/source/Emulation/MMC2.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC2.o && \
             g++ -c /src/source/Emulation/MMC3.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC3.o && \

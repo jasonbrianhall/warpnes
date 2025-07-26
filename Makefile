@@ -53,6 +53,7 @@ COMMON_SOURCE_FILES = \
     source/Emulation/WarpNES.cpp \
     source/Emulation/AllegroMidi.cpp \
     source/Emulation/Battery.cpp \
+    source/Emulation/GxROM.cpp \
     source/Emulation/MMC1.cpp \
     source/Emulation/MMC2.cpp \
     source/Emulation/MMC3.cpp
