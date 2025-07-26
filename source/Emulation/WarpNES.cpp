@@ -479,37 +479,47 @@ bool WarpNES::loadPRGROM(std::ifstream &file) {
 }
 
 bool WarpNES::loadCHRROM(std::ifstream &file) {
+  printf("LoadCHRROM\n");
   chrSize = nesHeader.chrROMPages * 8192; // 8KB pages
   if (chrSize == 0) {
     chrSize = 8192;
     chrROM = new uint8_t[chrSize];
     memset(chrROM, 0, chrSize);
+    
+    // METROID FIX: Initialize tile 255 as a proper blank tile
+    if (nesHeader.mapper == 1) {
+      // Tile 255 starts at address 255 * 16 = 0x1FF0
+      // Set it to all zeros (which is palette index 0 = transparent)
+      // This is already done by memset, but let's be explicit
+      for (int i = 0; i < 16; i++) {
+        chrROM[0x1FF0 + i] = 0x00;
+      }
+      printf("Initialized CHR-RAM tile 255 as blank for Metroid\n");
+    }
+    
     printf("Using CHR RAM (8KB) for mapper %d\n", nesHeader.mapper);
     return true;
   }
-
+  
+  printf("LoadCHRROM2\n");
   chrROM = new uint8_t[chrSize];
   file.read(reinterpret_cast<char *>(chrROM), chrSize);
-
-  // Debug output
+  
   printf("Loaded CHR ROM: %d bytes for mapper %d\n", chrSize, nesHeader.mapper);
-
-  // CRITICAL DEBUG INFO
-  uint32_t totalCHRBanks = chrSize / 0x400; // Number of 1KB banks
+  
+  uint32_t totalCHRBanks = chrSize / 0x400;
   printf("=== CHR ROM DEBUG ===\n");
   printf("CHR ROM Size: %d bytes (%d KB)\n", chrSize, chrSize / 1024);
-  printf("Total 1KB CHR banks: %d (0x00 - 0x%02X)\n", totalCHRBanks,
-         totalCHRBanks - 1);
+  printf("Total 1KB CHR banks: %d (0x00 - 0x%02X)\n", totalCHRBanks, totalCHRBanks - 1);
   printf("CHR ROM Pages: %d\n", nesHeader.chrROMPages);
-
-  // Check if common bank numbers are valid
+  
   printf("Bank validity check:\n");
   for (int bank : {0x00, 0x08, 0x09, 0x0C, 0x10, 0x11, 0x18, 0x19}) {
     bool valid = (bank < totalCHRBanks);
     printf("  Bank 0x%02X: %s\n", bank, valid ? "VALID" : "OUT OF BOUNDS!");
   }
   printf("=== END CHR DEBUG ===\n");
-
+  
   return file.good();
 }
 

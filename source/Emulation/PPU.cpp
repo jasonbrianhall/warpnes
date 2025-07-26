@@ -102,10 +102,9 @@ PPU::PPU(WarpNES& engine) :
     currentAddress = 0;
     writeToggle = false;
     
-    // Initialize PPU registers to proper reset state for SMB
     ppuCtrl = 0x00;
     ppuMask = 0x00;
-    ppuStatus = 0x80;  // VBlank flag set initially (IMPORTANT FOR SMB)
+    ppuStatus = 0x80;
     oamAddress = 0x00;
     ppuScrollX = 0x00;
     ppuScrollY = 0x00;
@@ -177,7 +176,7 @@ uint16_t PPU::getNametableIndex(uint16_t address)
     address = (address - 0x2000) % 0x1000;
     int table = address / 0x400;
     int offset = address % 0x400;
-    int mode = 1; // Mirroring mode for Super Mario Bros.
+    int mode = 1; 
     return (nametableMirrorLookup[mode][table] * 0x400 + offset) % 2048;
 }
 
@@ -348,14 +347,7 @@ void PPU::render(uint32_t* buffer)
         int scrollX = (int)ppuScrollX + ((ppuCtrl & (1 << 0)) ? 256 : 0);
         int xMin = scrollX / 8;
         int xMax = ((int)scrollX + 256) / 8;
-        /*for (int x = 0; x < 32; x++)
-        {
-            for (int y = 0; y < 4; y++)
-            {
-                // Render the status bar in the same position (it doesn't scroll)
-                renderTile(buffer, 0x2000 + 32 * y + x, x * 8, y * 8);
-            }
-        }*/
+
         for (int x = xMin; x <= xMax; x++)
         {
             for (int y = 4; y < 30; y++)
@@ -461,8 +453,6 @@ void PPU::render(uint32_t* buffer)
                         // Sprite is in front of background - always draw
                         buffer[yPixel * 256 + xPixel] = pixel;
                         
-                        // Special case for sprite 0, tile 0xff in Super Mario Bros.
-                        // (part of the pixels for the coin indicator)
                         if (i == 0 && index == 0xff && row == 5 && column > 3 && column < 6)
                         {
                             // Don't draw these specific pixels for the coin indicator
@@ -1751,7 +1741,10 @@ void PPU::renderSpriteScanline(int scanline) {
 
 void PPU::checkSprite0HitScanline(int scanline) {
     if (sprite0Hit) return;  // Already hit this frame
-    if (!(ppuMask & 0x18)) return;  // Rendering disabled
+    if (!(ppuMask & 0x18)) return;  // Both sprite and background rendering must be enabled
+    
+    // Only check visible scanlines
+    if (scanline < 0 || scanline >= 240) return;
     
     // Get sprite 0 properties
     uint8_t sprite0Y = oam[0];
@@ -1759,13 +1752,117 @@ void PPU::checkSprite0HitScanline(int scanline) {
     uint8_t sprite0Attr = oam[2];
     uint8_t sprite0X = oam[3];
     
-    // Check if sprite 0 is on this scanline
+    // Skip if sprite 0 is off-screen
+    if (sprite0Y >= 0xEF || sprite0X >= 0xF9) return;
+    
+    // Check if sprite 0 is on this scanline (accounting for 1-line delay)
     if (scanline < sprite0Y + 1 || scanline >= sprite0Y + 9) return;
     
-    // For SMB, sprite 0 hit typically occurs around scanlines 30-35
-    if (scanline >= 30 && scanline <= 35) {
-        sprite0Hit = true;
-        ppuStatus |= 0x40;
+    // Calculate sprite row for this scanline
+    int spriteRow = scanline - (sprite0Y + 1);
+    
+    // Handle vertical flip
+    if (sprite0Attr & 0x80) {
+        spriteRow = 7 - spriteRow;
+    }
+    
+    // Get sprite 0 pattern data for this row
+    uint16_t patternBase = sprite0Tile * 16;
+    if (ppuCtrl & 0x08) {  // Sprite pattern table select
+        patternBase += 0x1000;
+    }
+    
+    uint8_t spriteLo = readCHR(patternBase + spriteRow);
+    uint8_t spriteHi = readCHR(patternBase + spriteRow + 8);
+    
+    // Check each pixel in the sprite row for collision
+    for (int col = 0; col < 8; col++) {
+        int screenX = sprite0X + col;
+        
+        // Skip if pixel is off-screen
+        if (screenX >= 256) break;
+        if (screenX < 0) continue;
+        
+        // Calculate sprite pixel column (handle horizontal flip)
+        int spriteCol = col;
+        if (sprite0Attr & 0x40) {
+            spriteCol = 7 - col;
+        }
+        
+        // Extract sprite pixel value
+        uint8_t spritePixel = 0;
+        if (spriteLo & (1 << spriteCol)) spritePixel |= 1;
+        if (spriteHi & (1 << spriteCol)) spritePixel |= 2;
+        
+        // Skip if sprite pixel is transparent
+        if (spritePixel == 0) continue;
+        
+        // Get background pixel at this location - inline the logic
+        int scrollX = (scanline < 240 && scanlineScrollX[scanline] != 0) ? scanlineScrollX[scanline] : frameScrollX;
+        int scrollY = (scanline < 240 && scanlineScrollY[scanline] != 0) ? scanlineScrollY[scanline] : frameScrollY;
+        
+        // Calculate background tile position
+        int worldX = screenX + scrollX;
+        int worldY = scanline + scrollY;
+        
+        int tileX = worldX / 8;
+        int tileY = worldY / 8;
+        int pixelX = worldX % 8;
+        int pixelY = worldY % 8;
+        
+        // Determine which nametable to use
+        uint16_t nametableAddr = 0x2000;
+        int localTileX = tileX % 32;
+        int localTileY = tileY % 30;
+        
+        // Handle nametable mirroring
+        if (ppuCtrl & 0x01) {  // Base nametable bit
+            nametableAddr = 0x2400;
+        }
+        
+        // Handle horizontal nametable wrapping
+        if (tileX >= 32) {
+            nametableAddr = (nametableAddr == 0x2000) ? 0x2400 : 0x2000;
+            localTileX = tileX - 32;
+        }
+        
+        // Handle vertical nametable wrapping
+        if (tileY >= 30) {
+            if (ppuCtrl & 0x02) {
+                nametableAddr += (nametableAddr < 0x2800) ? 0x800 : -0x800;
+            }
+            localTileY = tileY - 30;
+        }
+        
+        // Bounds check
+        if (localTileX < 0 || localTileX >= 32 || localTileY < 0 || localTileY >= 30) {
+            continue; // Skip out-of-bounds pixels
+        }
+        
+        // Get background tile data
+        uint16_t tileAddr = nametableAddr + (localTileY * 32) + localTileX;
+        uint8_t bgTileIndex = readByte(tileAddr);
+        
+        // Get background pattern data
+        uint16_t bgPatternBase = bgTileIndex * 16;
+        if (ppuCtrl & 0x10) {  // Background pattern table select
+            bgPatternBase += 0x1000;
+        }
+        
+        uint8_t bgLo = readCHR(bgPatternBase + pixelY);
+        uint8_t bgHi = readCHR(bgPatternBase + pixelY + 8);
+        
+        // Extract background pixel value
+        uint8_t bgPixel = 0;
+        if (bgLo & (0x80 >> pixelX)) bgPixel |= 1;
+        if (bgHi & (0x80 >> pixelX)) bgPixel |= 2;
+        
+        // Sprite 0 hit occurs when both sprite and background pixels are non-transparent
+        if (bgPixel != 0) {
+            sprite0Hit = true;
+            ppuStatus |= 0x40;
+            return;
+        }
     }
 }
 
@@ -1875,27 +1972,130 @@ void PPU::handleBackgroundFetch()
 
 void PPU::checkSprite0Hit()
 {
-    // Simplified sprite 0 hit detection
-    // In real hardware, this would be pixel-perfect collision detection
+    // Don't check if already hit this frame
+    if (sprite0Hit) return;
     
-    if (sprite0Hit) return; // Already hit this frame
+    // Don't check if rendering is disabled
+    if (!(ppuMask & 0x18)) return; // Both sprite and background rendering must be enabled
+    
+    // Don't check during VBlank or pre-render scanline
+    if (currentScanline < 0 || currentScanline >= 240) return;
+    
+    // Don't check if we're not in the visible area
+    if (currentCycle < 1 || currentCycle > 256) return;
     
     // Get sprite 0 properties
     uint8_t sprite0_y = oam[0];
+    uint8_t sprite0_tile = oam[1];
+    uint8_t sprite0_attr = oam[2];
     uint8_t sprite0_x = oam[3];
+    
+    // Skip if sprite 0 is off-screen
+    if (sprite0_y >= 0xEF || sprite0_x >= 0xF9) return;
     
     // Sprite coordinates are delayed by 1 scanline
     sprite0_y++;
     
-    // Check if we're in the sprite 0 area
-    if (currentScanline >= sprite0_y && currentScanline < sprite0_y + 8) {
-        if (currentCycle >= sprite0_x && currentCycle < sprite0_x + 8) {
-            // For SMB, sprite 0 hit typically occurs around scanline 32
-            if (currentScanline >= 30 && currentScanline <= 35) {
-                sprite0Hit = true;
-                ppuStatus |= 0x40; // Set sprite 0 hit flag
-            }
+    // Check if current scanline intersects with sprite 0
+    if (currentScanline < sprite0_y || currentScanline >= sprite0_y + 8) return;
+    
+    // Check if current cycle intersects with sprite 0
+    if (currentCycle < sprite0_x || currentCycle >= sprite0_x + 8) return;
+    
+    // Calculate pixel position within sprite 0
+    int spriteRow = currentScanline - sprite0_y;
+    int spriteCol = currentCycle - sprite0_x;
+    
+    // Handle vertical flip
+    if (sprite0_attr & 0x80) {
+        spriteRow = 7 - spriteRow;
+    }
+    
+    // Handle horizontal flip
+    if (sprite0_attr & 0x40) {
+        spriteCol = 7 - spriteCol;
+    }
+    
+    // Get sprite 0 pattern data
+    uint16_t patternBase = sprite0_tile * 16;
+    if (ppuCtrl & 0x08) {  // Sprite pattern table select
+        patternBase += 0x1000;
+    }
+    
+    uint8_t spriteLo = readCHR(patternBase + spriteRow);
+    uint8_t spriteHi = readCHR(patternBase + spriteRow + 8);
+    
+    // Extract sprite pixel value
+    uint8_t spritePixel = 0;
+    if (spriteLo & (1 << spriteCol)) spritePixel |= 1;
+    if (spriteHi & (1 << spriteCol)) spritePixel |= 2;
+    
+    // Skip if sprite pixel is transparent
+    if (spritePixel == 0) return;
+    
+    // Now check background pixel at the same location
+    int bgX = currentCycle - 1; // Convert cycle to pixel coordinate
+    int bgY = currentScanline;
+    
+    // Calculate background tile position
+    int scrollX = frameScrollX;
+    int scrollY = frameScrollY;
+    
+    int worldX = bgX + scrollX;
+    int worldY = bgY + scrollY;
+    
+    int tileX = worldX / 8;
+    int tileY = worldY / 8;
+    int pixelX = worldX % 8;
+    int pixelY = worldY % 8;
+    
+    // Determine which nametable to use
+    uint16_t nametableAddr = 0x2000;
+    int localTileX = tileX % 32;
+    int localTileY = tileY % 30;
+    
+    // Handle nametable mirroring
+    if (ppuCtrl & 0x01) {  // Base nametable bit
+        nametableAddr = 0x2400;
+    }
+    
+    // Handle horizontal nametable wrapping
+    if (tileX >= 32) {
+        nametableAddr = (nametableAddr == 0x2000) ? 0x2400 : 0x2000;
+        localTileX = tileX - 32;
+    }
+    
+    // Handle vertical nametable wrapping
+    if (tileY >= 30) {
+        // Switch to lower nametable
+        if (ppuCtrl & 0x02) {
+            nametableAddr += (nametableAddr < 0x2800) ? 0x800 : -0x800;
         }
+        localTileY = tileY - 30;
+    }
+    
+    // Get background tile data
+    uint16_t tileAddr = nametableAddr + (localTileY * 32) + localTileX;
+    uint8_t bgTileIndex = readByte(tileAddr);
+    
+    // Get background pattern data
+    uint16_t bgPatternBase = bgTileIndex * 16;
+    if (ppuCtrl & 0x10) {  // Background pattern table select
+        bgPatternBase += 0x1000;
+    }
+    
+    uint8_t bgLo = readCHR(bgPatternBase + pixelY);
+    uint8_t bgHi = readCHR(bgPatternBase + pixelY + 8);
+    
+    // Extract background pixel value
+    uint8_t bgPixel = 0;
+    if (bgLo & (0x80 >> pixelX)) bgPixel |= 1;
+    if (bgHi & (0x80 >> pixelX)) bgPixel |= 2;
+    
+    // Sprite 0 hit occurs when both sprite and background pixels are non-transparent
+    if (spritePixel != 0 && bgPixel != 0) {
+        sprite0Hit = true;
+        ppuStatus |= 0x40; // Set sprite 0 hit flag
     }
 }
 
@@ -1984,12 +2184,7 @@ uint16_t PPU::getBackgroundPixelColor(int x, int y) {
     // Get current scroll values
     int scrollX = frameScrollX;
     uint8_t ctrl = frameCtrl;
-    
-    // For SMB: status bar (top 4 rows) doesn't scroll
-    /*if (y < 32) {  // Status bar area
-        scrollX = 0;
-    }*/
-    
+        
     // Calculate tile position
     int worldX = x + scrollX;
     int tileX = worldX / 8;
