@@ -19,10 +19,10 @@ class Controller;
  * Dynamic 6502 CPU emulator for NES/SMB
  * Loads .nes ROM files and executes actual 6502 machine code
  */
-class SMBEmulator {
+class WarpNES {
 public:
-  SMBEmulator();
-  ~SMBEmulator();
+  WarpNES();
+  ~WarpNES();
   void checkCHRLatch(uint16_t address, uint8_t tileID);
   void checkSprite0Hit(int scanline, int cycle);
   uint8_t *getCHR();

@@ -50,7 +50,7 @@ COMMON_SOURCE_FILES = \
     source/Emulation/APU.cpp \
     source/Emulation/PPU.cpp \
     source/Zapper.cpp \
-    source/Emulation/SMBEmulator.cpp \
+    source/Emulation/WarpNES.cpp \
     source/Emulation/AllegroMidi.cpp \
     source/Emulation/Battery.cpp
 

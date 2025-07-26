@@ -7,7 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include "AllegroMainWindow.hpp"
-#include "Emulation/SMBEmulator.hpp" 
+#include "Emulation/WarpNES.hpp" 
 #include "Emulation/Controller.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
@@ -27,7 +27,7 @@
 static AUDIOSTREAM* audiostream = NULL;
 
 // Global variables for DOS compatibility
-static SMBEmulator* smbEngine = NULL;
+static WarpNES* smbEngine = NULL;
 static uint16_t renderBuffer[RENDER_WIDTH * RENDER_HEIGHT];
 AllegroMainWindow* g_mainWindow = NULL;
 
@@ -1012,7 +1012,7 @@ void AllegroMainWindow::run(const char* romFilename)
     showingMenu = false;
     currentDialog = DIALOG_NONE;
 
-    SMBEmulator engine;
+    WarpNES engine;
     smbEngine = &engine;
 
     printf("Loading ROM: %s\n", romFilename);

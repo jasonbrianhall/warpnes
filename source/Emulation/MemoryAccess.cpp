@@ -1,4 +1,4 @@
-#include "../SMB/SMBEmulator.hpp"
+#include "../SMB/WarpNES.hpp"
 
 #include "MemoryAccess.hpp"
 

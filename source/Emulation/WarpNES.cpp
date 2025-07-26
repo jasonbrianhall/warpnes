@@ -2,7 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include "SMBEmulator.hpp"
+#include "WarpNES.hpp"
 #include "../Configuration.hpp"
 #include "../Emulation/APU.hpp"
 
@@ -16,7 +16,7 @@
 
 
 // 6502 instruction cycle counts
-const uint8_t SMBEmulator::instructionCycles[256] = {
+const uint8_t WarpNES::instructionCycles[256] = {
     // 0x00-0x0F
     7, 6, 0, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6,
     // 0x10-0x1F
@@ -50,7 +50,7 @@ const uint8_t SMBEmulator::instructionCycles[256] = {
     // 0xF0-0xFF
     2, 5, 0, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7};
 
-SMBEmulator::SMBEmulator()
+WarpNES::WarpNES()
     : regA(0), regX(0), regY(0), regSP(0xFF), regPC(0), regP(0x24),
       totalCycles(0), frameCycles(0), prgROM(nullptr), chrROM(nullptr),
       prgSize(0), chrSize(0), romLoaded(false), masterCycles(0), ppuCycles(0),
@@ -71,7 +71,7 @@ SMBEmulator::SMBEmulator()
   zapperEnabled = 0;
 }
 
-SMBEmulator::~SMBEmulator() {
+WarpNES::~WarpNES() {
   delete apu;
   delete ppu;
 
@@ -83,7 +83,7 @@ SMBEmulator::~SMBEmulator() {
   cleanupSRAM();
 }
 
-void SMBEmulator::writeCNROMRegister(uint16_t address, uint8_t value) {
+void WarpNES::writeCNROMRegister(uint16_t address, uint8_t value) {
   uint8_t oldCHRBank = cnrom.chrBank;
 
   // Mapper 3: Write to $8000-$FFFF sets CHR bank
@@ -95,7 +95,7 @@ void SMBEmulator::writeCNROMRegister(uint16_t address, uint8_t value) {
   }*/
 }
 
-void SMBEmulator::writeCHRData(uint16_t address, uint8_t value) {
+void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
   if (address >= 0x2000)
     return;
 
@@ -289,7 +289,7 @@ void SMBEmulator::writeCHRData(uint16_t address, uint8_t value) {
 }
 
 // Modify loadROM to initialize SRAM:
-bool SMBEmulator::loadROM(const std::string &filename) {
+bool WarpNES::loadROM(const std::string &filename) {
   std::ifstream file(filename, std::ios::binary);
   if (!file.is_open()) {
     std::cerr << "Failed to open ROM file: " << filename << std::endl;
@@ -349,7 +349,7 @@ bool SMBEmulator::loadROM(const std::string &filename) {
   return true;
 }
 
-void SMBEmulator::unloadROM() {
+void WarpNES::unloadROM() {
   if (prgROM) {
     delete[] prgROM;
     prgROM = nullptr;
@@ -362,7 +362,7 @@ void SMBEmulator::unloadROM() {
   romLoaded = false;
 }
 
-bool SMBEmulator::parseNESHeader(std::ifstream &file) {
+bool WarpNES::parseNESHeader(std::ifstream &file) {
   uint8_t header[16];
   file.read(reinterpret_cast<char *>(header), 16);
 
@@ -467,7 +467,7 @@ bool SMBEmulator::parseNESHeader(std::ifstream &file) {
   return true;
 }
 
-bool SMBEmulator::loadPRGROM(std::ifstream &file) {
+bool WarpNES::loadPRGROM(std::ifstream &file) {
   prgSize = nesHeader.prgROMPages * 16384; // 16KB pages
   if (prgSize == 0)
     return false;
@@ -478,7 +478,7 @@ bool SMBEmulator::loadPRGROM(std::ifstream &file) {
   return file.good();
 }
 
-bool SMBEmulator::loadCHRROM(std::ifstream &file) {
+bool WarpNES::loadCHRROM(std::ifstream &file) {
   chrSize = nesHeader.chrROMPages * 8192; // 8KB pages
   if (chrSize == 0) {
     chrSize = 8192;
@@ -513,7 +513,7 @@ bool SMBEmulator::loadCHRROM(std::ifstream &file) {
   return file.good();
 }
 
-void SMBEmulator::handleNMI() {
+void WarpNES::handleNMI() {
   static int nmiCount = 0;
 
   nmiCount++;
@@ -530,7 +530,7 @@ void SMBEmulator::handleNMI() {
   frameCycles += 7;
 }
 
-/*void SMBEmulator::update()
+/*void WarpNES::update()
 {
     if (!romLoaded) return;
 
@@ -553,7 +553,7 @@ void SMBEmulator::handleNMI() {
 
     std::ofstream logFile("timing.log", std::ios::app);
     if (logFile.is_open()) {
-        logFile << "[DJGPP] SMBEmulator::update took approx " << (ticksElapsed *
+        logFile << "[DJGPP] WarpNES::update took approx " << (ticksElapsed *
 55)
                 << " ms (" << (needsCycleAccuracy() ? "Cycle Accurate" : "Frame
 Based") << ")\n"; logFile.close();
@@ -563,19 +563,19 @@ Based") << ")\n"; logFile.close();
     auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end
 - start).count();
 
-    std::cout << "[SMBEmulator::update] took " << duration_us / 1000.0 << " ms
+    std::cout << "[WarpNES::update] took " << duration_us / 1000.0 << " ms
 ("
               << (needsCycleAccuracy() ? "Cycle Accurate" : "Frame Based") <<
 ")\n"; #endif
 }*/
 
-void SMBEmulator::update() {
+void WarpNES::update() {
   if (!romLoaded)
     return;
   updateCycleAccurate();
 }
 
-bool SMBEmulator::needsCycleAccuracy() const {
+bool WarpNES::needsCycleAccuracy() const {
   return false;
   if (zapperEnabled) {
     return true;
@@ -598,7 +598,7 @@ bool SMBEmulator::needsCycleAccuracy() const {
   }
 }
 
-void SMBEmulator::updateFrameBased() {
+void WarpNES::updateFrameBased() {
   if (!romLoaded)
     return;
   static int frameCount = 0;
@@ -658,7 +658,7 @@ void SMBEmulator::updateFrameBased() {
   }
 }
 
-void SMBEmulator::updateCycleAccurate() {
+void WarpNES::updateCycleAccurate() {
   if (!romLoaded) return;
 
   static int debugFrame = 0;
@@ -763,7 +763,7 @@ void SMBEmulator::updateCycleAccurate() {
   }
 }
 
-bool SMBEmulator::isPixelBright(uint16_t pixelColor) {
+bool WarpNES::isPixelBright(uint16_t pixelColor) {
   // Convert 16-bit color to RGB components
   // Assuming 5-6-5 RGB format (adjust based on your actual format)
   uint8_t r = (pixelColor >> 11) & 0x1F;
@@ -782,7 +782,7 @@ bool SMBEmulator::isPixelBright(uint16_t pixelColor) {
   return brightness > 200;
 }
 
-void SMBEmulator::checkSprite0Hit(int scanline, int cycle) {
+void WarpNES::checkSprite0Hit(int scanline, int cycle) {
   if (ppu->getStatus() & 0x40)
     return; // Already hit
   if (!ppuCycleState.renderingEnabled)
@@ -806,7 +806,7 @@ void SMBEmulator::checkSprite0Hit(int scanline, int cycle) {
   }
 }
 
-void SMBEmulator::checkMMC3IRQ(int scanline, int cycle) {
+void WarpNES::checkMMC3IRQ(int scanline, int cycle) {
   if (nesHeader.mapper != 4) return;
   if (!ppuCycleState.renderingEnabled) return;
   if (scanline >= 240 && scanline < 261) return; // Skip VBlank
@@ -845,7 +845,7 @@ void SMBEmulator::checkMMC3IRQ(int scanline, int cycle) {
 }
 
 
-void SMBEmulator::reset() {
+void WarpNES::reset() {
   if (!romLoaded)
     return;
 
@@ -902,19 +902,19 @@ void SMBEmulator::reset() {
   memset(ram, 0, sizeof(ram));
 }
 
-void SMBEmulator::checkCHRLatch(uint16_t address, uint8_t tileID) {
+void WarpNES::checkCHRLatch(uint16_t address, uint8_t tileID) {
   if (nesHeader.mapper == 9) {
     checkMMC2CHRLatch(address, tileID);
   }
 }
 
-void SMBEmulator::step() {
+void WarpNES::step() {
   if (!romLoaded)
     return;
   executeInstruction();
 }
 
-void SMBEmulator::stepPPUCycle() {
+void WarpNES::stepPPUCycle() {
   int scanline = ppuCycleState.scanline;
   int cycle = ppuCycleState.cycle;
 
@@ -958,7 +958,7 @@ void SMBEmulator::stepPPUCycle() {
   }
 }
 
-void SMBEmulator::stepPPUFetchNametable() {
+void WarpNES::stepPPUFetchNametable() {
   // Nametable fetch - doesn't usually affect mappers
   // But MMC3 A12 line changes can happen here
   if (nesHeader.mapper == 4) {
@@ -967,14 +967,14 @@ void SMBEmulator::stepPPUFetchNametable() {
   }
 }
 
-void SMBEmulator::stepPPUFetchAttribute() {
+void WarpNES::stepPPUFetchAttribute() {
   // Attribute fetch - similar to nametable
   if (nesHeader.mapper == 4) {
     stepMMC3A12Transition(false);
   }
 }
 
-void SMBEmulator::stepPPUFetchPatternLow() {
+void WarpNES::stepPPUFetchPatternLow() {
   // Pattern table fetch - this is where CHR banking matters!
   if (nesHeader.mapper == 4) {
     stepMMC3A12Transition(true); // Pattern table access (A12 high)
@@ -984,24 +984,24 @@ void SMBEmulator::stepPPUFetchPatternLow() {
   // This is where CHR-RAM updates would be visible
 }
 
-void SMBEmulator::stepPPUFetchPatternHigh() {
+void WarpNES::stepPPUFetchPatternHigh() {
   // Second pattern table fetch
   if (nesHeader.mapper == 4) {
     stepMMC3A12Transition(true);
   }
 }
 
-void SMBEmulator::stepPPUSpriteEvaluation() {
+void WarpNES::stepPPUSpriteEvaluation() {
   // Sprite evaluation logic
   // This affects sprite 0 hit detection
 }
 
-void SMBEmulator::stepPPUEndOfScanline(int scanline) {
+void WarpNES::stepPPUEndOfScanline(int scanline) {
   // End-of-scanline events
   // Scroll register updates, etc.
 }
 
-void SMBEmulator::stepMMC3A12Transition(bool a12High) {
+void WarpNES::stepMMC3A12Transition(bool a12High) {
   static bool lastA12 = false;
   static int filterCounter = 0;
 
@@ -1022,7 +1022,7 @@ void SMBEmulator::stepMMC3A12Transition(bool a12High) {
 }
 
 
-void SMBEmulator::executeInstruction() {
+void WarpNES::executeInstruction() {
 
   uint8_t opcode = fetchByte();
   uint8_t cycles = instructionCycles[opcode];
@@ -1880,7 +1880,7 @@ void SMBEmulator::executeInstruction() {
   masterCycles += cycles;
 }
 
-void SMBEmulator::catchUpPPU() {
+void WarpNES::catchUpPPU() {
   // CRITICAL FIX: Don't do complex PPU catch-up during cycle-accurate mode
   // The cycle-accurate loop already keeps PPU in sync
 
@@ -1899,7 +1899,7 @@ void SMBEmulator::catchUpPPU() {
   ppuCycles = ppu->getCurrentCycles();
 }
 
-void SMBEmulator::checkPendingInterrupts() {
+void WarpNES::checkPendingInterrupts() {
   // Handle MMC3 IRQ
   if (nesHeader.mapper == 4 && mmc3.irqPending) {
     mmc3.irqPending = false;
@@ -1927,7 +1927,7 @@ void SMBEmulator::checkPendingInterrupts() {
   }
 }
 
-uint8_t SMBEmulator::readByte(uint16_t address) {
+uint8_t WarpNES::readByte(uint16_t address) {
   if (address < 0x2000) {
     // RAM (mirrored every 2KB)
     return ram[address & 0x7FF];
@@ -2094,7 +2094,7 @@ uint8_t SMBEmulator::readByte(uint16_t address) {
   return 0; // Open bus
 }
 
-void SMBEmulator::writeMMC3Register(uint16_t address, uint8_t value) {
+void WarpNES::writeMMC3Register(uint16_t address, uint8_t value) {
   static int regDebugCount = 0;
 
   switch (address & 0xE001) {
@@ -2138,7 +2138,7 @@ void SMBEmulator::writeMMC3Register(uint16_t address, uint8_t value) {
   }
 }
 
-void SMBEmulator::updateMMC3Banks() {
+void WarpNES::updateMMC3Banks() {
   uint8_t totalPRGBanks = prgSize / 0x2000; // Number of 8KB banks
   uint8_t totalCHRBanks = chrSize / 0x400;  // Number of 1KB banks
 
@@ -2202,7 +2202,7 @@ void SMBEmulator::updateMMC3Banks() {
   }
 
 }
-void SMBEmulator::stepMMC3IRQ() {
+void WarpNES::stepMMC3IRQ() {
   static int irqDebugCount = 0;
 
   // Handle reload first
@@ -2224,7 +2224,7 @@ void SMBEmulator::stepMMC3IRQ() {
   }
 }
 
-void SMBEmulator::writeByte(uint16_t address, uint8_t value) {
+void WarpNES::writeByte(uint16_t address, uint8_t value) {
   if (address < 0x2000) {
     ram[address & 0x7FF] = value;
   } else if (address < 0x4000) {
@@ -2274,48 +2274,48 @@ void SMBEmulator::writeByte(uint16_t address, uint8_t value) {
   }
 }
 
-uint16_t SMBEmulator::readWord(uint16_t address) {
+uint16_t WarpNES::readWord(uint16_t address) {
   return readByte(address) | (readByte(address + 1) << 8);
 }
 
-void SMBEmulator::writeWord(uint16_t address, uint16_t value) {
+void WarpNES::writeWord(uint16_t address, uint16_t value) {
   writeByte(address, value & 0xFF);
   writeByte(address + 1, value >> 8);
 }
 
 // Stack operations
-void SMBEmulator::pushByte(uint8_t value) {
+void WarpNES::pushByte(uint8_t value) {
   writeByte(0x100 + regSP, value);
   regSP--;
 }
 
-uint8_t SMBEmulator::pullByte() {
+uint8_t WarpNES::pullByte() {
   regSP++;
   return readByte(0x100 + regSP);
 }
 
-void SMBEmulator::pushWord(uint16_t value) {
+void WarpNES::pushWord(uint16_t value) {
   pushByte(value >> 8);
   pushByte(value & 0xFF);
 }
 
-uint16_t SMBEmulator::pullWord() {
+uint16_t WarpNES::pullWord() {
   uint8_t lo = pullByte();
   uint8_t hi = pullByte();
   return lo | (hi << 8);
 }
 
 // Instruction fetch
-uint8_t SMBEmulator::fetchByte() { return readByte(regPC++); }
+uint8_t WarpNES::fetchByte() { return readByte(regPC++); }
 
-uint16_t SMBEmulator::fetchWord() {
+uint16_t WarpNES::fetchWord() {
   uint16_t value = readWord(regPC);
   regPC += 2;
   return value;
 }
 
 // Status flag helpers
-void SMBEmulator::setFlag(uint8_t flag, bool value) {
+void WarpNES::setFlag(uint8_t flag, bool value) {
   if (value) {
     regP |= flag;
   } else {
@@ -2323,29 +2323,29 @@ void SMBEmulator::setFlag(uint8_t flag, bool value) {
   }
 }
 
-bool SMBEmulator::getFlag(uint8_t flag) const { return (regP & flag) != 0; }
+bool WarpNES::getFlag(uint8_t flag) const { return (regP & flag) != 0; }
 
-void SMBEmulator::updateZN(uint8_t value) {
+void WarpNES::updateZN(uint8_t value) {
   setFlag(FLAG_ZERO, value == 0);
   setFlag(FLAG_NEGATIVE, (value & 0x80) != 0);
 }
 
 // Addressing modes
-uint16_t SMBEmulator::addrImmediate() { return regPC++; }
+uint16_t WarpNES::addrImmediate() { return regPC++; }
 
-uint16_t SMBEmulator::addrZeroPage() { return fetchByte(); }
+uint16_t WarpNES::addrZeroPage() { return fetchByte(); }
 
-uint16_t SMBEmulator::addrZeroPageX() { return (fetchByte() + regX) & 0xFF; }
+uint16_t WarpNES::addrZeroPageX() { return (fetchByte() + regX) & 0xFF; }
 
-uint16_t SMBEmulator::addrZeroPageY() { return (fetchByte() + regY) & 0xFF; }
+uint16_t WarpNES::addrZeroPageY() { return (fetchByte() + regY) & 0xFF; }
 
-uint16_t SMBEmulator::addrAbsolute() { return fetchWord(); }
+uint16_t WarpNES::addrAbsolute() { return fetchWord(); }
 
-uint16_t SMBEmulator::addrAbsoluteX() { return fetchWord() + regX; }
+uint16_t WarpNES::addrAbsoluteX() { return fetchWord() + regX; }
 
-uint16_t SMBEmulator::addrAbsoluteY() { return fetchWord() + regY; }
+uint16_t WarpNES::addrAbsoluteY() { return fetchWord() + regY; }
 
-uint16_t SMBEmulator::addrIndirect() {
+uint16_t WarpNES::addrIndirect() {
   uint16_t addr = fetchWord();
   // 6502 bug: if address is $xxFF, high byte is fetched from $xx00
   if ((addr & 0xFF) == 0xFF) {
@@ -2355,24 +2355,24 @@ uint16_t SMBEmulator::addrIndirect() {
   }
 }
 
-uint16_t SMBEmulator::addrIndirectX() {
+uint16_t WarpNES::addrIndirectX() {
   uint8_t addr = (fetchByte() + regX) & 0xFF;
   return readByte(addr) | (readByte((addr + 1) & 0xFF) << 8);
 }
 
-uint16_t SMBEmulator::addrIndirectY() {
+uint16_t WarpNES::addrIndirectY() {
   uint8_t addr = fetchByte();
   uint16_t base = readByte(addr) | (readByte((addr + 1) & 0xFF) << 8);
   return base + regY;
 }
 
-uint16_t SMBEmulator::addrRelative() {
+uint16_t WarpNES::addrRelative() {
   int8_t offset = fetchByte();
   return regPC + offset;
 }
 
 // Instruction implementations
-void SMBEmulator::ADC(uint16_t addr) {
+void WarpNES::ADC(uint16_t addr) {
   uint8_t value = readByte(addr);
   uint16_t result = regA + value + (getFlag(FLAG_CARRY) ? 1 : 0);
 
@@ -2383,12 +2383,12 @@ void SMBEmulator::ADC(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::AND(uint16_t addr) {
+void WarpNES::AND(uint16_t addr) {
   regA &= readByte(addr);
   updateZN(regA);
 }
 
-void SMBEmulator::ASL(uint16_t addr) {
+void WarpNES::ASL(uint16_t addr) {
   uint8_t value = readByte(addr);
   setFlag(FLAG_CARRY, (value & 0x80) != 0);
   value <<= 1;
@@ -2396,13 +2396,13 @@ void SMBEmulator::ASL(uint16_t addr) {
   updateZN(value);
 }
 
-void SMBEmulator::ASL_ACC() {
+void WarpNES::ASL_ACC() {
   setFlag(FLAG_CARRY, (regA & 0x80) != 0);
   regA <<= 1;
   updateZN(regA);
 }
 
-void SMBEmulator::BCC() {
+void WarpNES::BCC() {
   if (!getFlag(FLAG_CARRY)) {
     regPC = addrRelative();
   } else {
@@ -2410,7 +2410,7 @@ void SMBEmulator::BCC() {
   }
 }
 
-void SMBEmulator::BCS() {
+void WarpNES::BCS() {
   if (getFlag(FLAG_CARRY)) {
     regPC = addrRelative();
   } else {
@@ -2418,7 +2418,7 @@ void SMBEmulator::BCS() {
   }
 }
 
-void SMBEmulator::BEQ() {
+void WarpNES::BEQ() {
   if (getFlag(FLAG_ZERO)) {
     regPC = addrRelative();
   } else {
@@ -2426,14 +2426,14 @@ void SMBEmulator::BEQ() {
   }
 }
 
-void SMBEmulator::BIT(uint16_t addr) {
+void WarpNES::BIT(uint16_t addr) {
   uint8_t value = readByte(addr);
   setFlag(FLAG_ZERO, (regA & value) == 0);
   setFlag(FLAG_OVERFLOW, (value & 0x40) != 0);
   setFlag(FLAG_NEGATIVE, (value & 0x80) != 0);
 }
 
-void SMBEmulator::BMI() {
+void WarpNES::BMI() {
   if (getFlag(FLAG_NEGATIVE)) {
     regPC = addrRelative();
   } else {
@@ -2441,7 +2441,7 @@ void SMBEmulator::BMI() {
   }
 }
 
-void SMBEmulator::BNE() {
+void WarpNES::BNE() {
   if (!getFlag(FLAG_ZERO)) {
     regPC = addrRelative();
   } else {
@@ -2449,7 +2449,7 @@ void SMBEmulator::BNE() {
   }
 }
 
-void SMBEmulator::BPL() {
+void WarpNES::BPL() {
   if (!getFlag(FLAG_NEGATIVE)) {
     regPC = addrRelative();
   } else {
@@ -2457,7 +2457,7 @@ void SMBEmulator::BPL() {
   }
 }
 
-void SMBEmulator::BRK() {
+void WarpNES::BRK() {
   regPC++; // BRK is 2 bytes
   pushWord(regPC);
   pushByte(regP | FLAG_BREAK);
@@ -2465,7 +2465,7 @@ void SMBEmulator::BRK() {
   regPC = readWord(0xFFFE); // IRQ vector
 }
 
-void SMBEmulator::BVC() {
+void WarpNES::BVC() {
   if (!getFlag(FLAG_OVERFLOW)) {
     regPC = addrRelative();
   } else {
@@ -2473,7 +2473,7 @@ void SMBEmulator::BVC() {
   }
 }
 
-void SMBEmulator::BVS() {
+void WarpNES::BVS() {
   if (getFlag(FLAG_OVERFLOW)) {
     regPC = addrRelative();
   } else {
@@ -2481,95 +2481,95 @@ void SMBEmulator::BVS() {
   }
 }
 
-void SMBEmulator::CLC() { setFlag(FLAG_CARRY, false); }
+void WarpNES::CLC() { setFlag(FLAG_CARRY, false); }
 
-void SMBEmulator::CLD() { setFlag(FLAG_DECIMAL, false); }
+void WarpNES::CLD() { setFlag(FLAG_DECIMAL, false); }
 
-void SMBEmulator::CLI() { setFlag(FLAG_INTERRUPT, false); }
+void WarpNES::CLI() { setFlag(FLAG_INTERRUPT, false); }
 
-void SMBEmulator::CLV() { setFlag(FLAG_OVERFLOW, false); }
+void WarpNES::CLV() { setFlag(FLAG_OVERFLOW, false); }
 
-void SMBEmulator::CMP(uint16_t addr) {
+void WarpNES::CMP(uint16_t addr) {
   uint8_t value = readByte(addr);
   uint8_t result = regA - value;
   setFlag(FLAG_CARRY, regA >= value);
   updateZN(result);
 }
 
-void SMBEmulator::CPX(uint16_t addr) {
+void WarpNES::CPX(uint16_t addr) {
   uint8_t value = readByte(addr);
   uint8_t result = regX - value;
   setFlag(FLAG_CARRY, regX >= value);
   updateZN(result);
 }
 
-void SMBEmulator::CPY(uint16_t addr) {
+void WarpNES::CPY(uint16_t addr) {
   uint8_t value = readByte(addr);
   uint8_t result = regY - value;
   setFlag(FLAG_CARRY, regY >= value);
   updateZN(result);
 }
 
-void SMBEmulator::DEC(uint16_t addr) {
+void WarpNES::DEC(uint16_t addr) {
   uint8_t value = readByte(addr) - 1;
   writeByte(addr, value);
   updateZN(value);
 }
 
-void SMBEmulator::DEX() {
+void WarpNES::DEX() {
   regX--;
   updateZN(regX);
 }
 
-void SMBEmulator::DEY() {
+void WarpNES::DEY() {
   regY--;
   updateZN(regY);
 }
 
-void SMBEmulator::EOR(uint16_t addr) {
+void WarpNES::EOR(uint16_t addr) {
   regA ^= readByte(addr);
   updateZN(regA);
 }
 
-void SMBEmulator::INC(uint16_t addr) {
+void WarpNES::INC(uint16_t addr) {
   uint8_t value = readByte(addr) + 1;
   writeByte(addr, value);
   updateZN(value);
 }
 
-void SMBEmulator::INX() {
+void WarpNES::INX() {
   regX++;
   updateZN(regX);
 }
 
-void SMBEmulator::INY() {
+void WarpNES::INY() {
   regY++;
   updateZN(regY);
 }
 
-void SMBEmulator::JMP(uint16_t addr) { regPC = addr; }
+void WarpNES::JMP(uint16_t addr) { regPC = addr; }
 
-void SMBEmulator::JSR(uint16_t addr) {
+void WarpNES::JSR(uint16_t addr) {
   pushWord(regPC - 1);
   regPC = addr;
 }
 
-void SMBEmulator::LDA(uint16_t addr) {
+void WarpNES::LDA(uint16_t addr) {
   regA = readByte(addr);
   updateZN(regA);
 }
 
-void SMBEmulator::LDX(uint16_t addr) {
+void WarpNES::LDX(uint16_t addr) {
   regX = readByte(addr);
   updateZN(regX);
 }
 
-void SMBEmulator::LDY(uint16_t addr) {
+void WarpNES::LDY(uint16_t addr) {
   regY = readByte(addr);
   updateZN(regY);
 }
 
-void SMBEmulator::LSR(uint16_t addr) {
+void WarpNES::LSR(uint16_t addr) {
   uint8_t value = readByte(addr);
   setFlag(FLAG_CARRY, (value & 0x01) != 0);
   value >>= 1;
@@ -2577,36 +2577,36 @@ void SMBEmulator::LSR(uint16_t addr) {
   updateZN(value);
 }
 
-void SMBEmulator::LSR_ACC() {
+void WarpNES::LSR_ACC() {
   setFlag(FLAG_CARRY, (regA & 0x01) != 0);
   regA >>= 1;
   updateZN(regA);
 }
 
-void SMBEmulator::NOP() {
+void WarpNES::NOP() {
   // Do nothing
 }
 
-void SMBEmulator::ORA(uint16_t addr) {
+void WarpNES::ORA(uint16_t addr) {
   regA |= readByte(addr);
   updateZN(regA);
 }
 
-void SMBEmulator::PHA() { pushByte(regA); }
+void WarpNES::PHA() { pushByte(regA); }
 
-void SMBEmulator::PHP() { pushByte(regP | FLAG_BREAK | FLAG_UNUSED); }
+void WarpNES::PHP() { pushByte(regP | FLAG_BREAK | FLAG_UNUSED); }
 
-void SMBEmulator::PLA() {
+void WarpNES::PLA() {
   regA = pullByte();
   updateZN(regA);
 }
 
-void SMBEmulator::PLP() {
+void WarpNES::PLP() {
   regP = pullByte() | FLAG_UNUSED;
   regP &= ~FLAG_BREAK;
 }
 
-void SMBEmulator::ROL(uint16_t addr) {
+void WarpNES::ROL(uint16_t addr) {
   uint8_t value = readByte(addr);
   bool oldCarry = getFlag(FLAG_CARRY);
   setFlag(FLAG_CARRY, (value & 0x80) != 0);
@@ -2615,14 +2615,14 @@ void SMBEmulator::ROL(uint16_t addr) {
   updateZN(value);
 }
 
-void SMBEmulator::ROL_ACC() {
+void WarpNES::ROL_ACC() {
   bool oldCarry = getFlag(FLAG_CARRY);
   setFlag(FLAG_CARRY, (regA & 0x80) != 0);
   regA = (regA << 1) | (oldCarry ? 1 : 0);
   updateZN(regA);
 }
 
-void SMBEmulator::ROR(uint16_t addr) {
+void WarpNES::ROR(uint16_t addr) {
   uint8_t value = readByte(addr);
   bool oldCarry = getFlag(FLAG_CARRY);
   setFlag(FLAG_CARRY, (value & 0x01) != 0);
@@ -2631,22 +2631,22 @@ void SMBEmulator::ROR(uint16_t addr) {
   updateZN(value);
 }
 
-void SMBEmulator::ROR_ACC() {
+void WarpNES::ROR_ACC() {
   bool oldCarry = getFlag(FLAG_CARRY);
   setFlag(FLAG_CARRY, (regA & 0x01) != 0);
   regA = (regA >> 1) | (oldCarry ? 0x80 : 0);
   updateZN(regA);
 }
 
-void SMBEmulator::RTI() {
+void WarpNES::RTI() {
   regP = pullByte() | FLAG_UNUSED;
   regP &= ~FLAG_BREAK;
   regPC = pullWord();
 }
 
-void SMBEmulator::RTS() { regPC = pullWord() + 1; }
+void WarpNES::RTS() { regPC = pullWord() + 1; }
 
-void SMBEmulator::SBC(uint16_t addr) {
+void WarpNES::SBC(uint16_t addr) {
   uint8_t value = readByte(addr);
   uint16_t result = regA - value - (getFlag(FLAG_CARRY) ? 0 : 1);
 
@@ -2657,46 +2657,46 @@ void SMBEmulator::SBC(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::SEC() { setFlag(FLAG_CARRY, true); }
+void WarpNES::SEC() { setFlag(FLAG_CARRY, true); }
 
-void SMBEmulator::SED() { setFlag(FLAG_DECIMAL, true); }
+void WarpNES::SED() { setFlag(FLAG_DECIMAL, true); }
 
-void SMBEmulator::SEI() { setFlag(FLAG_INTERRUPT, true); }
+void WarpNES::SEI() { setFlag(FLAG_INTERRUPT, true); }
 
-void SMBEmulator::STA(uint16_t addr) { writeByte(addr, regA); }
+void WarpNES::STA(uint16_t addr) { writeByte(addr, regA); }
 
-void SMBEmulator::STX(uint16_t addr) { writeByte(addr, regX); }
+void WarpNES::STX(uint16_t addr) { writeByte(addr, regX); }
 
-void SMBEmulator::STY(uint16_t addr) { writeByte(addr, regY); }
+void WarpNES::STY(uint16_t addr) { writeByte(addr, regY); }
 
-void SMBEmulator::TAX() {
+void WarpNES::TAX() {
   regX = regA;
   updateZN(regX);
 }
 
-void SMBEmulator::TAY() {
+void WarpNES::TAY() {
   regY = regA;
   updateZN(regY);
 }
 
-void SMBEmulator::TSX() {
+void WarpNES::TSX() {
   regX = regSP;
   updateZN(regX);
 }
 
-void SMBEmulator::TXA() {
+void WarpNES::TXA() {
   regA = regX;
   updateZN(regA);
 }
 
-void SMBEmulator::TXS() { regSP = regX; }
+void WarpNES::TXS() { regSP = regX; }
 
-void SMBEmulator::TYA() {
+void WarpNES::TYA() {
   regA = regY;
   updateZN(regA);
 }
 
-void SMBEmulator::SHA(uint16_t addr) {
+void WarpNES::SHA(uint16_t addr) {
   // SHA: Store A & X & (high byte of address + 1)
   // This is an unstable instruction - the high byte interaction is complex
   uint8_t highByte = (addr >> 8) + 1;
@@ -2704,21 +2704,21 @@ void SMBEmulator::SHA(uint16_t addr) {
   writeByte(addr, result);
 }
 
-void SMBEmulator::SHX(uint16_t addr) {
+void WarpNES::SHX(uint16_t addr) {
   // SHX: Store X & (high byte of address + 1)
   uint8_t highByte = (addr >> 8) + 1;
   uint8_t result = regX & highByte;
   writeByte(addr, result);
 }
 
-void SMBEmulator::SHY(uint16_t addr) {
+void WarpNES::SHY(uint16_t addr) {
   // SHY: Store Y & (high byte of address + 1)
   uint8_t highByte = (addr >> 8) + 1;
   uint8_t result = regY & highByte;
   writeByte(addr, result);
 }
 
-void SMBEmulator::TAS(uint16_t addr) {
+void WarpNES::TAS(uint16_t addr) {
   // TAS: Transfer A & X to SP, then store A & X & (high byte + 1)
   regSP = regA & regX;
   uint8_t highByte = (addr >> 8) + 1;
@@ -2726,7 +2726,7 @@ void SMBEmulator::TAS(uint16_t addr) {
   writeByte(addr, result);
 }
 
-void SMBEmulator::LAS(uint16_t addr) {
+void WarpNES::LAS(uint16_t addr) {
   // LAS: Load A, X, and SP with memory value & SP
   uint8_t value = readByte(addr);
   uint8_t result = value & regSP;
@@ -2736,7 +2736,7 @@ void SMBEmulator::LAS(uint16_t addr) {
   updateZN(result);
 }
 
-void SMBEmulator::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
+void WarpNES::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
                                 int screenWidth, int screenHeight) {
   // Clear screen with black
   for (int i = 0; i < screenWidth * screenHeight; i++) {
@@ -2776,14 +2776,14 @@ void SMBEmulator::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
   }
 }
 
-void SMBEmulator::render16(uint16_t *buffer) {
+void WarpNES::render16(uint16_t *buffer) {
   // ppu->render(buffer);
   ppu->render16(buffer);
 }
 
-void SMBEmulator::render(uint32_t *buffer) { ppu->render(buffer); }
+void WarpNES::render(uint32_t *buffer) { ppu->render(buffer); }
 
-void SMBEmulator::renderScaled16(uint16_t *buffer, int screenWidth,
+void WarpNES::renderScaled16(uint16_t *buffer, int screenWidth,
                                  int screenHeight) {
   // First render the game using PPU scaling
   static uint16_t nesBuffer[256 * 240];
@@ -2848,30 +2848,30 @@ void SMBEmulator::renderScaled16(uint16_t *buffer, int screenWidth,
   }
 }
 
-/*void SMBEmulator::renderScaled32(uint32_t* buffer, int screenWidth, int
+/*void WarpNES::renderScaled32(uint32_t* buffer, int screenWidth, int
 screenHeight)
 {
     ppu->renderScaled32(buffer, screenWidth, screenHeight);
 }*/
 
 // Audio functions (delegate to APU)
-void SMBEmulator::audioCallback(uint8_t *stream, int length) {
+void WarpNES::audioCallback(uint8_t *stream, int length) {
   apu->output(stream, length);
 }
 
-void SMBEmulator::toggleAudioMode() { apu->toggleAudioMode(); }
+void WarpNES::toggleAudioMode() { apu->toggleAudioMode(); }
 
-bool SMBEmulator::isUsingMIDIAudio() const { return apu->isUsingMIDI(); }
+bool WarpNES::isUsingMIDIAudio() const { return apu->isUsingMIDI(); }
 
-void SMBEmulator::debugAudioChannels() { apu->debugAudio(); }
+void WarpNES::debugAudioChannels() { apu->debugAudio(); }
 
 // Controller access
-Controller &SMBEmulator::getController1() { return *controller1; }
+Controller &WarpNES::getController1() { return *controller1; }
 
-Controller &SMBEmulator::getController2() { return *controller2; }
+Controller &WarpNES::getController2() { return *controller2; }
 
 // CPU state access
-SMBEmulator::CPUState SMBEmulator::getCPUState() const {
+WarpNES::CPUState WarpNES::getCPUState() const {
   CPUState state;
   state.A = regA;
   state.X = regX;
@@ -2883,16 +2883,16 @@ SMBEmulator::CPUState SMBEmulator::getCPUState() const {
   return state;
 }
 
-uint8_t SMBEmulator::readMemory(uint16_t address) const {
-  return const_cast<SMBEmulator *>(this)->readByte(address);
+uint8_t WarpNES::readMemory(uint16_t address) const {
+  return const_cast<WarpNES *>(this)->readByte(address);
 }
 
-void SMBEmulator::writeMemory(uint16_t address, uint8_t value) {
+void WarpNES::writeMemory(uint16_t address, uint8_t value) {
   writeByte(address, value);
 }
 
 // Save states
-void SMBEmulator::saveState(const std::string &filename) {
+void WarpNES::saveState(const std::string &filename) {
   EmulatorSaveState state;
   memset(&state, 0, sizeof(state));
 
@@ -2943,7 +2943,7 @@ void SMBEmulator::saveState(const std::string &filename) {
   }
 }
 
-bool SMBEmulator::loadState(const std::string &filename) {
+bool WarpNES::loadState(const std::string &filename) {
   std::string actualFilename;
 #ifdef __DJGPP__
   // DOS 8.3 format
@@ -2997,16 +2997,16 @@ bool SMBEmulator::loadState(const std::string &filename) {
 }
 
 // CHR ROM access for PPU
-uint8_t *SMBEmulator::getCHR() { return chrROM; }
+uint8_t *WarpNES::getCHR() { return chrROM; }
 
-uint8_t SMBEmulator::readData(uint16_t address) { return readByte(address); }
+uint8_t WarpNES::readData(uint16_t address) { return readByte(address); }
 
-void SMBEmulator::writeData(uint16_t address, uint8_t value) {
+void WarpNES::writeData(uint16_t address, uint8_t value) {
   writeByte(address, value);
 }
 
 // Illegal opcode implementations
-void SMBEmulator::ISC(uint16_t addr) {
+void WarpNES::ISC(uint16_t addr) {
   // INC + SBC
   uint8_t value = readByte(addr) + 1;
   writeByte(addr, value);
@@ -3019,7 +3019,7 @@ void SMBEmulator::ISC(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::DCP(uint16_t addr) {
+void WarpNES::DCP(uint16_t addr) {
   // DEC + CMP
   uint8_t value = readByte(addr) - 1;
   writeByte(addr, value);
@@ -3030,7 +3030,7 @@ void SMBEmulator::DCP(uint16_t addr) {
   updateZN(result);
 }
 
-void SMBEmulator::LAX(uint16_t addr) {
+void WarpNES::LAX(uint16_t addr) {
   // LDA + LDX
   uint8_t value = readByte(addr);
   regA = value;
@@ -3038,12 +3038,12 @@ void SMBEmulator::LAX(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::SAX(uint16_t addr) {
+void WarpNES::SAX(uint16_t addr) {
   // Store A & X
   writeByte(addr, regA & regX);
 }
 
-void SMBEmulator::SLO(uint16_t addr) {
+void WarpNES::SLO(uint16_t addr) {
   // ASL + ORA
   uint8_t value = readByte(addr);
   setFlag(FLAG_CARRY, (value & 0x80) != 0);
@@ -3053,7 +3053,7 @@ void SMBEmulator::SLO(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::KIL() {
+void WarpNES::KIL() {
   // KIL/JAM/HLT - Halts the CPU
   // In a real NES, this would lock up the system
   // For emulation, we can either:
@@ -3067,7 +3067,7 @@ void SMBEmulator::KIL() {
   frameCycles += 2;
 }
 
-void SMBEmulator::RLA(uint16_t addr) {
+void WarpNES::RLA(uint16_t addr) {
   // ROL + AND
   uint8_t value = readByte(addr);
   bool oldCarry = getFlag(FLAG_CARRY);
@@ -3078,7 +3078,7 @@ void SMBEmulator::RLA(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::SRE(uint16_t addr) {
+void WarpNES::SRE(uint16_t addr) {
   // LSR + EOR
   uint8_t value = readByte(addr);
   setFlag(FLAG_CARRY, (value & 0x01) != 0);
@@ -3088,7 +3088,7 @@ void SMBEmulator::SRE(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::RRA(uint16_t addr) {
+void WarpNES::RRA(uint16_t addr) {
   // ROR + ADC
   uint8_t value = readByte(addr);
   bool oldCarry = getFlag(FLAG_CARRY);
@@ -3103,14 +3103,14 @@ void SMBEmulator::RRA(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::ANC(uint16_t addr) {
+void WarpNES::ANC(uint16_t addr) {
   // AND + set carry to bit 7
   regA &= readByte(addr);
   updateZN(regA);
   setFlag(FLAG_CARRY, (regA & 0x80) != 0);
 }
 
-void SMBEmulator::ALR(uint16_t addr) {
+void WarpNES::ALR(uint16_t addr) {
   // AND + LSR
   regA &= readByte(addr);
   setFlag(FLAG_CARRY, (regA & 0x01) != 0);
@@ -3118,7 +3118,7 @@ void SMBEmulator::ALR(uint16_t addr) {
   updateZN(regA);
 }
 
-void SMBEmulator::ARR(uint16_t addr) {
+void WarpNES::ARR(uint16_t addr) {
   // AND + ROR
   regA &= readByte(addr);
   bool oldCarry = getFlag(FLAG_CARRY);
@@ -3128,13 +3128,13 @@ void SMBEmulator::ARR(uint16_t addr) {
   setFlag(FLAG_OVERFLOW, ((regA >> 6) ^ (regA >> 5)) & 1);
 }
 
-void SMBEmulator::XAA(uint16_t addr) {
+void WarpNES::XAA(uint16_t addr) {
   // Unstable - just do AND
   regA &= readByte(addr);
   updateZN(regA);
 }
 
-void SMBEmulator::AXS(uint16_t addr) {
+void WarpNES::AXS(uint16_t addr) {
   // (A & X) - immediate
   uint8_t value = readByte(addr);
   uint8_t result = (regA & regX) - value;
@@ -3143,7 +3143,7 @@ void SMBEmulator::AXS(uint16_t addr) {
   updateZN(regX);
 }
 
-void SMBEmulator::writeMMC1Register(uint16_t address, uint8_t value) {
+void WarpNES::writeMMC1Register(uint16_t address, uint8_t value) {
   // CRITICAL: Handle reset condition first - this is where your bug was
   if (value & 0x80) {
     // Reset detected - clear shift register and set control register properly
@@ -3215,7 +3215,7 @@ void SMBEmulator::writeMMC1Register(uint16_t address, uint8_t value) {
   }
 }
 
-void SMBEmulator::updateMMC1Banks() {
+void WarpNES::updateMMC1Banks() {
   uint8_t totalPRGBanks = prgSize / 0x4000; // Number of 16KB PRG banks
 
   // Handle 32KB PRG ROMs (no banking needed)
@@ -3269,7 +3269,7 @@ void SMBEmulator::updateMMC1Banks() {
   }
 }
 
-void SMBEmulator::writeGxROMRegister(uint16_t address, uint8_t value) {
+void WarpNES::writeGxROMRegister(uint16_t address, uint8_t value) {
   uint8_t oldCHRBank = gxrom.chrBank;
 
   // Mapper 66: Write to $8000-$FFFF sets both PRG and CHR banks
@@ -3282,7 +3282,7 @@ void SMBEmulator::writeGxROMRegister(uint16_t address, uint8_t value) {
   }*/
 }
 
-uint8_t SMBEmulator::readCHRData(uint16_t address) {
+uint8_t WarpNES::readCHRData(uint16_t address) {
   if (address >= 0x2000)
     return 0;
 
@@ -3519,7 +3519,7 @@ uint8_t SMBEmulator::readCHRData(uint16_t address) {
   }
 }
 
-uint8_t SMBEmulator::readCHRDataFromBank(uint16_t address, uint8_t bank) {
+uint8_t WarpNES::readCHRDataFromBank(uint16_t address, uint8_t bank) {
   if (address >= 0x2000)
     return 0;
 
@@ -3554,7 +3554,7 @@ uint8_t SMBEmulator::readCHRDataFromBank(uint16_t address, uint8_t bank) {
   return 0;
 }
 
-void SMBEmulator::writeUxROMRegister(uint16_t address, uint8_t value) {
+void WarpNES::writeUxROMRegister(uint16_t address, uint8_t value) {
   // UxROM: Any write to $8000-$FFFF sets the PRG bank
   // Only the lower bits are used (depends on ROM size)
   uint8_t totalBanks = prgSize / 0x4000; // Number of 16KB banks
@@ -3564,14 +3564,14 @@ void SMBEmulator::writeUxROMRegister(uint16_t address, uint8_t value) {
 
 }
 
-void SMBEmulator::enableZapper(bool enable) {
+void WarpNES::enableZapper(bool enable) {
   zapperEnabled = enable;
   if (enable) {
     std::cout << "NES Zapper enabled" << std::endl;
   }
 }
 
-void SMBEmulator::updateZapperInput(int mouseX, int mouseY, bool mousePressed) {
+void WarpNES::updateZapperInput(int mouseX, int mouseY, bool mousePressed) {
   if (!zapperEnabled)
     return;
 
@@ -3590,7 +3590,7 @@ void SMBEmulator::updateZapperInput(int mouseX, int mouseY, bool mousePressed) {
   }
 }
 
-void SMBEmulator::writeMMC2Register(uint16_t address, uint8_t value) {
+void WarpNES::writeMMC2Register(uint16_t address, uint8_t value) {
   switch (address & 0xF000) {
   case 0xA000:
     // PRG ROM bank select ($A000-$AFFF)
@@ -3629,7 +3629,7 @@ void SMBEmulator::writeMMC2Register(uint16_t address, uint8_t value) {
   }
 }
 
-void SMBEmulator::updateMMC2Banks() {
+void WarpNES::updateMMC2Banks() {
 
 
   uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks (0x1000 = 4096)
@@ -3642,7 +3642,7 @@ void SMBEmulator::updateMMC2Banks() {
 
 }
 
-void SMBEmulator::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
+void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
   static int latchSwitchCount = 0;
 
   // From FCEUX: Check if address corresponds to tiles $FD or $FE
@@ -3686,7 +3686,7 @@ void SMBEmulator::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
   }
 }
 
-void SMBEmulator::handlePPUCHRRead(uint16_t address) {
+void WarpNES::handlePPUCHRRead(uint16_t address) {
   if (nesHeader.mapper == 9) {
     // Only check latch on actual PPU pattern table reads
     if (address < 0x2000) {

@@ -1,4 +1,4 @@
-#include "SMBEmulator.hpp"
+#include "WarpNES.hpp"
 #include "../Configuration.hpp"
 #include "../Emulation/APU.hpp"
 #include "../Emulation/Controller.hpp"
@@ -11,7 +11,7 @@
 #include <iostream>
 #include <string>
 
-void SMBEmulator::initializeSRAM() {
+void WarpNES::initializeSRAM() {
   cleanupSRAM();  // Clean up any existing SRAM
   
   if (!nesHeader.battery) {
@@ -31,7 +31,7 @@ void SMBEmulator::initializeSRAM() {
   loadSRAM();
 }
 
-void SMBEmulator::loadSRAM() {
+void WarpNES::loadSRAM() {
   if (!sram || !nesHeader.battery || romBaseName.empty()) {
     return;
   }
@@ -52,7 +52,7 @@ void SMBEmulator::loadSRAM() {
   printf("SRAM: Loaded battery save from %s\n", saveFilename.c_str());
 }
 
-void SMBEmulator::saveSRAM() {
+void WarpNES::saveSRAM() {
   if (!sram || !nesHeader.battery || !sramDirty || romBaseName.empty()) {
     return;
   }
@@ -74,7 +74,7 @@ void SMBEmulator::saveSRAM() {
   sramDirty = false;
 }
 
-void SMBEmulator::cleanupSRAM() {
+void WarpNES::cleanupSRAM() {
   if (sram) {
     delete[] sram;
     sram = nullptr;
@@ -85,7 +85,7 @@ void SMBEmulator::cleanupSRAM() {
 }
 
 // Add public method to manually save (good for clean shutdown):
-void SMBEmulator::forceSRAMSave() {
+void WarpNES::forceSRAMSave() {
     if (sramDirty && nesHeader.battery) {
         saveSRAM();
     }

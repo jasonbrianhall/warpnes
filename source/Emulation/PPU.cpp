@@ -1,4 +1,4 @@
-#include "SMBEmulator.hpp"
+#include "WarpNES.hpp"
 
 #include "PPU.hpp"
 
@@ -88,7 +88,7 @@ static constexpr const uint32_t defaultPaletteRGB[64] = {
  */
 const uint32_t* paletteRGB = defaultPaletteRGB;
 
-PPU::PPU(SMBEmulator& engine) :
+PPU::PPU(WarpNES& engine) :
     engine(engine)
 {
     // Add these new initializations at the beginning:

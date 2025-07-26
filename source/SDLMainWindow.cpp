@@ -3,7 +3,7 @@
 
 #include <SDL2/SDL.h>
 
-#include "SMB/SMBEmulator.hpp"
+#include "SMB/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
@@ -15,7 +15,7 @@ static SDL_Window* window;
 static SDL_Renderer* renderer;
 static SDL_Texture* texture;
 static SDL_Texture* scanlineTexture;
-static SMBEmulator* smbEngine = nullptr;
+static WarpNES* smbEngine = nullptr;
 static uint32_t renderBuffer[RENDER_WIDTH * RENDER_HEIGHT];
 static uint16_t renderBuffer16[RENDER_WIDTH * RENDER_HEIGHT];  // ADD: 16-bit buffer
 static uint32_t filteredBuffer[RENDER_WIDTH * RENDER_HEIGHT];
@@ -340,7 +340,7 @@ static void shutdown()
 static void mainLoop(const char* romFilename)
 {
     // Load ROM from file
-    SMBEmulator engine;
+    WarpNES engine;
     smbEngine = &engine;
 
     printf("Loading ROM: %s\n", romFilename);

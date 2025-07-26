@@ -1,7 +1,7 @@
 #ifndef PPU_HPP
 #define PPU_HPP
 
-#include "SMBEmulator.hpp"
+#include "WarpNES.hpp"
 
 #include "PPU.hpp"
 
@@ -33,7 +33,7 @@ struct FlipCacheEntry {
     uint8_t flip_flags;  // 1=flipX, 2=flipY, 3=flipXY
 };
 
-class SMBEmulator;  // Forward declaration
+class WarpNES;  // Forward declaration
 
 /**
  * Emulates the NES Picture Processing Unit.
@@ -41,7 +41,7 @@ class SMBEmulator;  // Forward declaration
 class PPU
 {
 public:
-    PPU(SMBEmulator& engine);
+    PPU(WarpNES& engine);
     void checkCHRLatch(uint16_t address, uint8_t tileID);
 
     uint8_t readRegister(uint16_t address);
@@ -116,7 +116,7 @@ public:
     uint16_t getCurrentPixelColor(int x, int y);
     
 private:
-    SMBEmulator& engine;
+    WarpNES& engine;
 
     struct ScalingCache {
         uint16_t* scaledBuffer;
