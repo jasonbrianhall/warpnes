@@ -7,7 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include "AllegroMainWindow.hpp"
-#include "SMB/SMBEmulator.hpp" 
+#include "Emulation/SMBEmulator.hpp" 
 #include "Emulation/Controller.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"

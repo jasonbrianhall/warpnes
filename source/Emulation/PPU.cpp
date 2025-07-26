@@ -1,4 +1,4 @@
-#include "../SMB/SMBEmulator.hpp"
+#include "SMBEmulator.hpp"
 
 #include "PPU.hpp"
 

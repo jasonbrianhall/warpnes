@@ -1,7 +1,7 @@
 #ifndef PPU_HPP
 #define PPU_HPP
 
-#include "../SMB/SMBEmulator.hpp"
+#include "SMBEmulator.hpp"
 
 #include "PPU.hpp"
 
