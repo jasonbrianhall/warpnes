@@ -3,7 +3,7 @@
 
 #include <SDL2/SDL.h>
 
-#include "SMB/WarpNES.hpp"
+#include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"

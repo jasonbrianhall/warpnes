@@ -1,8 +1,12 @@
 #include "WarpNES.hpp"
 #include "../Configuration.hpp"
-#include "../Emulation/APU.hpp"
-#include "../Emulation/Controller.hpp"
-#include "../Emulation/PPU.hpp"
+#include "APU.hpp"
+#ifdef ALLEGRO_BUILD
+#include "Controller.hpp"
+#else
+#include "ControllerSDL.hpp"
+#endif 
+#include "PPU.hpp"
 #include "../Zapper.hpp"
 #include <chrono>
 #include <cstdint>
