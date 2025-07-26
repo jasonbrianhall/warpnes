@@ -2307,47 +2307,31 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return 0;
   }
 
-  case 1: // MMC1 - FIXED IMPLEMENTATION
-  {
-    if (nesHeader.chrROMPages == 0) {
-      // CHR-RAM - direct access, no banking
-      if (address < chrSize) {
-        return chrROM[address];
-      }
-    } else {
-      // CHR-ROM with banking - THIS IS THE CRITICAL FIX
-      uint32_t chrAddr;
-      uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks for MMC1
-
-      if (mmc1.control & 0x10) {
-        // 4KB CHR mode - independent 4KB banks
-        if (address < 0x1000) {
-          // $0000-$0FFF: Use currentCHRBank0
-          uint8_t bank = mmc1.currentCHRBank0 % totalCHRBanks;
-          chrAddr = (bank * 0x1000) + address;
-        } else {
-          // $1000-$1FFF: Use currentCHRBank1
-          uint8_t bank = mmc1.currentCHRBank1 % totalCHRBanks;
-          chrAddr = (bank * 0x1000) + (address - 0x1000);
-        }
-      } else {
-        // 8KB CHR mode - chrBank0 selects both 4KB banks
-        uint8_t baseBank =
-            (mmc1.currentCHRBank0 & 0xFE) % totalCHRBanks; // Force even
-        if (address < 0x1000) {
-          chrAddr = (baseBank * 0x1000) + address;
-        } else {
-          chrAddr =
-              ((baseBank + 1) % totalCHRBanks * 0x1000) + (address - 0x1000);
-        }
-      }
-
-      if (chrAddr < chrSize) {
-        return chrROM[chrAddr];
-      }
+case 1: // MMC1
+{
+  if (nesHeader.chrROMPages == 0) {
+    // CHR-RAM
+    if (address < chrSize) {
+      return chrROM[address];
     }
-    return 0;
+  } else {
+    // CHR-ROM with banking
+    uint32_t chrAddr;
+    
+    if (address < 0x1000) {
+      // $0000-$0FFF: Use currentCHRBank0
+      chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
+    } else {
+      // $1000-$1FFF: Use currentCHRBank1  
+      chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
+    }
+
+    if (chrAddr < chrSize) {
+      return chrROM[chrAddr];
+    }
   }
+  return 0;
+}
   case 2: // UxROM
   {
     // UxROM always uses CHR-RAM - direct access, no banking

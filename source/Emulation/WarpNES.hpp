@@ -352,7 +352,7 @@ private:
       prgBank = 0;
       currentPRGBank = 0;
       currentCHRBank0 = 0;
-      currentCHRBank1 = 1;
+      currentCHRBank1 = 0;
     }
   } mmc1;
 
