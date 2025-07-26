@@ -348,14 +348,14 @@ void PPU::render(uint32_t* buffer)
         int scrollX = (int)ppuScrollX + ((ppuCtrl & (1 << 0)) ? 256 : 0);
         int xMin = scrollX / 8;
         int xMax = ((int)scrollX + 256) / 8;
-        for (int x = 0; x < 32; x++)
+        /*for (int x = 0; x < 32; x++)
         {
             for (int y = 0; y < 4; y++)
             {
                 // Render the status bar in the same position (it doesn't scroll)
                 renderTile(buffer, 0x2000 + 32 * y + x, x * 8, y * 8);
             }
-        }
+        }*/
         for (int x = xMin; x <= xMax; x++)
         {
             for (int y = 4; y < 30; y++)
@@ -1986,9 +1986,9 @@ uint16_t PPU::getBackgroundPixelColor(int x, int y) {
     uint8_t ctrl = frameCtrl;
     
     // For SMB: status bar (top 4 rows) doesn't scroll
-    if (y < 32) {  // Status bar area
+    /*if (y < 32) {  // Status bar area
         scrollX = 0;
-    }
+    }*/
     
     // Calculate tile position
     int worldX = x + scrollX;
