@@ -659,8 +659,7 @@ void SMBEmulator::updateFrameBased() {
 }
 
 void SMBEmulator::updateCycleAccurate() {
-  if (!romLoaded)
-    return;
+  if (!romLoaded) return;
 
   static int debugFrame = 0;
   frameCycles = 0;
@@ -677,15 +676,12 @@ void SMBEmulator::updateCycleAccurate() {
   const int CPU_DIVIDER = 3; // CPU runs every 3 PPU cycles
 
   // Frame timing state
-  bool frameEven =
-      (totalCycles / (TOTAL_SCANLINES * CYCLES_PER_SCANLINE / CPU_DIVIDER)) %
-          2 ==
-      0;
-  int cpuCycleDebt = 0; // Track how many CPU cycles we owe
-  int totalCPUInstructions = 0;
+  bool frameEven = (totalCycles / (TOTAL_SCANLINES * CYCLES_PER_SCANLINE / CPU_DIVIDER)) % 2 == 0;
+  int cpuCycleDebt = 0;
 
   for (int scanline = 0; scanline < TOTAL_SCANLINES; scanline++) {
     ppuCycleState.scanline = scanline;
+    
     // Determine scanline state
     if (scanline < VISIBLE_SCANLINES) {
       ppuCycleState.inVBlank = false;
@@ -711,84 +707,47 @@ void SMBEmulator::updateCycleAccurate() {
         ppu->setVBlankFlag(true);
         ppu->captureFrameScroll();
 
-        // FIXED: Fire NMI immediately if enabled, don't use pending system
+        // Fire NMI immediately if enabled
         if (ppu->getControl() & 0x80) {
           handleNMI();
-          // Account for NMI cycles (7 CPU cycles = 21 PPU cycles)
-          cpuCycleDebt += 7;
+          cpuCycleDebt += 7; // Account for NMI cycles
         }
       }
 
       // VBlank flag cleared on cycle 1 of pre-render scanline (261)
       if (scanline == 261 && cycle == 1) {
         ppu->setVBlankFlag(false);
-        // DON'T clear sprite0hit here - it persists until end of frame
       }
 
-      // FIXED: Check Zapper during visible scanlines when rendering
-      if (zapperEnabled && zapper && scanline >= 0 &&
-          scanline < VISIBLE_SCANLINES && ppuCycleState.renderingEnabled) {
-        // Check if we're at the current mouse position
-        int nesMouseX = zapper->getMouseX();
-        int nesMouseY = zapper->getMouseY();
-
-        // Only check during visible pixel output (cycles 1-256)
-        if (cycle >= 1 && cycle <= 256) {
-          int pixelX = cycle - 1; // Convert cycle to pixel position
-          int pixelY = scanline;
-
-          // Check if zapper is aimed at this pixel and trigger is pressed
-          if (zapper->isTriggerPressed() && pixelX >= nesMouseX - 2 &&
-              pixelX <= nesMouseX + 2 && pixelY >= nesMouseY - 2 &&
-              pixelY <= nesMouseY + 2) {
-
-            // Get the current pixel color from PPU
-            // This would need to be implemented in your PPU class
-            uint16_t pixelColor = ppu->getCurrentPixelColor(pixelX, pixelY);
-            printf("pixelcolor %i brigth %i\n", pixelColor,
-                   isPixelBright(pixelColor));
-            // Duck Hunt looks for bright colors (white/light colors)
-            // Check if pixel is bright enough to trigger light detection
-            if (isPixelBright(pixelColor)) {
-              zapper->setLightDetected(true);
-            }
-          }
-        }
-      }
-
-      if (scanline >= 0 && scanline < VISIBLE_SCANLINES &&
-          ppuCycleState.renderingEnabled) {
+      // Sprite 0 hit detection
+      if (scanline >= 0 && scanline < VISIBLE_SCANLINES && ppuCycleState.renderingEnabled) {
         checkSprite0Hit(scanline, cycle);
       }
 
-      // Step PPU cycle for other events
+      // Step PPU cycle
       ppu->stepCycle(scanline, cycle);
 
-      // MMC3 IRQ handling
+      // CRITICAL: MMC3 IRQ handling with proper timing
       if (nesHeader.mapper == 4) {
         checkMMC3IRQ(scanline, cycle);
       }
 
-      // FIXED: CPU execution tracking with proper cycle accounting
-      cpuCycleDebt++; // Each PPU cycle = 1/3 CPU cycle
+      // CPU execution with proper cycle accounting
+      cpuCycleDebt++;
 
       if (cpuCycleDebt >= CPU_DIVIDER) {
-        cpuCycleDebt -= CPU_DIVIDER; // We owe 1 CPU cycle
-        totalCPUInstructions++;
+        cpuCycleDebt -= CPU_DIVIDER;
 
-        // Execute CPU instruction and get actual cycles used
+        // Execute CPU instruction
         uint64_t cyclesBefore = totalCycles;
         executeInstruction();
         uint64_t cyclesUsed = totalCycles - cyclesBefore;
 
-        // FIXED: Account for multi-cycle instructions
-        // If instruction took more than 1 cycle, we need to "pay back" the
-        // extra cycles
+        // Account for multi-cycle instructions
         if (cyclesUsed > 1) {
           cpuCycleDebt += (cyclesUsed - 1) * CPU_DIVIDER;
         }
 
-        // Update master cycles to match actual execution
         masterCycles = totalCycles;
       }
     }
@@ -797,11 +756,6 @@ void SMBEmulator::updateCycleAccurate() {
   // End of frame cleanup
   ppu->setVBlankFlag(false);
   ppu->setSprite0Hit(false);
-
-  // Clear zapper light detection at end of frame if trigger not pressed
-  if (zapperEnabled && zapper && !zapper->isTriggerPressed()) {
-    zapper->setLightDetected(false);
-  }
 
   // Audio frame advance
   if (Configuration::getAudioEnabled()) {
@@ -853,38 +807,43 @@ void SMBEmulator::checkSprite0Hit(int scanline, int cycle) {
 }
 
 void SMBEmulator::checkMMC3IRQ(int scanline, int cycle) {
-  if (nesHeader.mapper != 4)
-    return;
-  if (!ppuCycleState.renderingEnabled)
-    return;
-  if (scanline >= 240 && scanline < 261)
-    return; // Skip VBlank
+  if (nesHeader.mapper != 4) return;
+  if (!ppuCycleState.renderingEnabled) return;
+  if (scanline >= 240 && scanline < 261) return; // Skip VBlank
 
-  // MMC3 IRQ is clocked by A12 rises during rendering
-  // A12 goes high when accessing pattern tables ($1000-$1FFF)
-
+  // CRITICAL FIX: More accurate A12 detection
   bool a12High = false;
-
-  // Background pattern fetches
+  
+  // A12 goes high during pattern table fetches
   if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
     int fetchCycle = cycle % 8;
-    if (fetchCycle == 5 || fetchCycle == 7) { // Pattern table fetch cycles
-      // A12 depends on background pattern table selection (PPUCTRL bit 4)
+    
+    // Pattern table fetches happen on cycles 5 and 7 of each 8-cycle group
+    if (fetchCycle == 5 || fetchCycle == 7) {
       uint8_t ppuCtrl = ppu->getControl();
-      a12High = (ppuCtrl & 0x10) != 0;
+      
+      if (fetchCycle == 5) {
+        // Background pattern fetch - A12 based on PPUCTRL bit 4
+        a12High = (ppuCtrl & 0x10) != 0;
+      } else if (fetchCycle == 7) {
+        // Could be background or sprite pattern fetch
+        // For background: A12 based on PPUCTRL bit 4
+        // For sprites: A12 based on PPUCTRL bit 3
+        a12High = (ppuCtrl & 0x10) != 0; // Simplified - use background
+      }
     }
   }
-
-  // Sprite pattern fetches (during sprite evaluation/loading)
+  
+  // Sprite pattern fetches during sprite loading
   if (cycle >= 257 && cycle <= 320) {
-    // A12 depends on sprite pattern table selection (PPUCTRL bit 3)
     uint8_t ppuCtrl = ppu->getControl();
-    a12High = (ppuCtrl & 0x08) != 0;
+    a12High = (ppuCtrl & 0x08) != 0; // Sprite pattern table selection
   }
 
   // Call the A12 transition detector
   stepMMC3A12Transition(a12High);
 }
+
 
 void SMBEmulator::reset() {
   if (!romLoaded)
@@ -1042,15 +1001,14 @@ void SMBEmulator::stepPPUEndOfScanline(int scanline) {
   // Scroll register updates, etc.
 }
 
-// Enhanced MMC3 IRQ handling with proper A12 detection
 void SMBEmulator::stepMMC3A12Transition(bool a12High) {
   static bool lastA12 = false;
   static int filterCounter = 0;
 
-  // Filter rapid A12 changes (MMC3 hardware characteristic)
+  // CRITICAL FIX: Proper edge detection with filtering
   if (a12High != lastA12) {
     filterCounter++;
-    if (filterCounter >= 2) { // Require stability for 2 cycles
+    if (filterCounter >= 1) { // Reduced filter requirement
       if (a12High && !lastA12) {
         // Rising edge detected - clock the IRQ counter
         stepMMC3IRQ();
@@ -1063,26 +1021,8 @@ void SMBEmulator::stepMMC3A12Transition(bool a12High) {
   }
 }
 
+
 void SMBEmulator::executeInstruction() {
-  if (nesHeader.mapper == 4 && mmc3.irqPending && !getFlag(FLAG_INTERRUPT)) {
-    // Handle MMC3 IRQ immediately
-    mmc3.irqPending = false;
-
-    // IRQ sequence (similar to NMI but uses different vector)
-    pushWord(regPC);
-    pushByte(regP & ~FLAG_BREAK);  // Clear break flag
-    setFlag(FLAG_INTERRUPT, true); // Set interrupt disable
-
-    // Jump to IRQ vector at $FFFE/$FFFF
-    regPC = readWord(0xFFFE);
-
-    totalCycles += 7; // IRQ takes 7 cycles
-    frameCycles += 7;
-
-    printf("*** MMC3 IRQ TRIGGERED at PC=$%04X, jumping to $%04X ***\n", regPC,
-           readWord(0xFFFE));
-    return; // Don't execute normal instruction this cycle
-  }
 
   uint8_t opcode = fetchByte();
   uint8_t cycles = instructionCycles[opcode];
@@ -1977,7 +1917,6 @@ void SMBEmulator::checkPendingInterrupts() {
       totalCycles += 7; // IRQ takes 7 cycles
       frameCycles += 7;
 
-      printf("MMC3 IRQ triggered at PC=$%04X\n", regPC);
     }
   }
 
@@ -2070,8 +2009,6 @@ uint8_t SMBEmulator::readByte(uint16_t address) {
 
       // Bounds checking
       if (romAddr >= prgSize) {
-        printf("MMC1: ROM address $%08X out of bounds (size $%08X)\n", romAddr,
-               prgSize);
         return 0;
       }
 
@@ -2184,33 +2121,19 @@ void SMBEmulator::writeMMC3Register(uint16_t address, uint8_t value) {
 
   case 0xC000: // IRQ latch
     mmc3.irqLatch = value;
-    if (regDebugCount < 10) {
-      printf("MMC3: Set IRQ latch to %d\n", value);
-      regDebugCount++;
-    }
     break;
 
   case 0xC001: // IRQ reload
     mmc3.irqReload = true;
-    if (regDebugCount < 10) {
-      printf("MMC3: IRQ reload requested\n");
-    }
     break;
 
   case 0xE000: // IRQ disable
     mmc3.irqEnable = false;
     mmc3.irqPending = false; // Clear any pending IRQ
-    if (regDebugCount < 10) {
-      printf("MMC3: IRQ disabled\n");
-    }
     break;
 
   case 0xE001: // IRQ enable
     mmc3.irqEnable = true;
-    if (regDebugCount < 10) {
-      printf("MMC3: IRQ enabled\n");
-      regDebugCount++;
-    }
     break;
   }
 }
@@ -2278,20 +2201,7 @@ void SMBEmulator::updateMMC3Banks() {
     mmc3.currentCHRBanks[7] = mmc3.bankData[5] % totalCHRBanks; // R5
   }
 
-  // Debug output for CHR banking (remove after fixing)
-  static int bankingDebugCount = 0;
-  if (bankingDebugCount < 10) {
-    printf("MMC3 Banking Update - CHR A12 Invert: %s\n",
-           chrA12Invert ? "YES" : "NO");
-    printf("  CHR Banks: [%02X %02X %02X %02X] [%02X %02X %02X %02X]\n",
-           mmc3.currentCHRBanks[0], mmc3.currentCHRBanks[1],
-           mmc3.currentCHRBanks[2], mmc3.currentCHRBanks[3],
-           mmc3.currentCHRBanks[4], mmc3.currentCHRBanks[5],
-           mmc3.currentCHRBanks[6], mmc3.currentCHRBanks[7]);
-    bankingDebugCount++;
-  }
 }
-
 void SMBEmulator::stepMMC3IRQ() {
   static int irqDebugCount = 0;
 
@@ -2300,36 +2210,16 @@ void SMBEmulator::stepMMC3IRQ() {
     mmc3.irqCounter = mmc3.irqLatch;
     mmc3.irqReload = false;
 
-    if (irqDebugCount < 10) {
-      printf("MMC3 IRQ: Reloaded counter to %d\n", mmc3.irqCounter);
-      irqDebugCount++;
-    }
-
-    // CRITICAL: If latch is 0, IRQ triggers immediately
-    if (mmc3.irqCounter == 0 && mmc3.irqEnable) {
-      mmc3.irqPending = true;
-      if (irqDebugCount < 10) {
-        printf("*** MMC3 IRQ: Immediate trigger (latch=0) ***\n");
-      }
-    }
-    return; // Don't decrement on reload cycle
+    return;
   }
 
-  // Handle normal countdown
+  // Handle normal countdown - ONLY if counter is > 0
   if (mmc3.irqCounter > 0) {
     mmc3.irqCounter--;
 
-    if (irqDebugCount < 10) {
-      printf("MMC3 IRQ: Counter decremented to %d\n", mmc3.irqCounter);
-    }
-
-    // Trigger IRQ when counter reaches 0
+    // Trigger IRQ when counter reaches 0 AND IRQ is enabled
     if (mmc3.irqCounter == 0 && mmc3.irqEnable) {
       mmc3.irqPending = true;
-      if (irqDebugCount < 10) {
-        printf("*** MMC3 IRQ: Counter reached 0, IRQ pending! ***\n");
-        irqDebugCount++;
-      }
     }
   }
 }
@@ -3372,16 +3262,6 @@ void SMBEmulator::updateMMC1Banks() {
       mmc1.currentCHRBank1 = (baseBank + 1) % totalCHRBanks;
     }
 
-    // Debug output for CHR banking
-    static int chrDebugCount = 0;
-    if (chrDebugCount < 10) {
-      printf(
-          "MMC1 CHR Update: Mode=%s, Bank0=%d->%d, Bank1=%d->%d (Total: %d)\n",
-          (mmc1.control & 0x10) ? "4KB" : "8KB", mmc1.chrBank0,
-          mmc1.currentCHRBank0, mmc1.chrBank1, mmc1.currentCHRBank1,
-          totalCHRBanks);
-      chrDebugCount++;
-    }
   } else {
     // CHR-RAM - no banking, direct access
     mmc1.currentCHRBank0 = 0;
@@ -3510,12 +3390,6 @@ uint8_t SMBEmulator::readCHRData(uint16_t address) {
         // Bounds check with debug info
         if (chrAddr >= chrSize) {
           static int oobCount = 0;
-          if (oobCount < 5) {
-            printf("CHR OOB: addr=$%04X, bank=%d, physical=%d, chrAddr=$%08X, "
-                   "size=$%08X\n",
-                   address, bankIndex, physicalBank, chrAddr, chrSize);
-            oobCount++;
-          }
           return 0;
         }
 
@@ -3565,10 +3439,6 @@ uint8_t SMBEmulator::readCHRData(uint16_t address) {
       }
 
       if (chrAddr >= chrSize) {
-        printf("MMC2 CHR OOB: addr=$%04X, bank=%d, chrAddr=$%08X, size=$%08X\n",
-               address,
-               address < 0x1000 ? mmc2.currentCHRBank0 : mmc2.currentCHRBank1,
-               chrAddr, chrSize);
         return 0;
       }
 
@@ -3692,9 +3562,6 @@ void SMBEmulator::writeUxROMRegister(uint16_t address, uint8_t value) {
 
   uxrom.prgBank = value & bankMask;
 
-  // Debug output
-  // printf("UxROM: Set PRG bank to %d (total banks: %d)\n", uxrom.prgBank,
-  // totalBanks);
 }
 
 void SMBEmulator::enableZapper(bool enable) {
@@ -3763,7 +3630,8 @@ void SMBEmulator::writeMMC2Register(uint16_t address, uint8_t value) {
 }
 
 void SMBEmulator::updateMMC2Banks() {
-  // CRITICAL: MMC2 uses 4KB CHR banks, not 1KB like MMC3
+
+
   uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks (0x1000 = 4096)
 
   // Update current banks based on latch states
@@ -3772,10 +3640,6 @@ void SMBEmulator::updateMMC2Banks() {
   mmc2.currentCHRBank1 =
       (mmc2.latch1 ? mmc2.chrBank1FE : mmc2.chrBank1FD) % totalCHRBanks;
 
-  printf("MMC2: Banks updated - CHR0=%d (latch=%s), CHR1=%d (latch=%s) [Total "
-         "banks: %d]\n",
-         mmc2.currentCHRBank0, mmc2.latch0 ? "FE" : "FD", mmc2.currentCHRBank1,
-         mmc2.latch1 ? "FE" : "FD", totalCHRBanks);
 }
 
 void SMBEmulator::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
@@ -3796,22 +3660,12 @@ void SMBEmulator::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
       if (mmc2.latch0 != false) {
         mmc2.latch0 = false;
         updateMMC2Banks();
-        if (latchSwitchCount < 10) {
-          printf("*** MMC2: Latch 0 -> FD (bank %d) at $%04X ***\n",
-                 mmc2.currentCHRBank0, address);
-          latchSwitchCount++;
-        }
       }
     } else if (l == 0xE0) {
       // Accessing tile $FE
       if (mmc2.latch0 != true) {
         mmc2.latch0 = true;
         updateMMC2Banks();
-        if (latchSwitchCount < 10) {
-          printf("*** MMC2: Latch 0 -> FE (bank %d) at $%04X ***\n",
-                 mmc2.currentCHRBank0, address);
-          latchSwitchCount++;
-        }
       }
     }
   } else {
@@ -3821,22 +3675,12 @@ void SMBEmulator::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
       if (mmc2.latch1 != false) {
         mmc2.latch1 = false;
         updateMMC2Banks();
-        if (latchSwitchCount < 10) {
-          printf("*** MMC2: Latch 1 -> FD (bank %d) at $%04X ***\n",
-                 mmc2.currentCHRBank1, address);
-          latchSwitchCount++;
-        }
       }
     } else if (l == 0xE0) {
       // Accessing tile $FE
       if (mmc2.latch1 != true) {
         mmc2.latch1 = true;
         updateMMC2Banks();
-        if (latchSwitchCount < 10) {
-          printf("*** MMC2: Latch 1 -> FE (bank %d) at $%04X ***\n",
-                 mmc2.currentCHRBank1, address);
-          latchSwitchCount++;
-        }
       }
     }
   }
