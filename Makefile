@@ -44,6 +44,9 @@ LDFLAGS_WIN_SDL = $(SDL_LIBS_WIN)
 LDFLAGS_LINUX_ALLEGRO = $(ALLEGRO_LIBS_LINUX)
 LDFLAGS_WIN_ALLEGRO = $(ALLEGRO_LIBS_WIN)
 
+# Windows DLL settings
+DLL_SOURCE_DIR = /usr/x86_64-w64-mingw32/sys-root/mingw/bin
+
 # Common source files (used by all platforms)
 COMMON_SOURCE_FILES = \
     source/Configuration.cpp \
@@ -134,14 +137,14 @@ windows: windows-sdl windows-allegro
 linux-sdl: $(BUILD_DIR_LINUX_SDL)/$(TARGET_LINUX_SDL)
 
 .PHONY: windows-sdl
-windows-sdl: $(BUILD_DIR_WIN_SDL)/$(TARGET_WIN_SDL)
+windows-sdl: $(BUILD_DIR_WIN_SDL)/$(TARGET_WIN_SDL) collect-dlls-win-sdl
 
 # Allegro-specific targets
 .PHONY: linux-allegro
 linux-allegro: $(BUILD_DIR_LINUX_ALLEGRO)/$(TARGET_LINUX_ALLEGRO)
 
 .PHONY: windows-allegro
-windows-allegro: $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO)
+windows-allegro: $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO) collect-dlls-win-allegro
 
 # Debug targets
 .PHONY: debug
@@ -151,13 +154,56 @@ debug: linux-sdl-debug windows-sdl-debug linux-allegro-debug windows-allegro-deb
 linux-sdl-debug: $(BUILD_DIR_LINUX_SDL_DEBUG)/$(TARGET_LINUX_SDL_DEBUG)
 
 .PHONY: windows-sdl-debug
-windows-sdl-debug: $(BUILD_DIR_WIN_SDL_DEBUG)/$(TARGET_WIN_SDL_DEBUG)
+windows-sdl-debug: $(BUILD_DIR_WIN_SDL_DEBUG)/$(TARGET_WIN_SDL_DEBUG) collect-dlls-win-sdl-debug
 
 .PHONY: linux-allegro-debug
 linux-allegro-debug: $(BUILD_DIR_LINUX_ALLEGRO_DEBUG)/$(TARGET_LINUX_ALLEGRO_DEBUG)
 
 .PHONY: windows-allegro-debug
-windows-allegro-debug: $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG)
+windows-allegro-debug: $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG) collect-dlls-win-allegro-debug
+
+#
+# DLL collection targets for Windows builds
+#
+.PHONY: collect-dlls-win-sdl
+collect-dlls-win-sdl: $(BUILD_DIR_WIN_SDL)/$(TARGET_WIN_SDL)
+	@echo "Collecting DLLs for Windows SDL build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_SDL)/$(TARGET_WIN_SDL) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_SDL); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
+.PHONY: collect-dlls-win-sdl-debug
+collect-dlls-win-sdl-debug: $(BUILD_DIR_WIN_SDL_DEBUG)/$(TARGET_WIN_SDL_DEBUG)
+	@echo "Collecting DLLs for Windows SDL debug build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_SDL_DEBUG)/$(TARGET_WIN_SDL_DEBUG) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_SDL_DEBUG); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
+.PHONY: collect-dlls-win-allegro
+collect-dlls-win-allegro: $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO)
+	@echo "Collecting DLLs for Windows Allegro build..."
+	@if [ -f build/windows-allegro/collect_dlls.sh ]; then \
+		build/windows-allegro/collect_dlls.sh $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_ALLEGRO); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-allegro/"; \
+	fi
+
+.PHONY: collect-dlls-win-allegro-debug
+collect-dlls-win-allegro-debug: $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG)
+	@echo "Collecting DLLs for Windows Allegro debug build..."
+	@if [ -f build/windows-allegro/collect_dlls.sh ]; then \
+		build/windows-allegro/collect_dlls.sh $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_ALLEGRO_DEBUG); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-allegro/"; \
+	fi
+
+# Convenience target to collect all DLLs
+.PHONY: collect-dlls-all
+collect-dlls-all: collect-dlls-win-sdl collect-dlls-win-allegro collect-dlls-win-sdl-debug collect-dlls-win-allegro-debug
 
 #
 # Linux SDL build targets
@@ -263,6 +309,9 @@ check-deps:
 	@echo "Linux Allegro:"; test -f /usr/lib/liballeg.so && echo "  ✓ Allegro 4 found" || echo "  ✗ Allegro 4 not found - install liballegro4-dev"
 	@echo "Windows SDL2:"; test -f /usr/x86_64-w64-mingw32/include/SDL2/SDL.h && echo "  ✓ MinGW SDL2 found" || echo "  ✗ MinGW SDL2 not found - install mingw64-SDL2-devel"
 	@echo "Windows Allegro:"; test -f /usr/x86_64-w64-mingw32/lib/liballeg.a && echo "  ✓ MinGW Allegro 4 found" || echo "  ✗ MinGW Allegro 4 not found - install mingw64-allegro4"
+	@echo "DLL collect scripts:"; \
+	test -f build/windows-sdl/collect_dlls.sh && echo "  ✓ SDL collect_dlls.sh found" || echo "  ✗ SDL collect_dlls.sh not found - create in build/windows-sdl/"; \
+	test -f build/windows-allegro/collect_dlls.sh && echo "  ✓ Allegro collect_dlls.sh found" || echo "  ✗ Allegro collect_dlls.sh not found - create in build/windows-allegro/"
 
 # Install dependencies (Ubuntu/Debian)
 .PHONY: install-deps
@@ -279,6 +328,7 @@ clean:
 	@echo "Cleaning build files..."
 	find $(BUILD_DIR) -type f -name "*.o" -delete 2>/dev/null || true
 	find $(BUILD_DIR) -type f -name "*.exe" -delete 2>/dev/null || true
+	find $(BUILD_DIR) -type f -name "*.dll" -delete 2>/dev/null || true
 	rm -f $(BUILD_DIR_LINUX_SDL)/$(TARGET_LINUX_SDL) 2>/dev/null || true
 	rm -f $(BUILD_DIR_LINUX_SDL_DEBUG)/$(TARGET_LINUX_SDL_DEBUG) 2>/dev/null || true
 	rm -f $(BUILD_DIR_WIN_SDL)/$(TARGET_WIN_SDL) 2>/dev/null || true
@@ -320,20 +370,25 @@ debug-files:
 .PHONY: help
 help:
 	@echo "Available targets:"
-	@echo "  make               - Build warpnes for Linux with SDL (default)"
+	@echo "  make               - Build warpnes for Linux with Allegro (default)"
 	@echo "  make linux         - Build both SDL and Allegro versions for Linux"
 	@echo "  make windows       - Build both SDL and Allegro versions for Windows"
 	@echo ""
 	@echo "  make linux-sdl     - Build warpnes for Linux with SDL"
 	@echo "  make linux-allegro - Build warpnes for Linux with Allegro"
-	@echo "  make windows-sdl   - Build warpnes for Windows with SDL (requires MinGW)"
-	@echo "  make windows-allegro - Build warpnes for Windows with Allegro (requires MinGW)"
+	@echo "  make windows-sdl   - Build warpnes for Windows with SDL (requires MinGW + DLLs)"
+	@echo "  make windows-allegro - Build warpnes for Windows with Allegro (requires MinGW + DLLs)"
 	@echo ""
 	@echo "  make debug         - Build debug versions for all platforms"
 	@echo "  make linux-sdl-debug     - Build Linux SDL with debug symbols"
 	@echo "  make linux-allegro-debug - Build Linux Allegro with debug symbols"
-	@echo "  make windows-sdl-debug   - Build Windows SDL with debug symbols"
-	@echo "  make windows-allegro-debug - Build Windows Allegro with debug symbols"
+	@echo "  make windows-sdl-debug   - Build Windows SDL with debug symbols + DLLs"
+	@echo "  make windows-allegro-debug - Build Windows Allegro with debug symbols + DLLs"
+	@echo ""
+	@echo "DLL collection targets:"
+	@echo "  make collect-dlls-all         - Collect DLLs for all Windows builds"
+	@echo "  make collect-dlls-win-sdl     - Collect DLLs for Windows SDL build"
+	@echo "  make collect-dlls-win-allegro - Collect DLLs for Windows Allegro build"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  make check-deps    - Check if required dependencies are installed"
@@ -353,10 +408,12 @@ help:
 	@echo "  Linux Allegro:   liballegro4-dev"
 	@echo "  Windows SDL:     MinGW SDL2 development libraries"
 	@echo "  Windows Allegro: MinGW Allegro 4 development libraries"
+	@echo "  Windows builds:  collect_dlls.sh scripts in build/windows-sdl/ and build/windows-allegro/"
 	@echo ""
 	@echo "Platform differences:"
 	@echo "  - SDL versions: Modern cross-platform support, hardware acceleration"
 	@echo "  - Allegro versions: Retro compatibility, authentic DOS-style experience"
 	@echo "  - All versions share the same game engine code"
+	@echo "  - Windows builds automatically collect required DLLs"
 	@echo ""
 	@echo "Note: DOS builds are handled by a separate shell script"
