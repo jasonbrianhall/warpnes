@@ -2557,16 +2557,6 @@ uint8_t WarpNES::readCHRDataFromBank(uint16_t address, uint8_t bank) {
   return 0;
 }
 
-void WarpNES::writeUxROMRegister(uint16_t address, uint8_t value) {
-  // UxROM: Any write to $8000-$FFFF sets the PRG bank
-  // Only the lower bits are used (depends on ROM size)
-  uint8_t totalBanks = prgSize / 0x4000; // Number of 16KB banks
-  uint8_t bankMask = totalBanks - 1;     // Create mask for valid banks
-
-  uxrom.prgBank = value & bankMask;
-
-}
-
 void WarpNES::enableZapper(bool enable) {
   zapperEnabled = enable;
   if (enable) {

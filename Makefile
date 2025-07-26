@@ -55,6 +55,7 @@ COMMON_SOURCE_FILES = \
     source/Emulation/Battery.cpp \
     source/Emulation/Instructions.cpp \
     source/Emulation/GxROM.cpp \
+    source/Emulation/UxROM.cpp \
     source/Emulation/MMC1.cpp \
     source/Emulation/MMC2.cpp \
     source/Emulation/MMC3.cpp
