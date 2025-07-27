@@ -144,7 +144,6 @@ private:
     // Scanline rendering methods
     void renderScanline(int scanline);
     void renderBackgroundScanline(int scanline);
-    void renderSpriteScanline(int scanline);
     void clearScanline(int scanline);
     void checkSprite0HitScanline(int scanline);
     
