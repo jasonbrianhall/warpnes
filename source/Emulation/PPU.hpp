@@ -114,7 +114,8 @@ public:
     bool isFrameComplete() const { return frameComplete; }
     void resetFrame() { frameComplete = false; currentRenderScanline = 0; }
     uint16_t getCurrentPixelColor(int x, int y);
-    
+    void renderSingleSprite(int scanline, int spriteIndex, bool behindBackground);
+
 private:
     WarpNES& engine;
 

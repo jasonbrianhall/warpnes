@@ -131,7 +131,6 @@ public:
     bool trainer;        // 512-byte trainer present
   } nesHeader;
 
-
 private:
   // 6502 CPU state
   uint8_t regA, regX, regY, regSP;
