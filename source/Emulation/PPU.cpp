@@ -1543,20 +1543,11 @@ void PPU::clearScanline(int scanline) {
 
 void PPU::renderBackgroundScanline(int scanline) {
     if (scanline < 0 || scanline >= 240) return;
-    
     // Use per-scanline values when available, with proper fallback
     int scrollX = scanlineScrollX[scanline];
     int scrollY = scanlineScrollY[scanline];
     uint8_t ctrl = scanlineCtrl[scanline];
-    
-    // Better fallback logic - use frame values if scanline values weren't set
-    if (scrollX == 0 && scanline > 0 && scanlineScrollX[scanline-1] != 0) {
-        scrollX = frameScrollX;
-    }
-    if (scrollY == 0 && scanline > 0 && scanlineScrollY[scanline-1] != 0) {
-        scrollY = frameScrollY;
-    }
-    
+        
     uint8_t baseNametable = ctrl & 0x01;
     uint8_t baseNametableY = (ctrl & 0x02) >> 1;
     
