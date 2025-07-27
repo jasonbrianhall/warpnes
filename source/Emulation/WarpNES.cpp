@@ -2073,7 +2073,6 @@ void WarpNES::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
 }
 
 void WarpNES::render16(uint16_t *buffer) {
-  // ppu->render(buffer);
   ppu->render16(buffer);
 }
 
