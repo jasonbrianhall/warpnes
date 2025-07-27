@@ -1,3 +1,4 @@
+#include <SDL2/SDL.h>
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
@@ -241,15 +242,15 @@ void GTK3MainWindow::updateAndDraw() {
     if (game_running && engine) {
         update_texture();
         
-        // Set up orthographic projection
+        // Use SAME projection as render_frame()
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
-        glOrtho(0, 1, 0, 1, -1, 1);
+        glOrtho(0, 1, 0, 1, -1, 1);  // Match render_frame()
         
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
         
-        // Draw textured quad
+        // Use SAME quad coordinates as render_frame()
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, nes_texture);
         
@@ -438,9 +439,9 @@ void GTK3MainWindow::show_about_dialog() {
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), 
                                  "A high-performance NES emulator with GTK3 interface and OpenGL acceleration");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), 
-                                  "Original Nintendo games © Nintendo\nWarpNES Emulator © 2024");
+                                  "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall");
     
-    const gchar* authors[] = {"WarpNES Development Team", nullptr};
+    const gchar* authors[] = {"Jason Hall", nullptr};
     gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
     
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(window));
@@ -519,12 +520,8 @@ void GTK3MainWindow::update_game() {
 
 void GTK3MainWindow::update_texture() {
     if (!engine) return;
-    
     // Convert RGB565 to RGB888 for OpenGL
     static uint8_t rgb_buffer[256 * 240 * 3];
-    
-    // Call render16 here, just like Allegro does in its draw function
-    engine->render16(frame_buffer);
     
     for (int i = 0; i < 256 * 240; i++) {
         uint16_t pixel = frame_buffer[i];
@@ -537,7 +534,6 @@ void GTK3MainWindow::update_texture() {
         rgb_buffer[i * 3 + 1] = (g << 2) | (g >> 4);
         rgb_buffer[i * 3 + 2] = (b << 3) | (b >> 2);
     }
-    
     glBindTexture(GL_TEXTURE_2D, nes_texture);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 240, GL_RGB, GL_UNSIGNED_BYTE, rgb_buffer);
 }
@@ -615,7 +611,7 @@ void GTK3MainWindow::run(const char* rom_filename) {
     // Start the game loop if we have a ROM loaded
     if (game_running && engine) {
         printf("Starting main game loop\n");
-        
+                
         while (game_running) {
             while (gtk_events_pending()) {
                 gtk_main_iteration();
@@ -624,9 +620,9 @@ void GTK3MainWindow::run(const char* rom_filename) {
             if (!game_paused && engine) {
                 process_input();
                 engine->update();
-                engine->render16(frame_buffer);
             }
-            
+           
+            engine->renderScaled16(frame_buffer, 256, 240);            
             updateAndDraw();
             
             usleep(16667);
