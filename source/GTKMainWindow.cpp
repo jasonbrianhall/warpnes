@@ -310,20 +310,26 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
             window->game_running = true;
             window->game_paused = false;
             
-            window->frame_timer_id = g_timeout_add(16, frame_update_callback, window);
-            
             char status_msg[512];
             snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
             window->set_status_message(status_msg);
             
             gtk_widget_queue_draw(window->gl_area);
+            
         }
         
         g_free(filename);
     }
     
     gtk_widget_destroy(dialog);
+    
+    // If we loaded a ROM, start the game loop after dialog is closed
+    if (window->game_running && window->engine) {
+        printf("Starting game loop from menu\n");
+        window->run(nullptr);  // Don't load ROM again, just run the loop
+    }
 }
+
 
 void GTK3MainWindow::on_file_quit(GtkMenuItem* item, gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
@@ -460,11 +466,15 @@ void GTK3MainWindow::update_game() {
 
 
 void GTK3MainWindow::update_texture() {
-    if (!engine) return;
+    if (!engine) {
+        printf("Engine is null in update_texture!\n");
+        return;
+    }
     
     // Convert RGB565 to RGB888 for OpenGL
     static uint8_t rgb_buffer[256 * 240 * 3];
     
+    // Make sure engine is actually rendering
     engine->render16(frame_buffer);
     
     for (int i = 0; i < 256 * 240; i++) {
@@ -530,13 +540,15 @@ void GTK3MainWindow::update_controller_state() {
 }
 
 void GTK3MainWindow::run(const char* rom_filename) {
-    if (rom_filename) {
+    // Only load ROM if one isn't already loaded
+    if (rom_filename && !engine) {
         engine = new WarpNES();
         
         if (!engine->loadROM(rom_filename)) {
             set_status_message("Failed to load ROM file");
             delete engine;
             engine = nullptr;
+            gtk_main();
             return;
         }
         
@@ -544,16 +556,33 @@ void GTK3MainWindow::run(const char* rom_filename) {
         game_running = true;
         game_paused = false;
         
-        frame_timer_id = g_timeout_add(16, frame_update_callback, this);
-        
         char status_msg[512];
         snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
         set_status_message(status_msg);
         
-        gtk_widget_queue_draw(gl_area);  // Change this line
+        gtk_widget_queue_draw(gl_area);
     }
     
-    gtk_main();
+    // Start the game loop if we have a ROM loaded
+    if (game_running && engine) {
+        printf("Starting main game loop\n");
+        
+        while (game_running) {
+            while (gtk_events_pending()) {
+                gtk_main_iteration();
+            }
+            
+            if (!game_paused && engine) {
+                process_input();
+                engine->update();
+                gtk_widget_queue_draw(gl_area);
+            }
+            
+            usleep(16667);
+        }
+    } else {
+        gtk_main();
+    }
 }
 
 void GTK3MainWindow::shutdown() {
