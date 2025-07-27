@@ -84,7 +84,7 @@ ALLEGRO_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
 
 GTK3_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/GTKMainWindow.cpp \
-    source/Emulation/Controller.cpp
+    source/Emulation/ControllerSDL.cpp
 
 # Object files for SDL versions
 OBJS_LINUX_SDL = $(patsubst %.cpp,%.sdl.o,$(SDL_SOURCE_FILES))

@@ -1,6 +1,6 @@
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
-#include "Emulation/Controller.hpp"
+#include "Emulation/ControllerSDL.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
 
@@ -501,27 +501,32 @@ void GTK3MainWindow::process_input() {
 }
 
 void GTK3MainWindow::update_controller_state() {
+    if (!engine) return;
+    
+    // Get references to controllers
     Controller& controller1 = engine->getController1();
-    
-    controller1.setButtonState(BUTTON_UP, key_states[player1_keys.up]);
-    controller1.setButtonState(BUTTON_DOWN, key_states[player1_keys.down]);
-    controller1.setButtonState(BUTTON_LEFT, key_states[player1_keys.left]);
-    controller1.setButtonState(BUTTON_RIGHT, key_states[player1_keys.right]);
-    controller1.setButtonState(BUTTON_A, key_states[player1_keys.button_a]);
-    controller1.setButtonState(BUTTON_B, key_states[player1_keys.button_b]);
-    controller1.setButtonState(BUTTON_START, key_states[player1_keys.start]);
-    controller1.setButtonState(BUTTON_SELECT, key_states[player1_keys.select]);
-    
     Controller& controller2 = engine->getController2();
     
-    controller2.setButtonState(BUTTON_UP, key_states[player2_keys.up]);
-    controller2.setButtonState(BUTTON_DOWN, key_states[player2_keys.down]);
-    controller2.setButtonState(BUTTON_LEFT, key_states[player2_keys.left]);
-    controller2.setButtonState(BUTTON_RIGHT, key_states[player2_keys.right]);
-    controller2.setButtonState(BUTTON_A, key_states[player2_keys.button_a]);
-    controller2.setButtonState(BUTTON_B, key_states[player2_keys.button_b]);
-    controller2.setButtonState(BUTTON_START, key_states[player2_keys.start]);
-    controller2.setButtonState(BUTTON_SELECT, key_states[player2_keys.select]);
+    // Update Player 1 controller
+    controller1.setButtonState(PLAYER_1, BUTTON_UP, key_states[player1_keys.up]);
+    controller1.setButtonState(PLAYER_1, BUTTON_DOWN, key_states[player1_keys.down]);
+    controller1.setButtonState(PLAYER_1, BUTTON_LEFT, key_states[player1_keys.left]);
+    controller1.setButtonState(PLAYER_1, BUTTON_RIGHT, key_states[player1_keys.right]);
+    controller1.setButtonState(PLAYER_1, BUTTON_A, key_states[player1_keys.button_a]);
+    controller1.setButtonState(PLAYER_1, BUTTON_B, key_states[player1_keys.button_b]);
+    controller1.setButtonState(PLAYER_1, BUTTON_START, key_states[player1_keys.start]);
+    controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key_states[player1_keys.select]);
+    
+    // Update Player 2 controller
+    controller2.setButtonState(PLAYER_2, BUTTON_UP, key_states[player2_keys.up]);
+    controller2.setButtonState(PLAYER_2, BUTTON_DOWN, key_states[player2_keys.down]);
+    controller2.setButtonState(PLAYER_2, BUTTON_LEFT, key_states[player2_keys.left]);
+    controller2.setButtonState(PLAYER_2, BUTTON_RIGHT, key_states[player2_keys.right]);
+    controller2.setButtonState(PLAYER_2, BUTTON_A, key_states[player2_keys.button_a]);
+    controller2.setButtonState(PLAYER_2, BUTTON_B, key_states[player2_keys.button_b]);
+    controller2.setButtonState(PLAYER_2, BUTTON_START, key_states[player2_keys.start]);
+    controller2.setButtonState(PLAYER_2, BUTTON_SELECT, key_states[player2_keys.select]);
+
 }
 
 void GTK3MainWindow::run(const char* rom_filename) {

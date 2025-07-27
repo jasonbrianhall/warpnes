@@ -12,6 +12,8 @@
 #include <chrono>
 #include <thread>
 #include <vector>
+#include "Emulation/ControllerSDL.hpp"
+
 
 // Forward declarations for your existing classes
 class WarpNES;
