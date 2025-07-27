@@ -77,6 +77,9 @@ private:
     bool init_sdl();
     void cleanup_sdl();
     
+    // Audio callback
+    static void audio_callback(void* userdata, uint8_t* buffer, int len);
+    
     // Rendering
     void render_frame();
     

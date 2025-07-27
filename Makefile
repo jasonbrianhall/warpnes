@@ -25,8 +25,8 @@ ALLEGRO_CFLAGS_WIN = -I/usr/x86_64-w64-mingw32/include
 ALLEGRO_LIBS_WIN = -lalleg -lwinmm -static-libgcc -static-libstdc++
 
 # GTK3 flags for Linux only (uses GTK3's built-in OpenGL support)
-GTK3_CFLAGS_LINUX = $(shell pkg-config --cflags gtk+-3.0 gl glu 2>/dev/null || echo "-I/usr/include/gtk-3.0") $(shell pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/include/SDL2")
-GTK3_LIBS_LINUX = $(shell pkg-config --libs gtk+-3.0 gl glu sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lGL -lGLU -lSDL2")
+GTK3_CFLAGS_LINUX = $(shell pkg-config --cflags gtk+-3.0 2>/dev/null || echo "-I/usr/include/gtk-3.0") $(shell pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/include/SDL2")
+GTK3_LIBS_LINUX = $(shell pkg-config --libs gtk+-3.0 gl glu sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lSDL2")
 
 # SDL Platform-specific settings
 CXXFLAGS_LINUX_SDL = $(CXXFLAGS_COMMON) $(SDL_CFLAGS_LINUX) -DLINUX -DSDL_BUILD -std=c++17

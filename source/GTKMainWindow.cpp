@@ -78,6 +78,9 @@ private:
     bool init_sdl();
     void cleanup_sdl();
     
+    // Audio callback
+    static void audio_callback(void* userdata, uint8_t* buffer, int len);
+    
     // Rendering
     void render_frame();
     
@@ -132,25 +135,25 @@ GTK3MainWindow::GTK3MainWindow()
 {
     strcpy(status_message, "Ready");
     
-    // Initialize Player 1 default keys
+    // Initialize Player 1 default keys (FIXED MAPPINGS)
     player1_keys.up = GDK_KEY_Up;
     player1_keys.down = GDK_KEY_Down;
     player1_keys.left = GDK_KEY_Left;
     player1_keys.right = GDK_KEY_Right;
     player1_keys.button_a = GDK_KEY_x;
     player1_keys.button_b = GDK_KEY_z;
-    player1_keys.start = GDK_KEY_Return;
-    player1_keys.select = GDK_KEY_space;
+    player1_keys.start = GDK_KEY_bracketright;    // FIXED: ] for start (matches SDL)
+    player1_keys.select = GDK_KEY_bracketleft;    // FIXED: [ for select (matches SDL)
     
-    // Initialize Player 2 default keys
+    // Initialize Player 2 default keys (FIXED MAPPINGS)
     player2_keys.up = GDK_KEY_w;
     player2_keys.down = GDK_KEY_s;
     player2_keys.left = GDK_KEY_a;
     player2_keys.right = GDK_KEY_d;
-    player2_keys.button_a = GDK_KEY_g;
-    player2_keys.button_b = GDK_KEY_f;
-    player2_keys.start = GDK_KEY_p;
-    player2_keys.select = GDK_KEY_o;
+    player2_keys.button_a = GDK_KEY_k;           // FIXED: k for A (matches SDL)
+    player2_keys.button_b = GDK_KEY_j;           // FIXED: j for B (matches SDL)
+    player2_keys.start = GDK_KEY_i;              // FIXED: i for start (matches SDL)
+    player2_keys.select = GDK_KEY_u;             // FIXED: u for select (matches SDL)
 }
 
 GTK3MainWindow::~GTK3MainWindow() {
@@ -161,8 +164,8 @@ bool GTK3MainWindow::initialize() {
     // Initialize GTK
     gtk_init(nullptr, nullptr);
     
-    // Initialize SDL video subsystem
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    // Initialize SDL video and audio subsystem (FIXED: Added audio)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
@@ -170,13 +173,34 @@ bool GTK3MainWindow::initialize() {
     create_widgets();
     load_key_mappings();
     
-    // Show the window
+    // Show the window maximized (FIXED: Start maximized)
     gtk_widget_show_all(window);
+    gtk_window_maximize(GTK_WINDOW(window));
     
     // Initialize SDL after GTK window is shown
     if (!init_sdl()) {
         printf("ERROR: SDL initialization failed\n");
         return false;
+    }
+    
+    // Initialize audio (FIXED: Added audio support)
+    if (Configuration::getAudioEnabled()) {
+        SDL_AudioSpec desiredSpec;
+        desiredSpec.freq = Configuration::getAudioFrequency();
+        desiredSpec.format = AUDIO_S8;
+        desiredSpec.channels = 1;
+        desiredSpec.samples = 2048;
+        desiredSpec.callback = audio_callback;
+        desiredSpec.userdata = this;
+
+        SDL_AudioSpec obtainedSpec;
+        if (SDL_OpenAudio(&desiredSpec, &obtainedSpec) < 0) {
+            printf("WARNING: Could not open audio: %s\n", SDL_GetError());
+        } else {
+            // Start playing audio
+            SDL_PauseAudio(0);
+            printf("Audio initialized successfully\n");
+        }
     }
     
     // Grab focus for key events
@@ -185,6 +209,17 @@ bool GTK3MainWindow::initialize() {
     set_status_message("WarpNES GTK3+SDL - Load a ROM file to begin");
     
     return true;
+}
+
+// FIXED: Audio callback function
+void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(userdata);
+    if (window && window->engine) {
+        window->engine->audioCallback(buffer, len);
+    } else {
+        // Fill with silence if no engine
+        memset(buffer, 0, len);
+    }
 }
 
 void GTK3MainWindow::create_widgets() {
@@ -284,6 +319,10 @@ void GTK3MainWindow::setup_sdl_area() {
     sdl_socket = gtk_drawing_area_new();
     gtk_widget_set_size_request(sdl_socket, 256, 240);
     gtk_widget_set_can_focus(sdl_socket, TRUE);
+    
+    // Set the drawing area to black background to prevent bleedthrough
+    GdkRGBA black = {0.0, 0.0, 0.0, 1.0};
+    gtk_widget_override_background_color(sdl_socket, GTK_STATE_FLAG_NORMAL, &black);
 }
 
 bool GTK3MainWindow::init_sdl() {
@@ -337,6 +376,10 @@ bool GTK3MainWindow::init_sdl() {
 void GTK3MainWindow::render_frame() {
     if (!sdl_renderer || !sdl_texture) return;
     
+    // Always clear the entire renderer to black first
+    SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(sdl_renderer);
+    
     if (game_running && engine) {
         // Get pixels from game engine
         static uint16_t frame_buffer[256 * 240];
@@ -349,10 +392,6 @@ void GTK3MainWindow::render_frame() {
             memcpy(pixels, frame_buffer, sizeof(frame_buffer));
             SDL_UnlockTexture(sdl_texture);
         }
-        
-        // Clear and render
-        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(sdl_renderer);
         
         // Calculate aspect-correct scaling
         int widget_width = gtk_widget_get_allocated_width(sdl_socket);
@@ -377,14 +416,10 @@ void GTK3MainWindow::render_frame() {
         }
         
         SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
-        SDL_RenderPresent(sdl_renderer);
-        
-    } else {
-        // No game - clear to green
-        SDL_SetRenderDrawColor(sdl_renderer, 0, 128, 0, 255);
-        SDL_RenderClear(sdl_renderer);
-        SDL_RenderPresent(sdl_renderer);
     }
+    
+    // Always present, whether we have a game or not
+    SDL_RenderPresent(sdl_renderer);
 }
 
 gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
@@ -486,6 +521,9 @@ void GTK3MainWindow::shutdown() {
         delete engine;
         engine = nullptr;
     }
+    
+    // Close audio (FIXED: Added audio cleanup)
+    SDL_CloseAudio();
     
     cleanup_sdl();
     save_key_mappings();
@@ -653,7 +691,7 @@ void GTK3MainWindow::show_controls_dialog() {
                                               GTK_DIALOG_MODAL,
                                               GTK_MESSAGE_INFO,
                                               GTK_BUTTONS_OK,
-                                              "Controls:\nPlayer 1: Arrow keys, X/Z, Enter/Space\nPlayer 2: WASD, F/G, P/O\nF11: Fullscreen");
+                                              "Controls:\nPlayer 1: Arrow keys, X/Z, ]/[ (Start/Select)\nPlayer 2: WASD, J/K, I/U (Start/Select)\nF11: Fullscreen");
     
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
@@ -797,4 +835,4 @@ int main(int argc, char* argv[]) {
     }
     
     return 0;
-}
+}\
