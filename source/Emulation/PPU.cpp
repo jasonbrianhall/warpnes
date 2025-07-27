@@ -1449,8 +1449,15 @@ void PPU::convertNESToScreen32(uint16_t* nesBuffer, uint32_t* screenBuffer, int 
 
 void PPU::captureFrameScroll() {
     frameScrollX = ppuScrollX;
-    frameScrollY = ppuScrollY;  // Add this line
+    frameScrollY = ppuScrollY;
     frameCtrl = ppuCtrl;
+    
+    // Initialize scanline arrays with current values
+    for (int i = 0; i < 240; i++) {
+        scanlineScrollX[i] = ppuScrollX;
+        scanlineScrollY[i] = ppuScrollY;
+        scanlineCtrl[i] = ppuCtrl;
+    }
 }
 
 void PPU::stepCycle(int scanline, int cycle) {
@@ -1848,28 +1855,17 @@ void PPU::renderScanline(int scanline) {
         frameBuffer[scanline * 256 + x] = bgColor16;
     }
     
-    // FIRST: Render behind-background sprites
-    if (ppuMask & 0x10) {
-        for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
-            uint8_t attributes = oam[spriteIndex * 4 + 2];
-            if (attributes & 0x20) { // Behind background
-                renderSingleSprite(scanline, spriteIndex, true);
-            }
-        }
-    }
-    
-    // SECOND: Render background (will cover behind sprites except in holes)
+    // Render background first
     if (ppuMask & 0x08) {
         renderBackgroundScanline(scanline);
     }
     
-    // THIRD: Render front sprites
+    // Then render ALL sprites in one pass with proper priority
     if (ppuMask & 0x10) {
         for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
             uint8_t attributes = oam[spriteIndex * 4 + 2];
-            if (!(attributes & 0x20)) { // In front
-                renderSingleSprite(scanline, spriteIndex, false);
-            }
+            bool behindBackground = (attributes & 0x20) != 0;
+            renderSingleSprite(scanline, spriteIndex, behindBackground);
         }
     }
 }
@@ -1909,12 +1905,23 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
                               ((color32 & 0x00FC00) >> 5) | 
                               ((color32 & 0x0000F8) >> 3);
         
-
-        frameBuffer[scanline * 256 + xPixel] = spritePixel;
-
+        // CORRECT priority logic from your working code
+        uint16_t backgroundPixel = frameBuffer[scanline * 256 + xPixel];
+        uint32_t bgColor32 = paletteRGB[palette[0]];
+        uint16_t bgColor16 = ((bgColor32 & 0xF80000) >> 8) | 
+                            ((bgColor32 & 0x00FC00) >> 5) | 
+                            ((bgColor32 & 0x0000F8) >> 3);
+        
+        // Check if background pixel is non-transparent
+        bool backgroundVisible = (backgroundPixel != bgColor16);
+        
+        // Priority logic: If sprite is behind background AND background is visible, don't draw sprite
+        // Otherwise, draw sprite
+        if (!behindBackground || !backgroundVisible) {
+            frameBuffer[scanline * 256 + xPixel] = spritePixel;
+        }
     }
 }
-
 void PPU::catchUp(uint64_t targetCycles)
 {
     // Safety check to prevent infinite loops
