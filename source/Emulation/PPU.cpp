@@ -1103,18 +1103,31 @@ case 0x2005:
     if (!writeToggle) {
         ppuScrollX = value;
         
-        // Always set scanline arrays, regardless of rendering mode
-        for (int i = 0; i < 240; i++) {
-            scanlineScrollX[i] = value;
+        // Only set future scanlines, not all scanlines
+        if (currentScanline >= 0 && currentScanline < 240) {
+            // Set scroll for remaining scanlines in this frame
+            for (int i = currentScanline; i < 240; i++) {
+                scanlineScrollX[i] = value;
+            }
+        } else {
+            // Not mid-frame, set all scanlines
+            for (int i = 0; i < 240; i++) {
+                scanlineScrollX[i] = value;
+            }
         }
         
         writeToggle = !writeToggle;
     } else {
         ppuScrollY = value;
         
-        // Always set scanline arrays, regardless of rendering mode  
-        for (int i = 0; i < 240; i++) {
-            scanlineScrollY[i] = value;
+        if (currentScanline >= 0 && currentScanline < 240) {
+            for (int i = currentScanline; i < 240; i++) {
+                scanlineScrollY[i] = value;
+            }
+        } else {
+            for (int i = 0; i < 240; i++) {
+                scanlineScrollY[i] = value;
+            }
         }
         
         writeToggle = !writeToggle;
@@ -1525,10 +1538,16 @@ void PPU::renderBackgroundScanline(int scanline) {
     if (scanline < 0 || scanline >= 240) return;
 
     // Use frame-captured scroll values
-    int scrollX = (scanline < 240 && scanlineScrollX[scanline] != 0) ? scanlineScrollX[scanline] : frameScrollX;
-    int scrollY = (scanline < 240 && scanlineScrollY[scanline] != 0) ? scanlineScrollY[scanline] : frameScrollY;
-    uint8_t ctrl = frameCtrl;
-    
+int scrollX = scanlineScrollX[scanline];
+int scrollY = scanlineScrollY[scanline];
+uint8_t ctrl = frameCtrl;
+
+// Fallback to frame values if scanline values are zero
+if (scrollX == 0 && scrollY == 0) {
+    scrollX = frameScrollX;
+    scrollY = frameScrollY;
+}    
+
     uint8_t baseNametable = ctrl & 0x01;
     
     // Calculate Y position in the world
@@ -1683,7 +1702,6 @@ void PPU::checkSprite0HitScanline(int scanline) {
     
     // Only check visible scanlines
     if (scanline < 0 || scanline >= 240) return;
-    
     // Get sprite 0 properties
     uint8_t sprite0Y = oam[0];
     uint8_t sprite0Tile = oam[1];
