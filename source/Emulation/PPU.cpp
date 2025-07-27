@@ -1871,57 +1871,52 @@ void PPU::renderScanline(int scanline) {
 }
 
 void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackground) {
-    uint8_t spriteY = oam[spriteIndex * 4];
-    uint8_t tileIndex = oam[spriteIndex * 4 + 1];
-    uint8_t attributes = oam[spriteIndex * 4 + 2];
-    uint8_t spriteX = oam[spriteIndex * 4 + 3];
-    
-    if (scanline < spriteY + 1 || scanline >= spriteY + 9) return;
-    if (spriteY >= 0xEF || spriteX >= 0xF9) return;
-    
-    int spriteRow = scanline - (spriteY + 1);
-    if (attributes & 0x80) spriteRow = 7 - spriteRow;
-    
-    uint16_t patternBase = tileIndex * 16;
-    if (ppuCtrl & 0x08) patternBase += 0x1000;
-    
-    uint8_t patternLo = readCHR(patternBase + spriteRow);
-    uint8_t patternHi = readCHR(patternBase + spriteRow + 8);
-    
-    for (int pixelX = 0; pixelX < 8; pixelX++) {
-        uint8_t paletteIndex = 0;
-        if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
-        if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;
-        
-        if (paletteIndex == 0) continue;
-        
-        int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
-        
-        if (xPixel < 0 || xPixel >= 256) continue;
-        
-        uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
-        uint32_t color32 = paletteRGB[colorIndex];
-        uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
-                              ((color32 & 0x00FC00) >> 5) | 
-                              ((color32 & 0x0000F8) >> 3);
-        
-        // CORRECT priority logic from your working code
-        uint16_t backgroundPixel = frameBuffer[scanline * 256 + xPixel];
-        uint32_t bgColor32 = paletteRGB[palette[0]];
-        uint16_t bgColor16 = ((bgColor32 & 0xF80000) >> 8) | 
-                            ((bgColor32 & 0x00FC00) >> 5) | 
-                            ((bgColor32 & 0x0000F8) >> 3);
-        
-        // Check if background pixel is non-transparent
-        bool backgroundVisible = (backgroundPixel != bgColor16);
-        
-        // Priority logic: If sprite is behind background AND background is visible, don't draw sprite
-        // Otherwise, draw sprite
-        if (!behindBackground || !backgroundVisible) {
-            frameBuffer[scanline * 256 + xPixel] = spritePixel;
-        }
+   uint8_t spriteY = oam[spriteIndex * 4];
+   uint8_t tileIndex = oam[spriteIndex * 4 + 1];
+   uint8_t attributes = oam[spriteIndex * 4 + 2];
+   uint8_t spriteX = oam[spriteIndex * 4 + 3];
+   
+   if (scanline < spriteY + 1 || scanline >= spriteY + 9) return;
+   if (spriteY >= 0xEF || spriteX >= 0xF9) return;
+   
+   int spriteRow = scanline - (spriteY + 1);
+   if (attributes & 0x80) spriteRow = 7 - spriteRow;
+   
+   uint16_t patternBase = tileIndex * 16;
+   if (ppuCtrl & 0x08) patternBase += 0x1000;
+   
+   uint8_t patternLo = readCHR(patternBase + spriteRow);
+   uint8_t patternHi = readCHR(patternBase + spriteRow + 8);
+   
+   for (int pixelX = 0; pixelX < 8; pixelX++) {
+       uint8_t paletteIndex = 0;
+       if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
+       if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;
+       
+       if (paletteIndex == 0) continue;
+       
+       int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
+       
+       if (xPixel < 0 || xPixel >= 256) continue;
+       
+       uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
+       uint32_t color32 = paletteRGB[colorIndex];
+       uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
+                             ((color32 & 0x00FC00) >> 5) | 
+                             ((color32 & 0x0000F8) >> 3);
+       
+if (behindBackground) {
+    // For behind-background sprites, only draw if background pixel is palette index 0
+    int bufferIndex = scanline * 256 + xPixel;
+    if (bufferIndex >= 0 && bufferIndex < 256 * 240 && backgroundMask[bufferIndex] == 1) {
+        frameBuffer[bufferIndex] = spritePixel;
     }
+} else {
+    frameBuffer[scanline * 256 + xPixel] = spritePixel;
 }
+   }
+}
+
 void PPU::catchUp(uint64_t targetCycles)
 {
     // Safety check to prevent infinite loops
