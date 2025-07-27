@@ -1,3 +1,122 @@
+// GTKMainWindow.hpp - Complete header file
+#ifndef GTK3MAINWINDOW_HPP
+#define GTK3MAINWINDOW_HPP
+
+#include <gtk/gtk.h>
+#include <gdk/gdkkeysyms.h>
+#include <gdk/gdkx.h>
+#include <SDL2/SDL.h>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <unordered_map>
+#include <chrono>
+#include <thread>
+#include <vector>
+#include "Emulation/ControllerSDL.hpp"
+
+// Forward declarations
+class WarpNES;
+class Controller;
+
+class GTK3MainWindow {
+public:
+    GTK3MainWindow();
+    ~GTK3MainWindow();
+    
+    // Main interface
+    bool initialize();
+    void run(const char* rom_filename);
+    void shutdown();
+
+private:
+    // GTK widgets
+    GtkWidget* window;
+    GtkWidget* main_vbox;
+    GtkWidget* sdl_socket;
+    GtkWidget* menubar;
+    GtkWidget* status_bar;
+    
+    // SDL components
+    SDL_Window* sdl_window;
+    SDL_Renderer* sdl_renderer;
+    SDL_Texture* sdl_texture;
+    
+    // Game state
+    WarpNES* engine;
+    bool game_running;
+    bool game_paused;
+    
+    // Input handling
+    std::unordered_map<guint, bool> key_states;
+    
+    // Timing
+    guint frame_timer_id;
+    
+    // Status messages
+    char status_message[256];
+    guint status_message_id;
+    
+    // Key mappings
+    struct KeyMappings {
+        guint up = GDK_KEY_Up;
+        guint down = GDK_KEY_Down;
+        guint left = GDK_KEY_Left;
+        guint right = GDK_KEY_Right;
+        guint button_a = GDK_KEY_x;
+        guint button_b = GDK_KEY_z;
+        guint start = GDK_KEY_Return;
+        guint select = GDK_KEY_space;
+    } player1_keys, player2_keys;
+
+    // Widget creation and setup
+    void create_widgets();
+    void create_menubar();
+    void setup_sdl_area();
+    
+    // SDL setup and management
+    bool init_sdl();
+    void cleanup_sdl();
+    
+    // Rendering
+    void render_frame();
+    
+    // Game loop and timing
+    static gboolean frame_update_callback(gpointer user_data);
+    
+    // Input handling
+    static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+    static gboolean on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+    void process_input();
+    void update_controller_state();
+    
+    // Menu callbacks
+    static void on_file_open(GtkMenuItem* item, gpointer user_data);
+    static void on_file_quit(GtkMenuItem* item, gpointer user_data);
+    static void on_game_reset(GtkMenuItem* item, gpointer user_data);
+    static void on_game_pause(GtkMenuItem* item, gpointer user_data);
+    static void on_options_controls(GtkMenuItem* item, gpointer user_data);
+    static void on_options_video(GtkMenuItem* item, gpointer user_data);
+    static void on_help_about(GtkMenuItem* item, gpointer user_data);
+    
+    // Dialog functions
+    void show_controls_dialog();
+    void show_video_options_dialog();
+    void show_about_dialog();
+    
+    // Window callbacks
+    static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data);
+    static void on_window_destroy(GtkWidget* widget, gpointer user_data);
+    
+    // Utility functions
+    void set_status_message(const char* message);
+    void load_key_mappings();
+    void save_key_mappings();
+};
+
+#endif // GTK3MAINWINDOW_HPP
+
+// GTKMainWindow.cpp - Complete implementation
 #include <SDL2/SDL.h>
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
@@ -6,14 +125,14 @@
 #include "Constants.hpp"
 
 GTK3MainWindow::GTK3MainWindow() 
-    : window(nullptr), gl_area(nullptr), engine(nullptr), 
+    : window(nullptr), sdl_socket(nullptr), engine(nullptr), 
       game_running(false), game_paused(false),
-      nes_texture(0), shader_program(0), vertex_buffer(0), vertex_array(0), element_buffer(0),
-      frame_timer_id(0), status_message_id(0)
+      frame_timer_id(0), status_message_id(0),
+      sdl_window(nullptr), sdl_renderer(nullptr), sdl_texture(nullptr)
 {
     strcpy(status_message, "Ready");
     
-    // Initialize Player 1 default keys (MISSING!)
+    // Initialize Player 1 default keys
     player1_keys.up = GDK_KEY_Up;
     player1_keys.down = GDK_KEY_Down;
     player1_keys.left = GDK_KEY_Left;
@@ -42,29 +161,40 @@ bool GTK3MainWindow::initialize() {
     // Initialize GTK
     gtk_init(nullptr, nullptr);
     
+    // Initialize SDL video subsystem
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
+        return false;
+    }
+    
     create_widgets();
     load_key_mappings();
     
     // Show the window
     gtk_widget_show_all(window);
     
-    // CRITICAL: Grab focus for key events
+    // Initialize SDL after GTK window is shown
+    if (!init_sdl()) {
+        printf("ERROR: SDL initialization failed\n");
+        return false;
+    }
+    
+    // Grab focus for key events
     gtk_widget_grab_focus(window);
     
-    set_status_message("WarpNES GTK3 - Load a ROM file to begin");
+    set_status_message("WarpNES GTK3+SDL - Load a ROM file to begin");
     
     return true;
 }
 
-
 void GTK3MainWindow::create_widgets() {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3");
+    gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3+SDL");
     gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
     
-    // CRITICAL FIX: Set focus and connect key events properly
+    // Set focus and connect key events
     gtk_widget_set_can_focus(window, TRUE);
     gtk_widget_set_focus_on_click(window, TRUE);
     
@@ -82,9 +212,9 @@ void GTK3MainWindow::create_widgets() {
     create_menubar();
     gtk_box_pack_start(GTK_BOX(main_vbox), menubar, FALSE, FALSE, 0);
     
-    // Create OpenGL area
-    setup_gl_area();
-    gtk_box_pack_start(GTK_BOX(main_vbox), gl_area, TRUE, TRUE, 0);
+    // Create SDL area
+    setup_sdl_area();
+    gtk_box_pack_start(GTK_BOX(main_vbox), sdl_socket, TRUE, TRUE, 0);
     
     // Create status bar
     status_bar = gtk_statusbar_new();
@@ -149,210 +279,260 @@ void GTK3MainWindow::create_menubar() {
     gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), about_item);
 }
 
-void GTK3MainWindow::setup_gl_area() {
-    // Create GTK3 GtkGLArea widget
-    gl_area = gtk_gl_area_new();
-    gtk_gl_area_set_required_version(GTK_GL_AREA(gl_area), 2, 1);  // Use OpenGL 2.1 for compatibility
-    gtk_gl_area_set_has_depth_buffer(GTK_GL_AREA(gl_area), FALSE);
-    
-    // Set minimum size to NES resolution
-    gtk_widget_set_size_request(gl_area, 256, 240);
-    
-    // Connect OpenGL signals
-    g_signal_connect(gl_area, "realize", G_CALLBACK(on_gl_realize), this);
-    g_signal_connect(gl_area, "unrealize", G_CALLBACK(on_gl_unrealize), this);
-    g_signal_connect(gl_area, "render", G_CALLBACK(on_gl_draw), this);
-    g_signal_connect(gl_area, "resize", G_CALLBACK(on_gl_resize), this);
+void GTK3MainWindow::setup_sdl_area() {
+    // Create a GTK drawing area for SDL to render into
+    sdl_socket = gtk_drawing_area_new();
+    gtk_widget_set_size_request(sdl_socket, 256, 240);
+    gtk_widget_set_can_focus(sdl_socket, TRUE);
 }
 
-bool GTK3MainWindow::init_opengl() {
-    // Make sure we have current context
-    gtk_gl_area_make_current(GTK_GL_AREA(gl_area));
+bool GTK3MainWindow::init_sdl() {
+    printf("=== Initializing SDL ===\n");
     
-    // Check for errors
-    GError* error = gtk_gl_area_get_error(GTK_GL_AREA(gl_area));
-    if (error != nullptr) {
-        printf("OpenGL error: %s\n", error->message);
+    // Wait for the widget to be realized
+    gtk_widget_realize(sdl_socket);
+    
+    // Get the native window handle
+    GdkWindow* gdk_window = gtk_widget_get_window(sdl_socket);
+    if (!gdk_window) {
+        printf("ERROR: Could not get GDK window\n");
         return false;
     }
     
-    // Clear any existing OpenGL errors
-    while (glGetError() != GL_NO_ERROR);
+    // Get X11 window ID
+    unsigned long window_id = gdk_x11_window_get_xid(gdk_window);
     
-    print_gl_info();
+    // Set SDL to use this window
+    char window_id_str[32];
+    snprintf(window_id_str, sizeof(window_id_str), "%lu", window_id);
+    SDL_SetHint(SDL_HINT_VIDEO_WINDOW_SHARE_PIXEL_FORMAT, "1");
     
-    // Setup OpenGL state
-    glEnable(GL_TEXTURE_2D);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_LIGHTING);
-    
-    // Set viewport 
-    int width = gtk_widget_get_allocated_width(gl_area);
-    int height = gtk_widget_get_allocated_height(gl_area);
-    glViewport(0, 0, width, height);
-    
-    // Create texture for NES framebuffer
-    glGenTextures(1, &nes_texture);
-    glBindTexture(GL_TEXTURE_2D, nes_texture);
-    
-    // Use nearest neighbor for authentic pixel art look
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    
-    // Initialize with black texture
-    std::vector<uint8_t> black_texture(256 * 240 * 3, 0);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 240, 0, GL_RGB, GL_UNSIGNED_BYTE, black_texture.data());
-    
-    // Check for OpenGL errors
-    GLenum glerror = glGetError();
-    if (glerror != GL_NO_ERROR) {
-        fprintf(stderr, "OpenGL error during initialization: %d\n", glerror);
+    // Create SDL window from existing window
+    sdl_window = SDL_CreateWindowFrom((void*)(uintptr_t)window_id);
+    if (!sdl_window) {
+        printf("ERROR: SDL_CreateWindowFrom failed: %s\n", SDL_GetError());
         return false;
     }
     
-    printf("GTK3 OpenGL initialization successful\n");
+    // Create SDL renderer with VSync
+    sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 
+                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!sdl_renderer) {
+        printf("ERROR: SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        return false;
+    }
+    
+    // Create texture for NES framebuffer (RGB565 format)
+    sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
+                                   SDL_TEXTUREACCESS_STREAMING, 256, 240);
+    if (!sdl_texture) {
+        printf("ERROR: SDL_CreateTexture failed: %s\n", SDL_GetError());
+        return false;
+    }
+    
+    printf("SUCCESS: SDL initialized and embedded in GTK\n");
     return true;
 }
 
-
 void GTK3MainWindow::render_frame() {
-    // Make sure we have the OpenGL context
-    gtk_gl_area_make_current(GTK_GL_AREA(gl_area));
-    
-    // Clear the screen
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (!sdl_renderer || !sdl_texture) return;
     
     if (game_running && engine) {
-        // Update texture with latest NES frame
-        update_texture();
+        // Get pixels from game engine
+        static uint16_t frame_buffer[256 * 240];
+        engine->render16(frame_buffer);
         
-        // Set up orthographic projection for full viewport
-        int width = gtk_widget_get_allocated_width(gl_area);
-        int height = gtk_widget_get_allocated_height(gl_area);
+        // Update SDL texture
+        void* pixels;
+        int pitch;
+        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
+            memcpy(pixels, frame_buffer, sizeof(frame_buffer));
+            SDL_UnlockTexture(sdl_texture);
+        }
         
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, 1, 0, 1, -1, 1);
+        // Clear and render
+        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(sdl_renderer);
         
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
+        // Calculate aspect-correct scaling
+        int widget_width = gtk_widget_get_allocated_width(sdl_socket);
+        int widget_height = gtk_widget_get_allocated_height(sdl_socket);
         
-        // Draw textured quad
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, nes_texture);
+        float aspect = 256.0f / 240.0f;
+        float widget_aspect = (float)widget_width / (float)widget_height;
         
-        glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 1.0f); glVertex2f(0.0f, 0.0f);
-        glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, 0.0f);
-        glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-        glTexCoord2f(0.0f, 0.0f); glVertex2f(0.0f, 1.0f);
-        glEnd();
+        SDL_Rect dest_rect;
+        if (widget_aspect > aspect) {
+            // Widget is wider - fit to height
+            dest_rect.h = widget_height;
+            dest_rect.w = (int)(widget_height * aspect);
+            dest_rect.x = (widget_width - dest_rect.w) / 2;
+            dest_rect.y = 0;
+        } else {
+            // Widget is taller - fit to width
+            dest_rect.w = widget_width;
+            dest_rect.h = (int)(widget_width / aspect);
+            dest_rect.x = 0;
+            dest_rect.y = (widget_height - dest_rect.h) / 2;
+        }
         
-        glDisable(GL_TEXTURE_2D);
+        SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
+        SDL_RenderPresent(sdl_renderer);
+        
+    } else {
+        // No game - clear to green
+        SDL_SetRenderDrawColor(sdl_renderer, 0, 128, 0, 255);
+        SDL_RenderClear(sdl_renderer);
+        SDL_RenderPresent(sdl_renderer);
     }
-    
-    glFlush();
 }
 
-
-void GTK3MainWindow::updateAndDraw() {
-    // Make the OpenGL context current
-    gtk_gl_area_make_current(GTK_GL_AREA(gl_area));
+gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     
-    // Clear the screen
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    
-    // Draw the game (equivalent to Allegro's drawGameBuffered)
-    if (game_running && engine) {
-        update_texture();
-        
-        // Use SAME projection as render_frame()
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, 1, 0, 1, -1, 1);  // Match render_frame()
-        
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        
-        // Use SAME quad coordinates as render_frame()
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, nes_texture);
-        
-        glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 1.0f); glVertex2f(0.0f, 0.0f);
-        glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, 0.0f);
-        glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-        glTexCoord2f(0.0f, 0.0f); glVertex2f(0.0f, 1.0f);
-        glEnd();
-        
-        glDisable(GL_TEXTURE_2D);
+    if (!window->game_running || !window->engine) {
+        window->frame_timer_id = 0;
+        return G_SOURCE_REMOVE;
     }
     
-    // Present the frame
-    glFlush();
+    if (!window->game_paused) {
+        // Process input
+        window->process_input();
+        
+        // Update game engine
+        window->engine->update();
+        
+        // Render frame
+        window->render_frame();
+    }
     
-    // Force the GL area to update
-    gtk_gl_area_queue_render(GTK_GL_AREA(gl_area));
+    return G_SOURCE_CONTINUE;
+}
+
+void GTK3MainWindow::process_input() {
+    if (!engine) return;
+    update_controller_state();
+}
+
+void GTK3MainWindow::update_controller_state() {
+    if (!engine) return;
+    
+    // Get references to controllers
+    Controller& controller1 = engine->getController1();
+    Controller& controller2 = engine->getController2();
+    
+    // Update Player 1 controller
+    controller1.setButtonState(PLAYER_1, BUTTON_UP, key_states[player1_keys.up]);
+    controller1.setButtonState(PLAYER_1, BUTTON_DOWN, key_states[player1_keys.down]);
+    controller1.setButtonState(PLAYER_1, BUTTON_LEFT, key_states[player1_keys.left]);
+    controller1.setButtonState(PLAYER_1, BUTTON_RIGHT, key_states[player1_keys.right]);
+    controller1.setButtonState(PLAYER_1, BUTTON_A, key_states[player1_keys.button_a]);
+    controller1.setButtonState(PLAYER_1, BUTTON_B, key_states[player1_keys.button_b]);
+    controller1.setButtonState(PLAYER_1, BUTTON_START, key_states[player1_keys.start]);
+    controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key_states[player1_keys.select]);
+    
+    // Update Player 2 controller
+    controller2.setButtonState(PLAYER_2, BUTTON_UP, key_states[player2_keys.up]);
+    controller2.setButtonState(PLAYER_2, BUTTON_DOWN, key_states[player2_keys.down]);
+    controller2.setButtonState(PLAYER_2, BUTTON_LEFT, key_states[player2_keys.left]);
+    controller2.setButtonState(PLAYER_2, BUTTON_RIGHT, key_states[player2_keys.right]);
+    controller2.setButtonState(PLAYER_2, BUTTON_A, key_states[player2_keys.button_a]);
+    controller2.setButtonState(PLAYER_2, BUTTON_B, key_states[player2_keys.button_b]);
+    controller2.setButtonState(PLAYER_2, BUTTON_START, key_states[player2_keys.start]);
+    controller2.setButtonState(PLAYER_2, BUTTON_SELECT, key_states[player2_keys.select]);
+}
+
+void GTK3MainWindow::run(const char* rom_filename) {
+    // Load ROM if specified
+    if (rom_filename && !engine) {
+        engine = new WarpNES();
+        
+        if (!engine->loadROM(rom_filename)) {
+            set_status_message("Failed to load ROM file");
+            delete engine;
+            engine = nullptr;
+            gtk_main();
+            return;
+        }
+        
+        engine->reset();
+        game_running = true;
+        game_paused = false;
+        
+        char status_msg[512];
+        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
+        set_status_message(status_msg);
+        
+        // Start the game loop timer
+        if (!frame_timer_id) {
+            printf("Starting game timer\n");
+            frame_timer_id = g_timeout_add(17, frame_update_callback, this);
+        }
+    }
+    
+    // Run GTK main loop
+    gtk_main();
+}
+
+void GTK3MainWindow::shutdown() {
+    game_running = false;
+    
+    if (frame_timer_id) {
+        g_source_remove(frame_timer_id);
+        frame_timer_id = 0;
+    }
+    
+    if (engine) {
+        delete engine;
+        engine = nullptr;
+    }
+    
+    cleanup_sdl();
+    save_key_mappings();
+}
+
+void GTK3MainWindow::cleanup_sdl() {
+    if (sdl_texture) {
+        SDL_DestroyTexture(sdl_texture);
+        sdl_texture = nullptr;
+    }
+    
+    if (sdl_renderer) {
+        SDL_DestroyRenderer(sdl_renderer);
+        sdl_renderer = nullptr;
+    }
+    
+    if (sdl_window) {
+        SDL_DestroyWindow(sdl_window);
+        sdl_window = nullptr;
+    }
+    
+    SDL_Quit();
+}
+
+// Static callback implementations
+gboolean GTK3MainWindow::on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->key_states[event->keyval] = true;
+    
+    if (event->keyval == GDK_KEY_F11) {
+        static bool is_fullscreen = false;
+        if (is_fullscreen) {
+            gtk_window_unfullscreen(GTK_WINDOW(window->window));
+            is_fullscreen = false;
+        } else {
+            gtk_window_fullscreen(GTK_WINDOW(window->window));
+            is_fullscreen = true;
+        }
+    }
+    
+    return FALSE;
 }
 
 gboolean GTK3MainWindow::on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    printf("Key released: %d (%s)\n", event->keyval, gdk_keyval_name(event->keyval));
-    
     window->key_states[event->keyval] = false;
     return FALSE;
-}
-
-gboolean GTK3MainWindow::on_gl_draw(GtkGLArea* area, GdkGLContext* context, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    // Make sure we're current
-    gtk_gl_area_make_current(area);
-    
-    // Always try to render
-    window->render_frame();
-    
-    return TRUE;
-}
-
-void GTK3MainWindow::on_gl_realize(GtkGLArea* area, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    gtk_gl_area_make_current(area);
-    
-    if (gtk_gl_area_get_error(area) != nullptr) {
-        fprintf(stderr, "Failed to realize GL area: %s\n", 
-                gtk_gl_area_get_error(area)->message);
-        return;
-    }
-    
-    printf("OpenGL context realized\n");
-    
-    // Initialize OpenGL
-    if (window->init_opengl()) {
-        printf("OpenGL successfully initialized\n");
-        
-        // Queue initial draw
-        gtk_widget_queue_draw(GTK_WIDGET(area));
-    } else {
-        printf("Failed to initialize OpenGL\n");
-    }
-}
-
-void GTK3MainWindow::on_gl_unrealize(GtkGLArea* area, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    gtk_gl_area_make_current(area);
-    window->cleanup_opengl();
-}
-
-void GTK3MainWindow::on_gl_resize(GtkGLArea* area, gint width, gint height, gpointer user_data) {
-    glViewport(0, 0, width, height);
 }
 
 gboolean GTK3MainWindow::on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
@@ -415,14 +595,11 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
             snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
             window->set_status_message(status_msg);
             
-            // Start the game loop timer IMMEDIATELY
+            // Start the game loop timer
             if (!window->frame_timer_id) {
                 printf("Starting game timer from file open\n");
                 window->frame_timer_id = g_timeout_add(17, frame_update_callback, window);
             }
-            
-            // Force an initial draw
-            gtk_widget_queue_draw(window->gl_area);
         }
         
         g_free(filename);
@@ -444,6 +621,20 @@ void GTK3MainWindow::on_game_reset(GtkMenuItem* item, gpointer user_data) {
         window->engine->reset();
         window->set_status_message("Game reset");
     }
+}
+
+void GTK3MainWindow::on_game_pause(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    
+    if (window->game_running) {
+        window->game_paused = !window->game_paused;
+        window->set_status_message(window->game_paused ? "Game paused" : "Game resumed");
+    }
+}
+
+void GTK3MainWindow::on_options_controls(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->show_controls_dialog();
 }
 
 void GTK3MainWindow::on_options_video(GtkMenuItem* item, gpointer user_data) {
@@ -473,7 +664,7 @@ void GTK3MainWindow::show_video_options_dialog() {
                                               GTK_DIALOG_MODAL,
                                               GTK_MESSAGE_INFO,
                                               GTK_BUTTONS_OK,
-                                              "Video Options:\nF11 - Toggle fullscreen\nNearest neighbor scaling for authentic pixels");
+                                              "Video Options:\nF11 - Toggle fullscreen\nSDL handles VSync automatically");
     
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
@@ -482,10 +673,10 @@ void GTK3MainWindow::show_video_options_dialog() {
 void GTK3MainWindow::show_about_dialog() {
     GtkWidget* dialog = gtk_about_dialog_new();
     
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3+SDL");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.0");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), 
-                                 "A high-performance NES emulator with GTK3 interface and OpenGL acceleration");
+                                 "A high-performance NES emulator with GTK3 interface and SDL rendering");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), 
                                   "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall");
     
@@ -539,7 +730,7 @@ void GTK3MainWindow::save_key_mappings() {
     FILE* file = fopen("gtk3_controls.cfg", "w");
     if (!file) return;
     
-    fprintf(file, "# GTK3 WarpNES Control Configuration\n");
+    fprintf(file, "# GTK3+SDL WarpNES Control Configuration\n");
     fprintf(file, "P1_UP=%u\n", player1_keys.up);
     fprintf(file, "P1_DOWN=%u\n", player1_keys.down);
     fprintf(file, "P1_LEFT=%u\n", player1_keys.left);
@@ -560,159 +751,6 @@ void GTK3MainWindow::save_key_mappings() {
     fclose(file);
 }
 
-void GTK3MainWindow::update_game() {
-    // Implementation for update_game if needed
-}
-
-
-
-void GTK3MainWindow::update_texture() {
-    if (!engine) return;
-    
-    // Get the frame buffer from the engine
-    static uint16_t temp_buffer[256 * 240];
-    engine->render16(temp_buffer);
-    
-    // Copy to our local frame buffer
-    memcpy(frame_buffer, temp_buffer, sizeof(frame_buffer));
-    
-    // Convert RGB565 to RGB888 for OpenGL
-    static uint8_t rgb_buffer[256 * 240 * 3];
-    
-    for (int i = 0; i < 256 * 240; i++) {
-        uint16_t pixel = frame_buffer[i];
-        
-        uint8_t r = (pixel >> 11) & 0x1F;
-        uint8_t g = (pixel >> 5) & 0x3F;
-        uint8_t b = pixel & 0x1F;
-        
-        rgb_buffer[i * 3 + 0] = (r << 3) | (r >> 2);
-        rgb_buffer[i * 3 + 1] = (g << 2) | (g >> 4);
-        rgb_buffer[i * 3 + 2] = (b << 3) | (b >> 2);
-    }
-    
-    glBindTexture(GL_TEXTURE_2D, nes_texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 240, GL_RGB, GL_UNSIGNED_BYTE, rgb_buffer);
-}
-
-gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (!window->game_running || !window->engine) {
-        // Stop the timer if game isn't running
-        window->frame_timer_id = 0;
-        return G_SOURCE_REMOVE;
-    }
-    
-    if (!window->game_paused) {
-        // Process input
-        window->process_input();
-        
-        // Update game engine
-        window->engine->update();
-        
-        // Trigger OpenGL redraw
-        gtk_widget_queue_draw(window->gl_area);
-    }
-    
-    return G_SOURCE_CONTINUE;
-}
-
-void GTK3MainWindow::process_input() {
-    if (!engine) return;
-    update_controller_state();
-}
-
-void GTK3MainWindow::update_controller_state() {
-    if (!engine) return;
-    
-    // Get references to controllers
-    Controller& controller1 = engine->getController1();
-    Controller& controller2 = engine->getController2();
-    
-    // Update Player 1 controller
-    controller1.setButtonState(PLAYER_1, BUTTON_UP, key_states[player1_keys.up]);
-    controller1.setButtonState(PLAYER_1, BUTTON_DOWN, key_states[player1_keys.down]);
-    controller1.setButtonState(PLAYER_1, BUTTON_LEFT, key_states[player1_keys.left]);
-    controller1.setButtonState(PLAYER_1, BUTTON_RIGHT, key_states[player1_keys.right]);
-    controller1.setButtonState(PLAYER_1, BUTTON_A, key_states[player1_keys.button_a]);
-    controller1.setButtonState(PLAYER_1, BUTTON_B, key_states[player1_keys.button_b]);
-    controller1.setButtonState(PLAYER_1, BUTTON_START, key_states[player1_keys.start]);
-    controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key_states[player1_keys.select]);
-    
-    // Update Player 2 controller
-    controller2.setButtonState(PLAYER_2, BUTTON_UP, key_states[player2_keys.up]);
-    controller2.setButtonState(PLAYER_2, BUTTON_DOWN, key_states[player2_keys.down]);
-    controller2.setButtonState(PLAYER_2, BUTTON_LEFT, key_states[player2_keys.left]);
-    controller2.setButtonState(PLAYER_2, BUTTON_RIGHT, key_states[player2_keys.right]);
-    controller2.setButtonState(PLAYER_2, BUTTON_A, key_states[player2_keys.button_a]);
-    controller2.setButtonState(PLAYER_2, BUTTON_B, key_states[player2_keys.button_b]);
-    controller2.setButtonState(PLAYER_2, BUTTON_START, key_states[player2_keys.start]);
-    controller2.setButtonState(PLAYER_2, BUTTON_SELECT, key_states[player2_keys.select]);
-
-}
-
-void GTK3MainWindow::run(const char* rom_filename) {
-    // Only load ROM if one isn't already loaded
-    if (rom_filename && !engine) {
-        engine = new WarpNES();
-        
-        if (!engine->loadROM(rom_filename)) {
-            set_status_message("Failed to load ROM file");
-            delete engine;
-            engine = nullptr;
-            gtk_main();
-            return;
-        }
-        
-        engine->reset();
-        game_running = true;
-        game_paused = false;
-        
-        char status_msg[512];
-        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
-        set_status_message(status_msg);
-        
-        // Force initial render
-        gtk_widget_queue_draw(gl_area);
-    }
-    
-    // Start the game timer ONLY if we have a game running
-    if (game_running && engine && !frame_timer_id) {
-        printf("Starting game timer\n");
-        // 60 FPS = 16.67ms per frame
-        frame_timer_id = g_timeout_add(17, frame_update_callback, this);
-    }
-    
-    // Run GTK main loop
-    gtk_main();
-}
-
-void GTK3MainWindow::shutdown() {
-    game_running = false;
-    
-    // Stop the frame timer
-    if (frame_timer_id) {
-        g_source_remove(frame_timer_id);
-        frame_timer_id = 0;
-    }
-    
-    if (engine) {
-        delete engine;
-        engine = nullptr;
-    }
-    
-    cleanup_opengl();
-    save_key_mappings();
-}
-
-void GTK3MainWindow::cleanup_opengl() {
-    if (nes_texture) {
-        glDeleteTextures(1, &nes_texture);
-        nes_texture = 0;
-    }
-}
-
 void GTK3MainWindow::set_status_message(const char* message) {
     if (status_message_id) {
         gtk_statusbar_remove(GTK_STATUSBAR(status_bar), 0, status_message_id);
@@ -724,74 +762,18 @@ void GTK3MainWindow::set_status_message(const char* message) {
     status_message_id = gtk_statusbar_push(GTK_STATUSBAR(status_bar), 0, status_message);
 }
 
-// Static callback implementations
-gboolean GTK3MainWindow::on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    printf("Key pressed: %d (%s)\n", event->keyval, gdk_keyval_name(event->keyval));
-    
-    window->key_states[event->keyval] = true;
-    
-    if (event->keyval == GDK_KEY_F11) {
-        static bool is_fullscreen = false;
-        if (is_fullscreen) {
-            gtk_window_unfullscreen(GTK_WINDOW(window->window));
-            is_fullscreen = false;
-        } else {
-            gtk_window_fullscreen(GTK_WINDOW(window->window));
-            is_fullscreen = true;
-        }
-    }
-    
-    return FALSE;  // Allow other handlers to process the event
-}
-
-void GTK3MainWindow::on_game_pause(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (window->game_running) {
-        window->game_paused = !window->game_paused;
-        window->set_status_message(window->game_paused ? "Game paused" : "Game resumed");
-    }
-}
-
-void GTK3MainWindow::on_options_controls(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_controls_dialog();
-}
-
-// OpenGL helper functions
-void GTK3MainWindow::print_gl_info() {
-    printf("OpenGL Version: %s\n", glGetString(GL_VERSION));
-    printf("OpenGL Renderer: %s\n", glGetString(GL_RENDERER));
-    printf("OpenGL Vendor: %s\n", glGetString(GL_VENDOR));
-}
-
-bool GTK3MainWindow::check_gl_extension(const char* extension) {
-    const char* extensions = (const char*)glGetString(GL_EXTENSIONS);
-    return (extensions && strstr(extensions, extension) != nullptr);
-}
-
-void GTK3MainWindow::setup_shaders() {
-    // Not implemented - using immediate mode OpenGL for compatibility
-}
-
-void GTK3MainWindow::setup_vertex_buffer() {
-    // Not implemented - using immediate mode OpenGL for compatibility
-}
-
 // Main function
 int main(int argc, char* argv[]) {
     Configuration::initialize("config.cfg");
     
-    printf("WarpNES GTK3 - Hardware Accelerated NES Emulator\n");
-    printf("Using OpenGL for rendering with GTK3 interface\n");
+    printf("WarpNES GTK3+SDL - Hardware Accelerated NES Emulator\n");
+    printf("Using SDL for rendering with GTK3 interface\n");
     
     const char* rom_filename = nullptr;
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--neszapper") == 0) {
-            printf("NES Zapper support noted (not yet implemented in GTK3 version)\n");
+            printf("NES Zapper support noted (not yet implemented in GTK3+SDL version)\n");
         } else if (argv[i][0] != '-') {
             rom_filename = argv[i];
         }
@@ -800,18 +782,18 @@ int main(int argc, char* argv[]) {
     GTK3MainWindow main_window;
     
     if (!main_window.initialize()) {
-        fprintf(stderr, "Failed to initialize GTK3 window\n");
+        fprintf(stderr, "Failed to initialize GTK3+SDL window\n");
         return 1;
     }
     
-    printf("GTK3 window initialized successfully\n");
+    printf("GTK3+SDL window initialized successfully\n");
     
     if (rom_filename) {
         printf("Loading ROM: %s\n", rom_filename);
         main_window.run(rom_filename);
     } else {
         printf("No ROM specified - use File > Open ROM to load a game\n");
-        gtk_main();
+        main_window.run(nullptr);
     }
     
     return 0;

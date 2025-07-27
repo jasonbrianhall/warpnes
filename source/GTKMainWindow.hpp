@@ -3,8 +3,8 @@
 
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
-#include <GL/gl.h>
-#include <GL/glu.h>
+#include <gdk/gdkx.h>
+#include <SDL2/SDL.h>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -14,20 +14,10 @@
 #include <vector>
 #include "Emulation/ControllerSDL.hpp"
 
-
-// Forward declarations for your existing classes
+// Forward declarations
 class WarpNES;
 class Controller;
 
-/**
- * GTK3MainWindow - Modern GTK3 interface for WarpNES
- * 
- * This class provides a native Linux desktop experience using GTK3
- * with hardware-accelerated OpenGL rendering for the NES emulation.
- * It integrates with the existing WarpNES engine and Controller system.
- * 
- * Uses GTK3's built-in GtkGLArea widget for OpenGL support.
- */
 class GTK3MainWindow {
 public:
     GTK3MainWindow();
@@ -37,41 +27,36 @@ public:
     bool initialize();
     void run(const char* rom_filename);
     void shutdown();
-    void updateAndDraw();
 
 private:
     // GTK widgets
     GtkWidget* window;
     GtkWidget* main_vbox;
-    GtkWidget* gl_area;
+    GtkWidget* sdl_socket;
     GtkWidget* menubar;
     GtkWidget* status_bar;
     
-    // OpenGL resources
-    GLuint nes_texture;
-    GLuint shader_program;
-    GLuint vertex_buffer;
-    GLuint vertex_array;
-    GLuint element_buffer;
+    // SDL components
+    SDL_Window* sdl_window;
+    SDL_Renderer* sdl_renderer;
+    SDL_Texture* sdl_texture;
     
-    // Game state - uses your existing WarpNES engine
+    // Game state
     WarpNES* engine;
     bool game_running;
     bool game_paused;
-    uint16_t frame_buffer[256 * 240];  // NES resolution
     
     // Input handling
     std::unordered_map<guint, bool> key_states;
     
     // Timing
-    std::chrono::high_resolution_clock::time_point last_frame_time;
     guint frame_timer_id;
     
     // Status messages
     char status_message[256];
     guint status_message_id;
     
-    // Key mappings (compatible with your existing control system)
+    // Key mappings
     struct KeyMappings {
         guint up = GDK_KEY_Up;
         guint down = GDK_KEY_Down;
@@ -83,37 +68,26 @@ private:
         guint select = GDK_KEY_space;
     } player1_keys, player2_keys;
 
-private:
     // Widget creation and setup
     void create_widgets();
     void create_menubar();
-    void setup_gl_area();
+    void setup_sdl_area();
     
-    // OpenGL setup and management
-    bool init_opengl();
-    void setup_shaders();
-    void setup_vertex_buffer();
-    void cleanup_opengl();
+    // SDL setup and management
+    bool init_sdl();
+    void cleanup_sdl();
     
-    // Rendering pipeline
+    // Rendering
     void render_frame();
-    void update_texture();
     
     // Game loop and timing
     static gboolean frame_update_callback(gpointer user_data);
-    void update_game();
     
     // Input handling
     static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
     static gboolean on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
     void process_input();
     void update_controller_state();
-    
-    // GTK3 GtkGLArea callbacks
-    static gboolean on_gl_draw(GtkGLArea* area, GdkGLContext* context, gpointer user_data);
-    static void on_gl_realize(GtkGLArea* area, gpointer user_data);
-    static void on_gl_unrealize(GtkGLArea* area, gpointer user_data);
-    static void on_gl_resize(GtkGLArea* area, gint width, gint height, gpointer user_data);
     
     // Menu callbacks
     static void on_file_open(GtkMenuItem* item, gpointer user_data);
@@ -137,10 +111,6 @@ private:
     void set_status_message(const char* message);
     void load_key_mappings();
     void save_key_mappings();
-    
-    // OpenGL helper functions
-    bool check_gl_extension(const char* extension);
-    void print_gl_info();
 };
 
 #endif // GTK3MAINWINDOW_HPP
