@@ -297,177 +297,6 @@ void PPU::setVBlankFlag(bool flag)
     }
 }
 
-
-
-void PPU::renderTile(uint32_t* buffer, int index, int xOffset, int yOffset)
-{
-    // Lookup the pattern table entry
-    uint16_t tile = readByte(index) + (ppuCtrl & (1 << 4) ? 256 : 0);
-    uint8_t attribute = getAttributeTableValue(index);
-
-    // Read the pixels of the tile
-    for( int row = 0; row < 8; row++ )
-    {
-        uint8_t plane1 = readCHR(tile * 16 + row);
-        uint8_t plane2 = readCHR(tile * 16 + row + 8);
-
-        for( int column = 0; column < 8; column++ )
-        {
-            uint8_t paletteIndex = (((plane1 & (1 << column)) ? 1 : 0) + ((plane2 & (1 << column)) ? 2 : 0));
-            uint8_t colorIndex = palette[attribute * 4 + paletteIndex];
-            if( paletteIndex == 0 )
-            {
-                // skip transparent pixels
-                //colorIndex = palette[0];
-                continue;
-            }
-            uint32_t pixel = 0xff000000 | paletteRGB[colorIndex];
-
-            int x = (xOffset + (7 - column));
-            int y = (yOffset + row);
-            if (x < 0 || x >= 256 || y < 0 || y >= 240)
-            {
-                continue;
-            }
-            buffer[y * 256 + x] = pixel;
-        }
-    }
-
-}
-
-void PPU::render(uint32_t* buffer)
-{
-    // Clear the buffer with the background color
-    for (int index = 0; index < 256 * 240; index++)
-    {
-        buffer[index] = paletteRGB[palette[0]];
-    }
-
-    // Draw the background (nametable)
-    if (ppuMask & (1 << 3)) // Is the background enabled?
-    {
-        int scrollX = (int)ppuScrollX + ((ppuCtrl & (1 << 0)) ? 256 : 0);
-        int xMin = scrollX / 8;
-        int xMax = ((int)scrollX + 256) / 8;
-
-        for (int x = xMin; x <= xMax; x++)
-        {
-            for (int y = 4; y < 30; y++)
-            {
-                // Determine the index of the tile to render
-                int index;
-                if (x < 32)
-                {
-                    index = 0x2000 + 32 * y + x;
-                }
-                else if (x < 64)
-                {
-                    index = 0x2400 + 32 * y + (x - 32);
-                }
-                else
-                {
-                    index = 0x2800 + 32 * y + (x - 64);
-                }
-
-                // Render the tile
-                renderTile(buffer, index, (x * 8) - (int)scrollX, (y * 8));
-            }
-        }
-    }
-
-    // Draw all sprites with proper priority handling
-    if (ppuMask & (1 << 4)) // Are sprites enabled?
-    {
-        // Render sprites in reverse order (63 to 0) for proper priority
-        // Lower index sprites have higher priority and are drawn last
-        for (int i = 63; i >= 0; i--)
-        {
-            // Read OAM for the sprite
-            uint8_t y          = oam[i * 4];
-            uint8_t index      = oam[i * 4 + 1];
-            uint8_t attributes = oam[i * 4 + 2];
-            uint8_t x          = oam[i * 4 + 3];
-
-            // Check if the sprite is visible
-            if (y >= 0xef || x >= 0xf9)
-            {
-                continue;
-            }
-
-            // Increment y by one since sprite data is delayed by one scanline
-            y++;
-
-            // Determine the tile to use
-            uint16_t tile = index + (ppuCtrl & (1 << 3) ? 256 : 0);
-            bool flipX = attributes & (1 << 6);
-            bool flipY = attributes & (1 << 7);
-            bool behindBackground = attributes & (1 << 5);
-
-            // Copy pixels to the framebuffer
-            for (int row = 0; row < 8; row++)
-            {
-                uint8_t plane1 = readCHR(tile * 16 + row);
-                uint8_t plane2 = readCHR(tile * 16 + row + 8);
-
-                for (int column = 0; column < 8; column++)
-                {
-                    uint8_t paletteIndex = (((plane1 & (1 << column)) ? 1 : 0) + ((plane2 & (1 << column)) ? 2 : 0));
-                    uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
-                    if (paletteIndex == 0)
-                    {
-                        // Skip transparent pixels
-                        continue;
-                    }
-                    uint32_t pixel = 0xff000000 | paletteRGB[colorIndex];
-
-                    int xOffset = 7 - column;
-                    if (flipX)
-                    {
-                        xOffset = column;
-                    }
-                    int yOffset = row;
-                    if (flipY)
-                    {
-                        yOffset = 7 - row;
-                    }
-
-                    int xPixel = (int)x + xOffset;
-                    int yPixel = (int)y + yOffset;
-                    if (xPixel < 0 || xPixel >= 256 || yPixel < 0 || yPixel >= 240)
-                    {
-                        continue;
-                    }
-
-                    // Priority handling
-                    if (behindBackground)
-                    {
-                        // Sprite is behind background - only draw if background pixel is transparent
-                        uint32_t backgroundPixel = buffer[yPixel * 256 + xPixel];
-                        uint32_t backgroundColor = paletteRGB[palette[0]];
-                        
-                        if (backgroundPixel == backgroundColor)
-                        {
-                            buffer[yPixel * 256 + xPixel] = pixel;
-                        }
-                    }
-                    else
-                    {
-                        // Sprite is in front of background - always draw
-                        buffer[yPixel * 256 + xPixel] = pixel;
-                        
-                        if (i == 0 && index == 0xff && row == 5 && column > 3 && column < 6)
-                        {
-                            // Don't draw these specific pixels for the coin indicator
-                            buffer[yPixel * 256 + xPixel] = paletteRGB[palette[0]];
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-
 void PPU::setPaletteRAM(uint8_t* data) {
     memcpy(palette, data, 32); 
     // Invalidate ALL tile caches when palette changes
@@ -497,40 +326,6 @@ void PPU::updateRenderRegisters()
     renderScrollY = ppuScrollY;
     renderCtrl = ppuCtrl;
     
-}
-
-void PPU::renderTile16(uint16_t* buffer, int index, int xOffset, int yOffset)
-{
-    uint16_t tile = readByte(index) + (ppuCtrl & (1 << 4) ? 256 : 0);
-    uint8_t attribute = getAttributeTableValue(index);
-
-    for (int row = 0; row < 8; row++)
-    {
-        uint8_t plane1 = readCHR(tile * 16 + row);
-        uint8_t plane2 = readCHR(tile * 16 + row + 8);
-
-        for (int column = 0; column < 8; column++)
-        {
-            uint8_t paletteIndex = (((plane1 & (1 << column)) ? 1 : 0) + ((plane2 & (1 << column)) ? 2 : 0));
-            
-            uint8_t colorIndex;
-            if (paletteIndex == 0) {
-                colorIndex = palette[0];  // Universal background color
-            } else {
-                colorIndex = palette[(attribute & 0x03) * 4 + paletteIndex];  // Mask attribute to 2 bits
-            }
-            
-            uint32_t pixel32 = paletteRGB[colorIndex];
-            uint16_t pixel16 = ((pixel32 & 0xF80000) >> 8) | ((pixel32 & 0x00FC00) >> 5) | ((pixel32 & 0x0000F8) >> 3);
-
-            int x = (xOffset + (7 - column));
-            int y = (yOffset + row);
-            if (x >= 0 && x < 256 && y >= 0 && y < 240)
-            {
-                buffer[y * 256 + x] = pixel16;
-            }
-        }
-    }
 }
 
 void PPU::writeAddressRegister(uint8_t value)
@@ -705,12 +500,6 @@ case 0x2005:
     default:
         break;
     }
-}
-
-uint32_t PPU::getFlipCacheKey(uint16_t tile, uint8_t palette_type, uint8_t attribute, uint8_t flip_flags)
-{
-    // No need to include bank in key since each bank has its own flip cache
-    return (tile << 16) | (palette_type << 8) | (attribute << 4) | flip_flags;
 }
 
 PPU::ScalingCache::ScalingCache() 
@@ -985,7 +774,7 @@ void PPU::renderScaledGeneric(uint16_t* nesBuffer, uint16_t* screenBuffer, int s
     }
 }
 
-void PPU::convertNESToScreen32(uint16_t* nesBuffer, uint32_t* screenBuffer, int screenWidth, int screenHeight)
+/*void PPU::convertNESToScreen32(uint16_t* nesBuffer, uint32_t* screenBuffer, int screenWidth, int screenHeight)
 {
     // Convert 16-bit RGB565 to 32-bit RGBA
     for (int i = 0; i < screenWidth * screenHeight; i++) {
@@ -1004,7 +793,7 @@ void PPU::convertNESToScreen32(uint16_t* nesBuffer, uint32_t* screenBuffer, int 
         // Pack into 32-bit with alpha
         screenBuffer[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
     }
-}
+}*/
 
 void PPU::captureFrameScroll() {
     frameScrollX = ppuScrollX;

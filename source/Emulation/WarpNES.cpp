@@ -2077,8 +2077,6 @@ void WarpNES::render16(uint16_t *buffer) {
   ppu->render16(buffer);
 }
 
-void WarpNES::render(uint32_t *buffer) { ppu->render(buffer); }
-
 void WarpNES::renderScaled16(uint16_t *buffer, int screenWidth,
                                  int screenHeight) {
   // First render the game using PPU scaling
