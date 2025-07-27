@@ -1678,22 +1678,15 @@ void PPU::renderSpriteScanline(int scanline) {
             uint8_t paletteIndex = 0;
             int column = pixelX;
             
-            // This matches your working render() method logic exactly
-            if (patternLo & (1 << column)) paletteIndex |= 1;
-            if (patternHi & (1 << column)) paletteIndex |= 2;
+            if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
+            if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;            
             
             // Skip transparent pixels
             if (paletteIndex == 0) continue;
             
             // Calculate screen position with flip handling
-            int xOffset = 7 - column;
-            if (flipX) {
-                xOffset = column;
-            }
-            
-            int xPixel = (int)spriteX + xOffset;
+            int xPixel = spriteX + pixelX;
             int yPixel = scanline;
-
 
             
             // Bounds check
