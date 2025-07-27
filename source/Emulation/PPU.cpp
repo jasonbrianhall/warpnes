@@ -171,12 +171,14 @@ uint8_t PPU::getAttributeTableValue(uint16_t nametableAddress)
     return (nametable[attrOffset] >> shift) & 0x03;
 }
 
-uint16_t PPU::getNametableIndex(uint16_t address)
-{
+uint16_t PPU::getNametableIndex(uint16_t address) {
     address = (address - 0x2000) % 0x1000;
     int table = address / 0x400;
     int offset = address % 0x400;
-    int mode = 1; 
+    
+    // Use the actual mirroring from the ROM header
+    int mode = engine.nesHeader.mirroring;  // 0=horizontal, 1=vertical
+    
     return (nametableMirrorLookup[mode][table] * 0x400 + offset) % 2048;
 }
 
@@ -998,12 +1000,14 @@ void PPU::writeByte(uint16_t address, uint8_t value)
         engine.writeCHRData(address, value);
         // NO CACHE INVALIDATION - most games use CHR-ROM which never changes
     }
-    else if (address < 0x3f00)
-    {
-        // Nametable write
-        nametable[getNametableIndex(address)] = value;
-        // NO CACHE INVALIDATION - nametable changes don't affect tile rendering cache
-    }
+else if (address < 0x3f00)
+{
+    // Nametable write
+    uint16_t index = getNametableIndex(address);
+    
+    // DEBUG: Log nametable writes
+    nametable[index] = value;
+}
     else if (address < 0x3f20)
     {
         // Palette data - ONLY invalidate if the palette actually changed
@@ -1543,102 +1547,81 @@ void PPU::clearScanline(int scanline) {
 
 void PPU::renderBackgroundScanline(int scanline) {
     if (scanline < 0 || scanline >= 240) return;
+
+    // Use frame-captured scroll values
+    int scrollX = frameScrollX;
+    int scrollY = frameScrollY;  
+    uint8_t ctrl = frameCtrl;
     
-    // Use the actual scroll values that were captured for this scanline
-    int scrollX = scanlineScrollX[scanline];
-    int scrollY = ppuScrollY;  // Add vertical scroll support
-    uint8_t ctrl = scanlineCtrl[scanline];
-    
-    // For games that don't set per-scanline scroll, fall back to frame values
-    if (scrollX == 0 && scanline > 0 && scanlineScrollX[scanline-1] != 0) {
-        scrollX = frameScrollX;
-    }
+    // Clear scanline first
+    clearScanline(scanline);
     
     uint8_t baseNametable = ctrl & 0x01;
-    uint8_t baseNametableY = (ctrl & 0x02) >> 1;  // Vertical nametable bit
     
-    // Calculate which tiles are visible on this scanline WITH Y SCROLL
-    int worldY = scanline + scrollY;  // Apply vertical scroll
+    // Calculate Y position in the world
+    int worldY = scanline + scrollY;
     int tileY = worldY / 8;
     int fineY = worldY % 8;
     
-    // Handle vertical nametable wrapping
-    uint16_t nametableAddrY = baseNametableY ? 0x0800 : 0x0000;  // Vertical nametable offset
-    if (tileY >= 30) {
-        tileY = tileY % 30;  // Wrap at 30 tiles (240 pixels)
-        nametableAddrY = baseNametableY ? 0x0000 : 0x0800;  // Switch to other vertical nametable
-    }
+    // Bounds check
+    if (tileY >= 30) tileY = tileY % 30;
     
-    // Render tiles across the scanline with proper nametable wrapping
+    // Calculate which tiles to render
     int startTileX = scrollX / 8;
-    int endTileX = (scrollX + 256) / 8 + 1;
+    int endTileX = (scrollX + 256 + 7) / 8;
     
-    for (int tileX = startTileX; tileX <= endTileX; tileX++) {
+    for (int tileX = startTileX; tileX < endTileX; tileX++) {
         int screenX = (tileX * 8) - scrollX;
         
-        // Skip tiles that are completely off-screen
-        if (screenX + 8 <= 0 || screenX >= 256) continue;
+        if (screenX >= 256) break;
+        if (screenX + 8 <= 0) continue;
         
-        // Determine which nametable to use based on horizontal position
-        uint16_t nametableAddrX;
-        int localTileX = tileX;
+        // Get local tile position
+        int localTileX = tileX % 32;
+        if (localTileX < 0) localTileX += 32;
         
-        // Handle horizontal nametable mirroring
-        if (localTileX < 0) {
-            localTileX = (localTileX % 32 + 32) % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400; // Opposite nametable
-        } else if (localTileX < 32) {
-            nametableAddrX = baseNametable ? 0x0400 : 0x0000;
-        } else {
-            localTileX = localTileX % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400;
+        // Get nametable address
+        uint16_t nametableAddr = 0x2000;
+        if (baseNametable) nametableAddr = 0x2400;
+        
+        // Handle horizontal wrapping
+        if (tileX >= 32) {
+            nametableAddr = (nametableAddr == 0x2000) ? 0x2400 : 0x2000;
+            localTileX = tileX - 32;
+            if (localTileX >= 32) localTileX = localTileX % 32;
         }
-        
-        // Combine horizontal and vertical nametable addresses
-        uint16_t nametableAddr = 0x2000 + nametableAddrX + nametableAddrY;
-        
-        // Bounds check for tile coordinates
-        if (tileY >= 30) continue; // NES nametables are 32x30 tiles
         
         uint16_t tileAddr = nametableAddr + (tileY * 32) + localTileX;
         uint8_t tileIndex = readByte(tileAddr);
+static int debugCount = 0;
+
         uint8_t attribute = getAttributeTableValue(tileAddr);
         
-        // Get pattern table data
+        // Get pattern data
         uint16_t patternBase = tileIndex * 16;
-        if (ctrl & 0x10) patternBase += 0x1000; // Background pattern table select
+        if (ctrl & 0x10) patternBase += 0x1000;
         
-        // CRITICAL: Use readCHR to ensure MMC2 latch checking happens
         uint8_t patternLo = readCHR(patternBase + fineY);
         uint8_t patternHi = readCHR(patternBase + fineY + 8);
         
-        // Render the 8 pixels of this tile
+        // Render pixels
         for (int pixelX = 0; pixelX < 8; pixelX++) {
             int screenPixelX = screenX + pixelX;
             if (screenPixelX < 0 || screenPixelX >= 256) continue;
             
-            // Extract pixel value (bit 7 is leftmost pixel)
             uint8_t pixelValue = 0;
             if (patternLo & (0x80 >> pixelX)) pixelValue |= 1;
             if (patternHi & (0x80 >> pixelX)) pixelValue |= 2;
             
-            // CRITICAL: Track if this is palette index 0 (transparent)
-            int bufferIndex = scanline * 256 + screenPixelX;
-            if (pixelValue == 0) {
-                backgroundMask[bufferIndex] = 1;  // Transparent
-            } else {
-                backgroundMask[bufferIndex] = 0;  // Opaque background
-            }
-            
-            // Get color from palette
             uint8_t colorIndex;
             if (pixelValue == 0) {
-                colorIndex = palette[0]; // Universal background color
+                colorIndex = palette[0];
+                backgroundMask[scanline * 256 + screenPixelX] = 1;
             } else {
                 colorIndex = palette[(attribute & 0x03) * 4 + pixelValue];
+                backgroundMask[scanline * 256 + screenPixelX] = 0;
             }
             
-            // Convert to 16-bit RGB565
             uint32_t color32 = paletteRGB[colorIndex];
             uint16_t pixel = ((color32 & 0xF80000) >> 8) | 
                            ((color32 & 0x00FC00) >> 5) | 

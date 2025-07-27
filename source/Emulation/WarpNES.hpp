@@ -121,6 +121,16 @@ public:
   void saveSRAM();
   void cleanupSRAM();
   void handlePPUCHRRead(uint16_t address);
+  // NES header info
+  struct NESHeader {
+    uint8_t prgROMPages; // 16KB pages
+    uint8_t chrROMPages; // 8KB pages
+    uint8_t mapper;      // Mapper number
+    uint8_t mirroring;   // 0=horizontal, 1=vertical
+    bool battery;        // Battery-backed RAM
+    bool trainer;        // 512-byte trainer present
+  } nesHeader;
+
 
 private:
   // 6502 CPU state
@@ -158,16 +168,6 @@ private:
   uint32_t prgSize;    // PRG ROM size
   uint32_t chrSize;    // CHR ROM size
   bool romLoaded;
-
-  // NES header info
-  struct NESHeader {
-    uint8_t prgROMPages; // 16KB pages
-    uint8_t chrROMPages; // 8KB pages
-    uint8_t mapper;      // Mapper number
-    uint8_t mirroring;   // 0=horizontal, 1=vertical
-    bool battery;        // Battery-backed RAM
-    bool trainer;        // 512-byte trainer present
-  } nesHeader;
 
   // Components
   APU *apu;

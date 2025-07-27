@@ -2319,28 +2319,27 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
 
 case 1: // MMC1
 {
-  if (nesHeader.chrROMPages == 0) {
-    // CHR-RAM
-    if (address < chrSize) {
-      return chrROM[address];
-    }
-  } else {
-    // CHR-ROM with banking
-    uint32_t chrAddr;
-    
-    if (address < 0x1000) {
-      // $0000-$0FFF: Use currentCHRBank0
-      chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
+    if (nesHeader.chrROMPages == 0) {
+        if (address < chrSize) {
+            return chrROM[address];
+        }
     } else {
-      // $1000-$1FFF: Use currentCHRBank1  
-      chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
+        // Direct banking - don't use currentCHRBank variables at all
+        if (address < 0x1000) {
+            // $0000-$0FFF: Always use mmc1.chrBank0 * 4KB
+            uint32_t chrAddr = (mmc1.chrBank0 * 0x1000) + address;
+            if (chrAddr < chrSize) {
+                return chrROM[chrAddr];
+            }
+        } else {
+            // $1000-$1FFF: Use mmc1.chrBank1 * 4KB  
+            uint32_t chrAddr = (mmc1.chrBank1 * 0x1000) + (address - 0x1000);
+            if (chrAddr < chrSize) {
+                return chrROM[chrAddr];
+            }
+        }
     }
-
-    if (chrAddr < chrSize) {
-      return chrROM[chrAddr];
-    }
-  }
-  return 0;
+    return 0;
 }
   case 2: // UxROM
   {
