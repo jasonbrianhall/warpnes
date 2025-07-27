@@ -12,6 +12,16 @@ GTK3MainWindow::GTK3MainWindow()
 {
     strcpy(status_message, "Ready");
     
+    // Initialize Player 1 default keys (MISSING!)
+    player1_keys.up = GDK_KEY_Up;
+    player1_keys.down = GDK_KEY_Down;
+    player1_keys.left = GDK_KEY_Left;
+    player1_keys.right = GDK_KEY_Right;
+    player1_keys.button_a = GDK_KEY_x;
+    player1_keys.button_b = GDK_KEY_z;
+    player1_keys.start = GDK_KEY_Return;
+    player1_keys.select = GDK_KEY_space;
+    
     // Initialize Player 2 default keys
     player2_keys.up = GDK_KEY_w;
     player2_keys.down = GDK_KEY_s;
@@ -186,8 +196,7 @@ bool GTK3MainWindow::init_opengl() {
 }
 
 void GTK3MainWindow::render_frame() {
-    // Clear the screen
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    // Clear the screen    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
     if (game_running && engine) {
@@ -214,9 +223,51 @@ void GTK3MainWindow::render_frame() {
         glEnd();
         
         glDisable(GL_TEXTURE_2D);
+        
     }
     
     glFlush();
+}
+
+void GTK3MainWindow::updateAndDraw() {
+    // Make the OpenGL context current
+    gtk_gl_area_make_current(GTK_GL_AREA(gl_area));
+    
+    // Clear the screen
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    // Draw the game (equivalent to Allegro's drawGameBuffered)
+    if (game_running && engine) {
+        update_texture();
+        
+        // Set up orthographic projection
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, 1, 0, 1, -1, 1);
+        
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        
+        // Draw textured quad
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, nes_texture);
+        
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 1.0f); glVertex2f(0.0f, 0.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, 0.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
+        glTexCoord2f(0.0f, 0.0f); glVertex2f(0.0f, 1.0f);
+        glEnd();
+        
+        glDisable(GL_TEXTURE_2D);
+    }
+    
+    // Present the frame
+    glFlush();
+    
+    // Force the GL area to update
+    gtk_gl_area_queue_render(GTK_GL_AREA(gl_area));
 }
 
 gboolean GTK3MainWindow::on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
@@ -465,16 +516,14 @@ void GTK3MainWindow::update_game() {
 }
 
 
+
 void GTK3MainWindow::update_texture() {
-    if (!engine) {
-        printf("Engine is null in update_texture!\n");
-        return;
-    }
+    if (!engine) return;
     
     // Convert RGB565 to RGB888 for OpenGL
     static uint8_t rgb_buffer[256 * 240 * 3];
     
-    // Make sure engine is actually rendering
+    // Call render16 here, just like Allegro does in its draw function
     engine->render16(frame_buffer);
     
     for (int i = 0; i < 256 * 240; i++) {
@@ -575,8 +624,10 @@ void GTK3MainWindow::run(const char* rom_filename) {
             if (!game_paused && engine) {
                 process_input();
                 engine->update();
-                gtk_widget_queue_draw(gl_area);
+                engine->render16(frame_buffer);
             }
+            
+            updateAndDraw();
             
             usleep(16667);
         }

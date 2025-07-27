@@ -37,6 +37,7 @@ public:
     bool initialize();
     void run(const char* rom_filename);
     void shutdown();
+    void updateAndDraw();
 
 private:
     // GTK widgets
