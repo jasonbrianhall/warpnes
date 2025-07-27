@@ -774,27 +774,6 @@ void PPU::renderScaledGeneric(uint16_t* nesBuffer, uint16_t* screenBuffer, int s
     }
 }
 
-/*void PPU::convertNESToScreen32(uint16_t* nesBuffer, uint32_t* screenBuffer, int screenWidth, int screenHeight)
-{
-    // Convert 16-bit RGB565 to 32-bit RGBA
-    for (int i = 0; i < screenWidth * screenHeight; i++) {
-        uint16_t pixel16 = nesBuffer[i];
-        
-        // Extract RGB565 components
-        int r = (pixel16 >> 11) & 0x1F;
-        int g = (pixel16 >> 5) & 0x3F;
-        int b = pixel16 & 0x1F;
-        
-        // Scale to 8-bit
-        r = (r << 3) | (r >> 2);
-        g = (g << 2) | (g >> 4);
-        b = (b << 3) | (b >> 2);
-        
-        // Pack into 32-bit with alpha
-        screenBuffer[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
-    }
-}*/
-
 void PPU::captureFrameScroll() {
     frameScrollX = ppuScrollX;
     frameScrollY = ppuScrollY;
@@ -823,8 +802,9 @@ void PPU::stepCycle(int scanline, int cycle) {
             currentRenderScanline = 0;
         }
         
+        // Odd frame cycle skip (skip cycle 340 on odd frames when rendering enabled)
         if (cycle == 339 && frameOdd && (ppuMask & 0x18)) {
-            frameOdd = !frameOdd;
+            // Skip to next frame early
             return;
         }
         
@@ -834,15 +814,11 @@ void PPU::stepCycle(int scanline, int cycle) {
         return;
     }
     
-    // Visible scanlines (0-239)
+    // Visible scanlines (0-239) + potential overscan (240-260)
     if (scanline >= 0 && scanline < 240) {
-        
         // Latch control register at start of scanline
         if (cycle == 0) {
             scanlineCtrl[scanline] = ppuCtrl;
-            // DON'T override scanlineScrollX here - it should be set by register writes
-            // Only set it if it hasn't been set by a mid-frame write
-            // This preserves the scroll values set by the PPUSCROLL register writes
         }
         
         // Render the scanline at cycle 256 (end of visible portion)
@@ -858,14 +834,29 @@ void PPU::stepCycle(int scanline, int cycle) {
         return;
     }
     
+    // Overscan area (scanlines 240+ before VBlank)
+    // Some games/emulators render a few extra lines for overscan
+    if (scanline == 240) {
+        // Could potentially render overscan line here if needed
+        // renderOverscanLine(scanline);
+        return;
+    }
+    
     // VBlank scanlines (241-260)
     if (scanline == 241) {
         if (cycle == 1) {
-            ppuStatus |= 0x80;
+            ppuStatus |= 0x80;   // Set VBlank flag
             inVBlank = true;
             frameComplete = true;
             captureFrameScroll();
+            // NMI would be triggered here if enabled (ppuCtrl & 0x80)
         }
+        return;
+    }
+    
+    // Handle other VBlank scanlines (242-260)
+    if (scanline >= 242 && scanline <= 260) {
+        // Nothing special happens during most VBlank scanlines
         return;
     }
     
