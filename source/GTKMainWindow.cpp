@@ -456,37 +456,35 @@ void GTK3MainWindow::render_frame() {
                 dest_rect.y = 0;
                 dest_rect.w = widget_width;
                 dest_rect.h = widget_height;
-            } else {
-                // FIXED: Proper aspect ratio calculation
-                const float NES_ASPECT = 256.0f / 240.0f;  // ~1.067
+            } else if (integer_scaling) {
+                // Integer scaling - find largest whole number multiplier
+                int scale = std::min(widget_width / 256, widget_height / 240);
+                if (scale < 1) scale = 1;
                 
-                if (integer_scaling) {
-                    // Integer scaling - find largest whole number multiplier
-                    int scale = std::min(widget_width / 256, widget_height / 240);
-                    if (scale < 1) scale = 1;
-                    
-                    dest_rect.w = 256 * scale;
-                    dest_rect.h = 240 * scale;
+                dest_rect.w = 256 * scale;
+                dest_rect.h = 240 * scale;
+                dest_rect.x = (widget_width - dest_rect.w) / 2;
+                dest_rect.y = (widget_height - dest_rect.h) / 2;
+            } else {
+                // FIXED: Simplified aspect-correct scaling
+                // Calculate what the width and height would be for each scaling option
+                int width_if_fit_to_height = (int)((float)widget_height * 256.0f / 240.0f);
+                int height_if_fit_to_width = (int)((float)widget_width * 240.0f / 256.0f);
+                
+                if (width_if_fit_to_height <= widget_width) {
+                    // Fit to height - there's enough width
+                    dest_rect.w = width_if_fit_to_height;
+                    dest_rect.h = widget_height;
                     dest_rect.x = (widget_width - dest_rect.w) / 2;
-                    dest_rect.y = (widget_height - dest_rect.h) / 2;
+                    dest_rect.y = 0;
                 } else {
-                    // Aspect-correct scaling - fit to available space
-                    float window_aspect = (float)widget_width / (float)widget_height;
-                    
-                    if (window_aspect > NES_ASPECT) {
-                        // Window is wider than NES - fit to height, center horizontally
-                        dest_rect.h = widget_height;
-                        dest_rect.w = (int)(widget_height * NES_ASPECT);
-                        dest_rect.x = (widget_width - dest_rect.w) / 2;
-                        dest_rect.y = 0;
-                    } else {
-                        // Window is taller than NES - fit to width, center vertically
-                        dest_rect.w = widget_width;
-                        dest_rect.h = (int)(widget_width / NES_ASPECT);
-                        dest_rect.x = 0;
-                        dest_rect.y = (widget_height - dest_rect.h) / 2;
-                    }
+                    // Fit to width - not enough width to fit to height
+                    dest_rect.w = widget_width;
+                    dest_rect.h = height_if_fit_to_width;
+                    dest_rect.x = 0;
+                    dest_rect.y = (widget_height - dest_rect.h) / 2;
                 }
+
             }
             
             // Clear to black and render
@@ -501,6 +499,7 @@ void GTK3MainWindow::render_frame() {
     
     SDL_RenderPresent(sdl_renderer);
 }
+
 gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     
