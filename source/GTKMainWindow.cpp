@@ -1,4 +1,5 @@
 #include <SDL2/SDL.h>
+#include <algorithm>
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
@@ -30,7 +31,8 @@ GTK3MainWindow::GTK3MainWindow()
       frame_timer_id(0), status_message_id(0),
       sdl_window(nullptr), sdl_renderer(nullptr), sdl_texture(nullptr),
       current_resolution_index(0), custom_width(800), custom_height(600),
-      use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(false)
+      use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(false),
+      force_texture_recreation(false)
 {
     strcpy(status_message, "Ready");
     
@@ -69,38 +71,26 @@ bool GTK3MainWindow::initialize() {
         return false;
     }
     
-    // Get screen dimensions
-    GdkScreen* screen = gdk_screen_get_default();
-    int screen_width = gdk_screen_get_width(screen);
-    int screen_height = gdk_screen_get_height(screen);
-    
-    printf("Detected screen resolution: %dx%d\n", screen_width, screen_height);
-    
     create_widgets();
     load_key_mappings();
     load_video_settings();
     
-    // Set default resolution to screen width if not already configured
-    if (!use_custom_resolution && current_resolution_index == 0) {
-        // Check if screen width matches any preset
-        bool found_preset = false;
-        for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
-            if (PRESET_RESOLUTIONS[i].width == screen_width) {
-                current_resolution_index = i;
-                found_preset = true;
-                printf("Using preset resolution: %s\n", PRESET_RESOLUTIONS[i].name);
-                break;
-            }
-        }
+    // ONLY ADD THIS PART - Get screen dimensions using SDL
+    SDL_DisplayMode display_mode;
+    if (SDL_GetCurrentDisplayMode(0, &display_mode) == 0) {
+        int screen_width = display_mode.w;
+        int screen_height = display_mode.h;
+        printf("Detected screen resolution: %dx%d\n", screen_width, screen_height);
         
-        // If no preset matches, use custom resolution with screen dimensions
-        if (!found_preset) {
+        // Set default resolution to screen size if not already configured
+        if (!use_custom_resolution && current_resolution_index == 0) {
             use_custom_resolution = true;
             custom_width = screen_width;
             custom_height = screen_height;
-            printf("Using custom resolution: %dx%d (screen size)\n", custom_width, custom_height);
+            printf("Using screen resolution as default: %dx%d\n", custom_width, custom_height);
         }
     }
+    // END OF ADDITION
     
     // Apply initial resolution
     if (use_custom_resolution) {
@@ -119,7 +109,7 @@ bool GTK3MainWindow::initialize() {
         return false;
     }
     
-    // Initialize audio
+    // Initialize audio - KEEP THIS EXACTLY AS IT WAS
     if (Configuration::getAudioEnabled()) {
         SDL_AudioSpec desiredSpec;
         desiredSpec.freq = Configuration::getAudioFrequency();
@@ -161,8 +151,11 @@ void GTK3MainWindow::create_widgets() {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3+SDL");
-    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
+    gtk_window_set_default_size(GTK_WINDOW(window), 256, 240);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
+    
+    // FIXED: Allow proper resizing
+    gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
     
     // Set focus and connect key events
     gtk_widget_set_can_focus(window, TRUE);
@@ -173,7 +166,6 @@ void GTK3MainWindow::create_widgets() {
     g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), this);
     g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), this);
     g_signal_connect(window, "key-release-event", G_CALLBACK(on_key_release), this);
-    //g_signal_connect(window, "configure-event", G_CALLBACK(on_window_configure), this);
     
     // Create main vertical box
     main_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -277,6 +269,9 @@ void GTK3MainWindow::apply_resolution(int width, int height) {
     // Update the SDL socket size
     gtk_widget_set_size_request(sdl_socket, width, height);
     
+    // CRITICAL: Force texture recreation on next render
+    force_texture_recreation = true;
+    
     // Force a redraw
     gtk_widget_queue_draw(sdl_socket);
     
@@ -313,19 +308,26 @@ void GTK3MainWindow::calculate_render_rect(int source_width, int source_height,
         dest_rect.x = (target_width - dest_rect.w) / 2;
         dest_rect.y = (target_height - dest_rect.h) / 2;
     } else {
-        // Aspect-correct scaling (existing logic)
-        if (target_aspect > source_aspect) {
-            // Target is wider - fit to height
-            dest_rect.h = target_height;
-            dest_rect.w = (int)(target_height * source_aspect);
-            dest_rect.x = (target_width - dest_rect.w) / 2;
-            dest_rect.y = 0;
-        } else {
-            // Target is taller - fit to width
-            dest_rect.w = target_width;
-            dest_rect.h = (int)(target_width / source_aspect);
+        // FIXED: Aspect-correct scaling - always scale to fit the SMALLER dimension
+        int scale_x_pixels = target_width;  // If we fit to width
+        int scale_y_pixels = (int)(target_width / source_aspect);  // Corresponding height
+        
+        int scale_y_pixels_alt = target_height;  // If we fit to height  
+        int scale_x_pixels_alt = (int)(target_height * source_aspect);  // Corresponding width
+        
+        // Choose the scaling that fits entirely within the target area
+        if (scale_y_pixels <= target_height) {
+            // Fit to width (target is wide/normal)
+            dest_rect.w = scale_x_pixels;
+            dest_rect.h = scale_y_pixels;
             dest_rect.x = 0;
             dest_rect.y = (target_height - dest_rect.h) / 2;
+        } else {
+            // Fit to height (target is tall)
+            dest_rect.w = scale_x_pixels_alt;
+            dest_rect.h = scale_y_pixels_alt;
+            dest_rect.x = (target_width - dest_rect.w) / 2;
+            dest_rect.y = 0;
         }
     }
 }
@@ -390,122 +392,115 @@ bool GTK3MainWindow::init_sdl() {
 }
 
 void GTK3MainWindow::render_frame() {
-    if (!sdl_renderer || !sdl_texture) return;
+    if (!sdl_renderer) return;
     
     if (game_running && engine) {
         // Get actual widget size
         int widget_width = gtk_widget_get_allocated_width(sdl_socket);
         int widget_height = gtk_widget_get_allocated_height(sdl_socket);
         
-        // Recreate SDL texture if size changed
+        // Safety check
+        if (widget_width <= 0 || widget_height <= 0) {
+            SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+            SDL_RenderClear(sdl_renderer);
+            SDL_RenderPresent(sdl_renderer);
+            return;
+        }
+        
+        // Add tolerance to prevent constant texture recreation
         static int last_width = 0, last_height = 0;
-        if (widget_width != last_width || widget_height != last_height) {
+        
+        bool size_changed = (abs(widget_width - last_width) > 10 || 
+                            abs(widget_height - last_height) > 10 || 
+                            !sdl_texture || force_texture_recreation);
+        
+        if (size_changed) {
             if (sdl_texture) {
                 SDL_DestroyTexture(sdl_texture);
+                sdl_texture = nullptr;
             }
+            
+            // Always use native NES resolution and let SDL do the scaling
             sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
-                                           SDL_TEXTUREACCESS_STREAMING, 
-                                           widget_width, widget_height);
+                                           SDL_TEXTUREACCESS_STREAMING, 256, 240);
+            
             last_width = widget_width;
             last_height = widget_height;
+            force_texture_recreation = false;  // Reset the flag
             
             if (!sdl_texture) {
                 printf("ERROR: Failed to recreate SDL texture: %s\n", SDL_GetError());
                 return;
             }
+            
+            printf("Recreated native texture for %dx%d window\n", widget_width, widget_height);
         }
         
-        // Get NES frame buffer first
+        // Get NES frame buffer
         static uint16_t nes_buffer[256 * 240];
         engine->render16(nes_buffer);
         
-        // Create screen buffer for scaled output
-        static std::vector<uint16_t> screen_buffer;
-        screen_buffer.resize(widget_width * widget_height);
-        
-        // Clear screen buffer to black
-        std::fill(screen_buffer.begin(), screen_buffer.end(), 0x0000);
-        
-        // Calculate scaling with current settings
-        float source_aspect = 256.0f / 240.0f;
-        float target_aspect = (float)widget_width / (float)widget_height;
-        
-        int dest_width, dest_height, dest_x, dest_y;
-        
-        if (!maintain_aspect_ratio) {
-            // Stretch to fill entire area
-            dest_width = widget_width;
-            dest_height = widget_height;
-            dest_x = dest_y = 0;
-        } else if (integer_scaling) {
-            // Calculate largest integer scale that fits
-            int scale_x = widget_width / 256;
-            int scale_y = widget_height / 240;
-            int scale = (scale_x < scale_y) ? scale_x : scale_y;
-            if (scale < 1) scale = 1;
-            
-            dest_width = 256 * scale;
-            dest_height = 240 * scale;
-            dest_x = (widget_width - dest_width) / 2;
-            dest_y = (widget_height - dest_height) / 2;
-        } else {
-            // Aspect-correct scaling
-            if (target_aspect > source_aspect) {
-                // Target is wider - fit to height
-                dest_height = widget_height;
-                dest_width = (int)(widget_height * source_aspect);
-                dest_x = (widget_width - dest_width) / 2;
-                dest_y = 0;
-            } else {
-                // Target is taller - fit to width
-                dest_width = widget_width;
-                dest_height = (int)(widget_width / source_aspect);
-                dest_x = 0;
-                dest_y = (widget_height - dest_height) / 2;
-            }
-        }
-        
-        // Perform the scaling
-        for (int y = 0; y < dest_height; y++) {
-            for (int x = 0; x < dest_width; x++) {
-                // Map screen coordinates back to NES coordinates
-                int nes_x = (x * 256) / dest_width;
-                int nes_y = (y * 240) / dest_height;
-                
-                // Bounds check
-                if (nes_x >= 0 && nes_x < 256 && nes_y >= 0 && nes_y < 240) {
-                    uint16_t pixel = nes_buffer[nes_y * 256 + nes_x];
-                    
-                    int screen_x = dest_x + x;
-                    int screen_y = dest_y + y;
-                    
-                    if (screen_x >= 0 && screen_x < widget_width && 
-                        screen_y >= 0 && screen_y < widget_height) {
-                        screen_buffer[screen_y * widget_width + screen_x] = pixel;
-                    }
-                }
-            }
-        }
-        
-        // Update SDL texture with scaled result
+        // Update SDL texture
         void* pixels;
         int pitch;
         if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
-            memcpy(pixels, screen_buffer.data(), screen_buffer.size() * sizeof(uint16_t));
+            memcpy(pixels, nes_buffer, sizeof(nes_buffer));
             SDL_UnlockTexture(sdl_texture);
+            
+            // Calculate proper scaling rectangle
+            SDL_Rect dest_rect;
+            
+            if (!maintain_aspect_ratio) {
+                // Stretch to fill entire area
+                dest_rect.x = 0;
+                dest_rect.y = 0;
+                dest_rect.w = widget_width;
+                dest_rect.h = widget_height;
+            } else {
+                // FIXED: Proper aspect ratio calculation
+                const float NES_ASPECT = 256.0f / 240.0f;  // ~1.067
+                
+                if (integer_scaling) {
+                    // Integer scaling - find largest whole number multiplier
+                    int scale = std::min(widget_width / 256, widget_height / 240);
+                    if (scale < 1) scale = 1;
+                    
+                    dest_rect.w = 256 * scale;
+                    dest_rect.h = 240 * scale;
+                    dest_rect.x = (widget_width - dest_rect.w) / 2;
+                    dest_rect.y = (widget_height - dest_rect.h) / 2;
+                } else {
+                    // Aspect-correct scaling - fit to available space
+                    float window_aspect = (float)widget_width / (float)widget_height;
+                    
+                    if (window_aspect > NES_ASPECT) {
+                        // Window is wider than NES - fit to height, center horizontally
+                        dest_rect.h = widget_height;
+                        dest_rect.w = (int)(widget_height * NES_ASPECT);
+                        dest_rect.x = (widget_width - dest_rect.w) / 2;
+                        dest_rect.y = 0;
+                    } else {
+                        // Window is taller than NES - fit to width, center vertically
+                        dest_rect.w = widget_width;
+                        dest_rect.h = (int)(widget_width / NES_ASPECT);
+                        dest_rect.x = 0;
+                        dest_rect.y = (widget_height - dest_rect.h) / 2;
+                    }
+                }
+            }
+            
+            // Clear to black and render
+            SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+            SDL_RenderClear(sdl_renderer);
+            SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
         }
-        
-        // Render full screen
-        SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, NULL);
     } else {
-        // Clear to black when no game running
         SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
         SDL_RenderClear(sdl_renderer);
     }
     
     SDL_RenderPresent(sdl_renderer);
 }
-
 gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     

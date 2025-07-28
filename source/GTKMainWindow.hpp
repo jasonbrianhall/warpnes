@@ -37,7 +37,7 @@ private:
     GtkWidget* sdl_socket;
     GtkWidget* menubar;
     GtkWidget* status_bar;
-    
+    bool force_texture_recreation;
     // SDL components
     SDL_Window* sdl_window;
     SDL_Renderer* sdl_renderer;

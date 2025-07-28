@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include "../Zapper.hpp"
+#include "PPU.hpp"
 
 
 // Forward declarations
