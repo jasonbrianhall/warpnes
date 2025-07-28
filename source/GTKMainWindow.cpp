@@ -362,44 +362,117 @@ bool GTK3MainWindow::init_sdl() {
 void GTK3MainWindow::render_frame() {
     if (!sdl_renderer || !sdl_texture) return;
     
-    // Always clear the entire renderer to black first
-    SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(sdl_renderer);
-    
     if (game_running && engine) {
-        // Get pixels from game engine
-        static uint16_t frame_buffer[256 * 240];
-        engine->render16(frame_buffer);
-        
-        // Update SDL texture
-        void* pixels;
-        int pitch;
-        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
-            memcpy(pixels, frame_buffer, sizeof(frame_buffer));
-            SDL_UnlockTexture(sdl_texture);
-        }
-        
-        // Get current rendering dimensions
-        int target_width, target_height;
-        if (use_custom_resolution) {
-            target_width = custom_width;
-            target_height = custom_height;
-        } else {
-            target_width = PRESET_RESOLUTIONS[current_resolution_index].width;
-            target_height = PRESET_RESOLUTIONS[current_resolution_index].height;
-        }
-        
-        // Use actual widget size for rendering area
+        // Get actual widget size
         int widget_width = gtk_widget_get_allocated_width(sdl_socket);
         int widget_height = gtk_widget_get_allocated_height(sdl_socket);
         
-        SDL_Rect dest_rect;
-        calculate_render_rect(256, 240, widget_width, widget_height, dest_rect);
+        // Recreate SDL texture if size changed
+        static int last_width = 0, last_height = 0;
+        if (widget_width != last_width || widget_height != last_height) {
+            if (sdl_texture) {
+                SDL_DestroyTexture(sdl_texture);
+            }
+            sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
+                                           SDL_TEXTUREACCESS_STREAMING, 
+                                           widget_width, widget_height);
+            last_width = widget_width;
+            last_height = widget_height;
+            
+            if (!sdl_texture) {
+                printf("ERROR: Failed to recreate SDL texture: %s\n", SDL_GetError());
+                return;
+            }
+        }
         
-        SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
+        // Get NES frame buffer first
+        static uint16_t nes_buffer[256 * 240];
+        engine->render16(nes_buffer);
+        
+        // Create screen buffer for scaled output
+        static std::vector<uint16_t> screen_buffer;
+        screen_buffer.resize(widget_width * widget_height);
+        
+        // Clear screen buffer to black
+        std::fill(screen_buffer.begin(), screen_buffer.end(), 0x0000);
+        
+        // Calculate scaling with current settings
+        float source_aspect = 256.0f / 240.0f;
+        float target_aspect = (float)widget_width / (float)widget_height;
+        
+        int dest_width, dest_height, dest_x, dest_y;
+        
+        if (!maintain_aspect_ratio) {
+            // Stretch to fill entire area
+            dest_width = widget_width;
+            dest_height = widget_height;
+            dest_x = dest_y = 0;
+        } else if (integer_scaling) {
+            // Calculate largest integer scale that fits
+            int scale_x = widget_width / 256;
+            int scale_y = widget_height / 240;
+            int scale = (scale_x < scale_y) ? scale_x : scale_y;
+            if (scale < 1) scale = 1;
+            
+            dest_width = 256 * scale;
+            dest_height = 240 * scale;
+            dest_x = (widget_width - dest_width) / 2;
+            dest_y = (widget_height - dest_height) / 2;
+        } else {
+            // Aspect-correct scaling
+            if (target_aspect > source_aspect) {
+                // Target is wider - fit to height
+                dest_height = widget_height;
+                dest_width = (int)(widget_height * source_aspect);
+                dest_x = (widget_width - dest_width) / 2;
+                dest_y = 0;
+            } else {
+                // Target is taller - fit to width
+                dest_width = widget_width;
+                dest_height = (int)(widget_width / source_aspect);
+                dest_x = 0;
+                dest_y = (widget_height - dest_height) / 2;
+            }
+        }
+        
+        // Perform the scaling
+        for (int y = 0; y < dest_height; y++) {
+            for (int x = 0; x < dest_width; x++) {
+                // Map screen coordinates back to NES coordinates
+                int nes_x = (x * 256) / dest_width;
+                int nes_y = (y * 240) / dest_height;
+                
+                // Bounds check
+                if (nes_x >= 0 && nes_x < 256 && nes_y >= 0 && nes_y < 240) {
+                    uint16_t pixel = nes_buffer[nes_y * 256 + nes_x];
+                    
+                    int screen_x = dest_x + x;
+                    int screen_y = dest_y + y;
+                    
+                    if (screen_x >= 0 && screen_x < widget_width && 
+                        screen_y >= 0 && screen_y < widget_height) {
+                        screen_buffer[screen_y * widget_width + screen_x] = pixel;
+                    }
+                }
+            }
+        }
+        
+        // Update SDL texture with scaled result
+        void* pixels;
+        int pitch;
+        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
+            memcpy(pixels, screen_buffer.data(), screen_buffer.size() * sizeof(uint16_t));
+            SDL_UnlockTexture(sdl_texture);
+        }
+        
+        // Render full screen
+        SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, NULL);
+    } else {
+        // Clear to black when no game running
+        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(sdl_renderer);
     }
     
-    // Always present, whether we have a game or not
     SDL_RenderPresent(sdl_renderer);
 }
 
