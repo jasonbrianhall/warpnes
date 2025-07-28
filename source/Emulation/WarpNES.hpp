@@ -130,6 +130,7 @@ public:
     bool battery;        // Battery-backed RAM
     bool trainer;        // 512-byte trainer present
   } nesHeader;
+  PPU* getPPU() { return ppu; }
 
 private:
   // 6502 CPU state

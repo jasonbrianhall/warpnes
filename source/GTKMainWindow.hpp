@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include "Emulation/ControllerSDL.hpp"
+#include "Emulation/PPU.hpp"
 
 // Forward declarations
 class WarpNES;
@@ -27,6 +28,7 @@ public:
     bool initialize();
     void run(const char* rom_filename);
     void shutdown();
+    PPU* getPPU() { return engine ? engine->getPPU() : nullptr; }
 
 private:
     // GTK widgets
@@ -40,6 +42,23 @@ private:
     SDL_Window* sdl_window;
     SDL_Renderer* sdl_renderer;
     SDL_Texture* sdl_texture;
+    
+    // Resolution and scaling
+    struct Resolution {
+        int width;
+        int height;
+        const char* name;
+    };
+    
+    static const Resolution PRESET_RESOLUTIONS[];
+    static const int NUM_PRESET_RESOLUTIONS;
+
+    int current_resolution_index;
+    int custom_width;
+    int custom_height;
+    bool use_custom_resolution;
+    bool maintain_aspect_ratio;
+    bool integer_scaling;
     
     // Game state
     WarpNES* engine;
@@ -76,6 +95,13 @@ private:
     // SDL setup and management
     bool init_sdl();
     void cleanup_sdl();
+    void recreate_sdl_for_resolution(int width, int height);
+    
+    // Resolution management
+    void apply_resolution(int width, int height);
+    void calculate_render_rect(int source_width, int source_height, 
+                              int target_width, int target_height, 
+                              SDL_Rect& dest_rect);
     
     // Audio callback
     static void audio_callback(void* userdata, uint8_t* buffer, int len);
@@ -99,21 +125,26 @@ private:
     static void on_game_pause(GtkMenuItem* item, gpointer user_data);
     static void on_options_controls(GtkMenuItem* item, gpointer user_data);
     static void on_options_video(GtkMenuItem* item, gpointer user_data);
+    static void on_options_resolution(GtkMenuItem* item, gpointer user_data);
     static void on_help_about(GtkMenuItem* item, gpointer user_data);
     
     // Dialog functions
     void show_controls_dialog();
     void show_video_options_dialog();
+    void show_resolution_dialog();
     void show_about_dialog();
     
     // Window callbacks
     static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static void on_window_destroy(GtkWidget* widget, gpointer user_data);
+    static gboolean on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data);
     
     // Utility functions
     void set_status_message(const char* message);
     void load_key_mappings();
     void save_key_mappings();
+    void load_video_settings();
+    void save_video_settings();
 };
 
 #endif // GTK3MAINWINDOW_HPP
