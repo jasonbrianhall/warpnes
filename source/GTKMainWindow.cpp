@@ -69,9 +69,38 @@ bool GTK3MainWindow::initialize() {
         return false;
     }
     
+    // Get screen dimensions
+    GdkScreen* screen = gdk_screen_get_default();
+    int screen_width = gdk_screen_get_width(screen);
+    int screen_height = gdk_screen_get_height(screen);
+    
+    printf("Detected screen resolution: %dx%d\n", screen_width, screen_height);
+    
     create_widgets();
     load_key_mappings();
-    load_video_settings(); // Load video settings
+    load_video_settings();
+    
+    // Set default resolution to screen width if not already configured
+    if (!use_custom_resolution && current_resolution_index == 0) {
+        // Check if screen width matches any preset
+        bool found_preset = false;
+        for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
+            if (PRESET_RESOLUTIONS[i].width == screen_width) {
+                current_resolution_index = i;
+                found_preset = true;
+                printf("Using preset resolution: %s\n", PRESET_RESOLUTIONS[i].name);
+                break;
+            }
+        }
+        
+        // If no preset matches, use custom resolution with screen dimensions
+        if (!found_preset) {
+            use_custom_resolution = true;
+            custom_width = screen_width;
+            custom_height = screen_height;
+            printf("Using custom resolution: %dx%d (screen size)\n", custom_width, custom_height);
+        }
+    }
     
     // Apply initial resolution
     if (use_custom_resolution) {
@@ -116,6 +145,7 @@ bool GTK3MainWindow::initialize() {
     
     return true;
 }
+
 // FIXED: Audio callback function
 void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(userdata);
