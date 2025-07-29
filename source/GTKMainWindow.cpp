@@ -422,9 +422,9 @@ void GTK3MainWindow::render_frame() {
         widget_height = 240;
     }
 
-//SDL_RenderSetViewport(sdl_renderer, NULL);  // Reset any old viewport
-//SDL_RenderSetLogicalSize(sdl_renderer, 133, 100); // Match draw area
-
+    // Set the viewport to match the widget size
+    SDL_RenderSetViewport(sdl_renderer, NULL);  // Reset viewport first
+    SDL_RenderSetLogicalSize(sdl_renderer, widget_width, widget_height);
 
     // Recreate texture if needed
     static int last_width = 0, last_height = 0;
@@ -438,6 +438,7 @@ void GTK3MainWindow::render_frame() {
             sdl_texture = nullptr;
         }
 
+        // Create texture for NES native resolution (256x240)
         sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565,
                                         SDL_TEXTUREACCESS_STREAMING, 256, 240);
         if (!sdl_texture) {
@@ -448,13 +449,20 @@ void GTK3MainWindow::render_frame() {
         last_width  = widget_width;
         last_height = widget_height;
         force_texture_recreation = false;
+        
+        printf("Recreated texture for widget size: %dx%d\n", widget_width, widget_height);
     }
 
+    // Clear the renderer with black background
+    SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(sdl_renderer);
+
     if (game_running && engine) {
-        // Get NES frame
+        // Get NES frame data
         static uint16_t nes_buffer[256 * 240];
         engine->render16(nes_buffer);
 
+        // Update texture with NES frame data
         void* pixels;
         int pitch;
         if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
@@ -462,38 +470,42 @@ void GTK3MainWindow::render_frame() {
             SDL_UnlockTexture(sdl_texture);
         }
 
-        // Calculate scaled destination rect (centered)
-        const float NES_ASPECT = 4.0f / 3.0f;
-        float widget_ratio     = (float)widget_width / widget_height;
-
-        SDL_Rect dest_rect = {};
-
-        if (widget_ratio > NES_ASPECT) {
-            // Widget is wider than NES aspect — limit by height
+        // SCALE UP to fill screen while maintaining 1.33 aspect ratio
+        SDL_Rect dest_rect;
+        
+        // Always choose the scaling that gives us the LARGEST possible size
+        // Try scaling to full height first
+        int scaled_width = (int)(widget_height * 1.33f);
+        
+        
+        if (scaled_width <= widget_width) {
+            // Scaling to full height fits within width - use full height
+            dest_rect.w = scaled_width;
             dest_rect.h = widget_height;
-            dest_rect.w = (int)(widget_height * NES_ASPECT);
+            dest_rect.x = (widget_width - scaled_width) / 2;
+            dest_rect.y = 0;
         } else {
-            // Widget is taller — limit by width
+            // Scaling to full height would be too wide - scale to full width instead
             dest_rect.w = widget_width;
-            dest_rect.h = (int)(widget_width / NES_ASPECT);
+            dest_rect.h = (int)(widget_width / 1.33f);
+            dest_rect.x = 0;
+            dest_rect.y = (widget_height - dest_rect.h) / 2;
         }
 
-        // Center horizontally and vertically
-        dest_rect.x = (widget_width  - dest_rect.w) / 2;
-        dest_rect.y = (widget_height - dest_rect.h) / 2;
-
-        // Render
-        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(sdl_renderer);
+        // Render the NES frame
         SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
-    } else {
-        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(sdl_renderer);
+        
+        // Debug output (remove in production)
+        static int debug_counter = 0;
+        if (debug_counter++ % 60 == 0) {  // Print every 60 frames (1 second at 60fps)
+            printf("Widget: %dx%d, Dest rect: %d,%d %dx%d\n", 
+                   widget_width, widget_height, 
+                   dest_rect.x, dest_rect.y, dest_rect.w, dest_rect.h);
+        }
     }
 
     SDL_RenderPresent(sdl_renderer);
 }
-
 
 
 
