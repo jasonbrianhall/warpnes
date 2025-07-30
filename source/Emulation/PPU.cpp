@@ -269,7 +269,7 @@ case 0x2002: // PPUSTATUS
     
     // DON'T clear VBlank flag here in cycle-accurate mode
     // Let the cycle-accurate timing handle it
-    sprite0Hit = false;
+    //sprite0Hit = false;
     ppuStatus &= 0xBF;   // Only clear sprite 0 hit flag
     
     return status;
