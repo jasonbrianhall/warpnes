@@ -1126,15 +1126,15 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
                              ((color32 & 0x00FC00) >> 5) | 
                              ((color32 & 0x0000F8) >> 3);
        
-if (behindBackground) {
-    // For behind-background sprites, only draw if background pixel is palette index 0
-    int bufferIndex = scanline * 256 + xPixel;
-    if (bufferIndex >= 0 && bufferIndex < 256 * 240 && backgroundMask[bufferIndex] == 1) {
-        frameBuffer[bufferIndex] = spritePixel;
-    }
-} else {
-    frameBuffer[scanline * 256 + xPixel] = spritePixel;
-}
+       if (behindBackground) {
+           // For behind-background sprites, only draw if background pixel is palette index 0
+           int bufferIndex = scanline * 256 + xPixel;
+           if (bufferIndex >= 0 && bufferIndex < 256 * 240 && backgroundMask[bufferIndex] == 1) {
+               frameBuffer[bufferIndex] = spritePixel;
+           }
+       } else {
+           frameBuffer[scanline * 256 + xPixel] = spritePixel;
+       }
    }
 }
 
