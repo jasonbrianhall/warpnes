@@ -850,10 +850,10 @@ void PPU::renderBackgroundScanline(int scanline) {
     uint8_t ctrl = scanlineCtrl[scanline];
     
     // Convert unsigned scrollY to signed (-128 to +127)
-    int signedScrollY = (scrollY > 127) ? (int)scrollY - 256 : (int)scrollY;
+    uint8_t signedScrollY = scrollY;
     
     // Calculate world Y position for this scanline
-    int worldY = scanline + signedScrollY;
+    uint8_t worldY = scanline + signedScrollY;
     
     // Get base nametable settings
     uint8_t baseNametableX = ctrl & 0x01;
@@ -905,13 +905,7 @@ void PPU::renderBackgroundScanline(int scanline) {
         }
         return;
     }
-    
-    // Debug output for troubleshooting
-    if (scanline < 5 || scanline > 235) {
-        printf("Scanline %d: scrollY=%d->%d, calc=%d+%d=%d, final worldY=%d, tileY=%d, nametableY=0x%03X\n", 
-               scanline, scrollY, signedScrollY, scanline, signedScrollY, scanline + signedScrollY, worldY, tileY, nametableY);
-    }
-    
+        
     // Calculate horizontal tile range
     int startTileX = scrollX / 8;
     int endTileX = (scrollX + 256 + 7) / 8;  // Round up
