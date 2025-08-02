@@ -652,7 +652,6 @@ void WarpNES::updateCycleAccurate() {
 
       // VBlank flag set on cycle 1 of scanline 241
       if (scanline == VBLANK_START_SCANLINE && cycle == 1) {
-        ppu->setVBlankFlag(true);
         ppu->captureFrameScroll();
 
         // Fire NMI immediately if enabled
