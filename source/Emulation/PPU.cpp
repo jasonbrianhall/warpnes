@@ -986,10 +986,10 @@ void PPU::renderScanline(int scanline, int mapper) {
     if (ppuMask & 0x08) {
         switch (mapper) {
             case 9:
-                renderBackgroundScanline(scanline);
+                renderBackgroundScanlineMMC2(scanline);
                 break;
              default:
-                renderBackgroundScanline(scanline);
+                renderBackgroundScanlineMMC1(scanline);
                 break;             
         }
     }

@@ -81,7 +81,7 @@ void WarpNES::updateMMC1Banks() {
     // The readCHRData function will use them directly
 }
 
-void PPU::renderBackgroundScanline(int scanline) {
+void PPU::renderBackgroundScanlineMMC1(int scanline) {
    if (scanline < 0 || scanline >= 240) return;
    int scrollX = scanlineScrollX[scanline];
    int scrollY = scanlineScrollY[scanline];
