@@ -101,7 +101,7 @@ public:
     void captureFrameScroll();
     
     // PPU cycle tracking and catch-up (DJGPP compatible)
-    void stepCycle(int scanline, int cycle);
+    void stepCycle(int scanline, int cycle, int mapper);
     void catchUp(uint64_t targetCycles);
     uint64_t getCurrentCycles() const { return ppuCycles; }
     void setCycles(uint64_t cycles) { ppuCycles = cycles; }
@@ -142,7 +142,7 @@ private:
     bool frameComplete;
     
     // Scanline rendering methods
-    void renderScanline(int scanline);
+    void renderScanline(int scanline, int mapper);
     void renderBackgroundScanline(int scanline);
     void clearScanline(int scanline);
     void checkSprite0HitScanline(int scanline);

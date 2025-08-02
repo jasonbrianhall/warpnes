@@ -672,7 +672,7 @@ void WarpNES::updateCycleAccurate() {
       }
 
       // Step PPU cycle
-      ppu->stepCycle(scanline, cycle);
+      ppu->stepCycle(scanline, cycle, nesHeader.mapper);
 
       if (nesHeader.mapper == 4) {
         checkMMC3IRQ(scanline, cycle);

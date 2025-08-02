@@ -749,7 +749,7 @@ void PPU::captureFrameScroll() {
     }
 }
 
-void PPU::stepCycle(int scanline, int cycle) {
+void PPU::stepCycle(int scanline, int cycle, int mapper) {
     currentScanline = scanline;
     currentCycle = cycle;
     
@@ -785,7 +785,7 @@ void PPU::stepCycle(int scanline, int cycle) {
         
         // Render the scanline at cycle 256 (end of visible portion)
         if (cycle == 256) {
-            renderScanline(scanline);
+            renderScanline(scanline, mapper);
         }
         
         // Sprite 0 hit detection
@@ -842,64 +842,6 @@ void PPU::clearScanline(int scanline) {
     }
 }
 
-void PPU::renderBackgroundScanline(int scanline) {
-   if (scanline < 0 || scanline >= 240) return;
-   int scrollX = scanlineScrollX[scanline];
-   int scrollY = scanlineScrollY[scanline];
-   uint8_t ctrl = scanlineCtrl[scanline];
-   uint8_t baseNametable = ctrl & 0x01;
-   uint8_t baseNametableY = (ctrl & 0x02) >> 1;
-   int worldY = scanline + scrollY;
-   int tileY = (worldY / 8) % 30;
-   int fineY = worldY % 8;
-   uint16_t nametableAddrY = baseNametableY ? 0x0800 : 0x0000;
-   int startTileX = scrollX / 8;
-   int endTileX = (scrollX + 256) / 8;
-   for (int tileX = startTileX; tileX <= endTileX; tileX++) {
-       int screenX = (tileX * 8) - scrollX;
-       uint16_t nametableAddrX;
-       int localTileX = tileX;
-       if (localTileX < 0) {
-           localTileX = (localTileX % 32 + 32) % 32;
-           nametableAddrX = baseNametable ? 0x0000 : 0x0400;
-       } else if (localTileX < 32) {
-           nametableAddrX = baseNametable ? 0x0400 : 0x0000;
-       } else {
-           localTileX = localTileX % 32;
-           nametableAddrX = baseNametable ? 0x0000 : 0x0400;
-       }
-       uint16_t nametableAddr = 0x2000 + nametableAddrX + nametableAddrY;
-       uint16_t tileAddr = nametableAddr + (tileY * 32) + localTileX;
-       uint8_t tileIndex = readByte(tileAddr);
-       uint8_t attribute = getAttributeTableValue(tileAddr);
-       uint16_t patternBase = tileIndex * 16;
-       if (ctrl & 0x10) patternBase += 0x1000;
-       uint8_t patternLo = readCHR(patternBase + fineY);
-       uint8_t patternHi = readCHR(patternBase + fineY + 8);
-       for (int pixelX = 0; pixelX < 8; pixelX++) {
-           int screenPixelX = screenX + pixelX;
-           if (screenPixelX < 0 || screenPixelX >= 256) continue;
-           uint8_t pixelValue = 0;
-           if (patternLo & (0x80 >> pixelX)) pixelValue |= 1;
-           if (patternHi & (0x80 >> pixelX)) pixelValue |= 2;
-           int bufferIndex = scanline * 256 + screenPixelX;
-           if (pixelValue == 0) {
-               backgroundMask[bufferIndex] = 1;
-           } else {
-               backgroundMask[bufferIndex] = 0;
-           }
-           uint8_t colorIndex;
-           if (pixelValue == 0) {
-               colorIndex = palette[0];
-           } else {
-               colorIndex = palette[(attribute & 0x03) * 4 + pixelValue];
-           }
-           uint32_t color32 = paletteRGB[colorIndex];
-           uint16_t pixel = ((color32 & 0xF80000) >> 8) | ((color32 & 0x00FC00) >> 5) | ((color32 & 0x0000F8) >> 3);
-           frameBuffer[scanline * 256 + screenPixelX] = pixel;
-       }
-   }
-}
 void PPU::checkSprite0HitScanline(int scanline) {
     if (sprite0Hit) return;  // Already hit this frame
     if (!(ppuMask & 0x18)) return;  // Both sprite and background rendering must be enabled
@@ -1026,7 +968,7 @@ void PPU::checkSprite0HitScanline(int scanline) {
     }
 }
 
-void PPU::renderScanline(int scanline) {
+void PPU::renderScanline(int scanline, int mapper) {
     if (scanline < 0 || scanline >= 240) return;
     
     // Clear scanline with background color
@@ -1042,7 +984,14 @@ void PPU::renderScanline(int scanline) {
     
     // Render background first
     if (ppuMask & 0x08) {
-        renderBackgroundScanline(scanline);
+        switch (mapper) {
+            case 9:
+                renderBackgroundScanline(scanline);
+                break;
+             default:
+                renderBackgroundScanline(scanline);
+                break;             
+        }
     }
     
     // Then render ALL sprites in one pass with proper priority
