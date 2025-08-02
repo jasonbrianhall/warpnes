@@ -844,94 +844,150 @@ void PPU::clearScanline(int scanline) {
 
 void PPU::renderBackgroundScanline(int scanline) {
     if (scanline < 0 || scanline >= 240) return;
-    // Use per-scanline values when available, with proper fallback
+    
     int scrollX = scanlineScrollX[scanline];
     int scrollY = scanlineScrollY[scanline];
     uint8_t ctrl = scanlineCtrl[scanline];
-        
-    uint8_t baseNametable = ctrl & 0x01;
+    
+    // Convert unsigned scrollY to signed (-128 to +127)
+    int signedScrollY = (scrollY > 127) ? (int)scrollY - 256 : (int)scrollY;
+    
+    // Calculate world Y position for this scanline
+    int worldY = scanline + signedScrollY;
+    
+    // Get base nametable settings
+    uint8_t baseNametableX = ctrl & 0x01;
     uint8_t baseNametableY = (ctrl & 0x02) >> 1;
     
-    // Calculate Y position with vertical nametable support
-    int worldY = scanline + scrollY;
+    // Start with base nametable addresses
+    uint16_t nametableY = baseNametableY ? 0x0800 : 0x0000;
+    
+    // Handle Y wrapping for horizontal mirroring
+    // In horizontal mirroring, nametables are arranged side by side, not stacked
+    // So Y wrapping should stay in the same vertical nametable
+    if (worldY < 0) {
+        worldY += 240;
+        // For horizontal mirroring, don't switch nametables on Y wrap
+    } else if (worldY >= 240) {
+        worldY -= 240;
+        // For horizontal mirroring, don't switch nametables on Y wrap
+    }
+    
+    // Calculate tile position and fine scroll
     int tileY = worldY / 8;
     int fineY = worldY % 8;
     
-    // Handle vertical nametable wrapping
-    uint16_t nametableAddrY = baseNametableY ? 0x0800 : 0x0000;
-    if (tileY >= 30) {
-        tileY = tileY % 30;
-        nametableAddrY = baseNametableY ? 0x0000 : 0x0800;
+    // Handle negative fine Y (can happen near wrap boundaries)
+    if (fineY < 0) {
+        fineY += 8;
+        tileY--;
     }
     
-    // Calculate which tiles to render
-    int startTileX = scrollX / 8;
-    int endTileX = (scrollX + 256) / 8 + 1;
+    // Handle tile Y boundaries
+    if (tileY < 0) {
+        tileY += 30;  // Wrap within nametable
+    } else if (tileY >= 30) {
+        tileY -= 30;  // Wrap within nametable
+    }
     
-    for (int tileX = startTileX; tileX <= endTileX; tileX++) {
+    // Safety check
+    if (tileY < 0 || tileY >= 30) {
+        // Clear scanline with background color
+        uint8_t bgColorIndex = palette[0];
+        uint32_t bgColor32 = paletteRGB[bgColorIndex];
+        uint16_t bgColor16 = ((bgColor32 & 0xF80000) >> 8) | 
+                            ((bgColor32 & 0x00FC00) >> 5) | 
+                            ((bgColor32 & 0x0000F8) >> 3);
+        
+        for (int x = 0; x < 256; x++) {
+            frameBuffer[scanline * 256 + x] = bgColor16;
+            backgroundMask[scanline * 256 + x] = 1;
+        }
+        return;
+    }
+    
+    // Debug output for troubleshooting
+    if (scanline < 5 || scanline > 235) {
+        printf("Scanline %d: scrollY=%d->%d, calc=%d+%d=%d, final worldY=%d, tileY=%d, nametableY=0x%03X\n", 
+               scanline, scrollY, signedScrollY, scanline, signedScrollY, scanline + signedScrollY, worldY, tileY, nametableY);
+    }
+    
+    // Calculate horizontal tile range
+    int startTileX = scrollX / 8;
+    int endTileX = (scrollX + 256 + 7) / 8;  // Round up
+    
+    // Render tiles across the scanline
+    for (int tileX = startTileX; tileX < endTileX; tileX++) {
         int screenX = (tileX * 8) - scrollX;
         
-        if (screenX + 8 <= 0 || screenX >= 256) continue;
+        // Skip tiles completely off screen
+        if (screenX >= 256 || screenX + 8 <= 0) continue;
         
-        // Determine nametable with proper horizontal wrapping
-        uint16_t nametableAddrX;
+        // Handle horizontal nametable selection and wrapping
+        uint16_t nametableX;
         int localTileX = tileX;
         
         if (localTileX < 0) {
+            // Wrap to right nametable
             localTileX = (localTileX % 32 + 32) % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400;
-        } else if (localTileX < 32) {
-            nametableAddrX = baseNametable ? 0x0400 : 0x0000;
-        } else {
+            nametableX = baseNametableX ? 0x0000 : 0x0400;
+        } else if (localTileX >= 32) {
+            // Wrap to right nametable
             localTileX = localTileX % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400;
+            nametableX = baseNametableX ? 0x0000 : 0x0400;
+        } else {
+            // Normal tile in base nametable
+            nametableX = baseNametableX ? 0x0400 : 0x0000;
         }
         
-        // Combine horizontal and vertical nametable addresses
-        uint16_t nametableAddr = 0x2000 + nametableAddrX + nametableAddrY;
-        
-        if (tileY >= 30) continue;
-        
+        // Calculate final nametable address
+        uint16_t nametableAddr = 0x2000 + nametableX + nametableY;
         uint16_t tileAddr = nametableAddr + (tileY * 32) + localTileX;
+        
+        // Get tile data
         uint8_t tileIndex = readByte(tileAddr);
         uint8_t attribute = getAttributeTableValue(tileAddr);
         
-        // Get pattern data
+        // Get pattern table data
         uint16_t patternBase = tileIndex * 16;
-        if (ctrl & 0x10) patternBase += 0x1000;
+        if (ctrl & 0x10) patternBase += 0x1000;  // Background pattern table select
         
         uint8_t patternLo = readCHR(patternBase + fineY);
         uint8_t patternHi = readCHR(patternBase + fineY + 8);
         
-        // Render pixels
+        // Render the 8 pixels of this tile
         for (int pixelX = 0; pixelX < 8; pixelX++) {
             int screenPixelX = screenX + pixelX;
+            
+            // Skip pixels off screen
             if (screenPixelX < 0 || screenPixelX >= 256) continue;
             
+            // Extract pixel value (0-3)
             uint8_t pixelValue = 0;
             if (patternLo & (0x80 >> pixelX)) pixelValue |= 1;
             if (patternHi & (0x80 >> pixelX)) pixelValue |= 2;
             
+            // Calculate buffer index
             int bufferIndex = scanline * 256 + screenPixelX;
-            if (pixelValue == 0) {
-                backgroundMask[bufferIndex] = 1;  // Transparent
-            } else {
-                backgroundMask[bufferIndex] = 0;  // Opaque
-            }
             
+            // Set background mask
+            backgroundMask[bufferIndex] = (pixelValue == 0) ? 1 : 0;
+            
+            // Get color index
             uint8_t colorIndex;
             if (pixelValue == 0) {
-                colorIndex = palette[0];
+                colorIndex = palette[0];  // Universal background color
             } else {
                 colorIndex = palette[(attribute & 0x03) * 4 + pixelValue];
             }
             
+            // Convert to RGB565 and store
             uint32_t color32 = paletteRGB[colorIndex];
             uint16_t pixel = ((color32 & 0xF80000) >> 8) | 
                            ((color32 & 0x00FC00) >> 5) | 
                            ((color32 & 0x0000F8) >> 3);
             
-            frameBuffer[scanline * 256 + screenPixelX] = pixel;
+            frameBuffer[bufferIndex] = pixel;
         }
     }
 }
