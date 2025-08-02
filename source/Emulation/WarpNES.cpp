@@ -790,13 +790,13 @@ void WarpNES::reset() {
     mmc3.bankData[3] = 5;
     mmc3.bankData[4] = 6;
     mmc3.bankData[5] = 7;
-    mmc3.bankData[6] = 0;
-    mmc3.bankData[7] = 1;
+    mmc3.bankData[6] = 0;  // First PRG bank
+    mmc3.bankData[7] = 1;  // Second PRG bank
     mmc3.bankSelect = 0;
     mmc3.irqPending = false;
     mmc3.irqEnable = false;
     updateMMC3Banks();
-  } else if (nesHeader.mapper == 9) {
+} else if (nesHeader.mapper == 9) {
     mmc2 = MMC2State();
     updateMMC2Banks();
   }
@@ -2379,10 +2379,9 @@ case 1: // MMC1
         uint8_t physicalBank = mmc3.currentCHRBanks[bankIndex];
         uint32_t chrAddr = (physicalBank * 0x400) + bankOffset;
 
-        // Bounds check with debug info
         if (chrAddr >= chrSize) {
-          static int oobCount = 0;
-          return 0;
+          
+           chrAddr = chrAddr % chrSize;
         }
 
         return chrROM[chrAddr];
