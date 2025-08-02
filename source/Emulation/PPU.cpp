@@ -2,8 +2,6 @@
 
 #include "PPU.hpp"
 
-ComprehensiveTileCache PPU::g_comprehensiveCache[512 * 8];
-bool PPU::g_comprehensiveCacheInit = false;
 std::vector<FlipCacheEntry> PPU::g_flipCache;
 std::unordered_map<uint32_t, size_t> PPU::g_flipCacheIndex;
 PPU::ScalingCache PPU::g_scalingCache;
@@ -132,14 +130,6 @@ PPU::PPU(WarpNES& engine) :
         scanlineScrollX[i] = 0;
     }
     frameScrollY = 0;
-
-    if (!g_comprehensiveCacheInit) {
-        memset(g_comprehensiveCache, 0, sizeof(g_comprehensiveCache));
-        for (int i = 0; i < 512 * 8; i++) {
-            g_comprehensiveCache[i].is_valid = false;
-        }
-        g_comprehensiveCacheInit = true;
-    }
 }
 
 uint8_t PPU::getAttributeTableValue(uint16_t nametableAddress)
@@ -299,16 +289,6 @@ void PPU::setVBlankFlag(bool flag)
 
 void PPU::setPaletteRAM(uint8_t* data) {
     memcpy(palette, data, 32); 
-    // Invalidate ALL tile caches when palette changes
-    if (g_comprehensiveCacheInit) {
-        memset(g_comprehensiveCache, 0, sizeof(g_comprehensiveCache));
-        for (int i = 0; i < 512 * 8; i++) {
-            g_comprehensiveCache[i].is_valid = false;
-        }
-        // Clear old flip cache
-        g_flipCache.clear();
-        g_flipCacheIndex.clear();
-    }
 }
 
 
@@ -364,6 +344,7 @@ else if (address < 0x3f00)
 }
     else if (address < 0x3f20)
     {
+        printf("Palette Changed\n");
         // Palette data - ONLY invalidate if the palette actually changed
         uint8_t paletteIndex = address - 0x3f00;
         uint8_t oldPaletteValue = palette[paletteIndex];
@@ -371,22 +352,8 @@ else if (address < 0x3f00)
         if (oldPaletteValue != value) {
             palette[paletteIndex] = value;
 
-            // ONLY invalidate when palette changes (this is rare)
-            if (g_comprehensiveCacheInit) {
-                // Simple approach: invalidate ALL cache on any palette change
-                // This is still rare enough to not hurt performance
-                memset(g_comprehensiveCache, 0, sizeof(g_comprehensiveCache));
-                for (int i = 0; i < 512 * 8; i++) {
-                    g_comprehensiveCache[i].is_valid = false;
-                }
-                
-                // Clear flip cache too
-                g_flipCache.clear();
-                g_flipCacheIndex.clear();
-            }
-
             // Handle mirroring
-            if (address == 0x3f10 || address == 0x3f14 || address == 0x3f18 || address == 0x3f1c)
+            if (address == 0x3f14 || address == 0x3f18 || address == 0x3f1c)
             {
                 palette[address - 0x3f10] = value;
             }
