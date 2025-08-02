@@ -1047,7 +1047,7 @@ void PPU::renderScanline(int scanline) {
     
     // Then render ALL sprites in one pass with proper priority
     if (ppuMask & 0x10) {
-        for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
+        for (int spriteIndex = 0; spriteIndex <= 63; spriteIndex++) {
             uint8_t attributes = oam[spriteIndex * 4 + 2];
             bool behindBackground = (attributes & 0x20) != 0;
             renderSingleSprite(scanline, spriteIndex, behindBackground);
@@ -1102,7 +1102,7 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
    }
 }
 
-void PPU::catchUp(uint64_t targetCycles)
+/*void PPU::catchUp(uint64_t targetCycles)
 {
     // Safety check to prevent infinite loops
     if (ppuCycles >= targetCycles || (targetCycles - ppuCycles) > 100000) {
@@ -1135,7 +1135,7 @@ void PPU::catchUp(uint64_t targetCycles)
             break;
         }
     }
-}
+}*/
 
 void PPU::handleVBlankStart()
 {
