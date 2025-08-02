@@ -332,20 +332,16 @@ void PPU::writeByte(uint16_t address, uint8_t value)
     {
         // CHR-RAM write
         engine.writeCHRData(address, value);
-        // NO CACHE INVALIDATION - most games use CHR-ROM which never changes
     }
-else if (address < 0x3f00)
-{
-    // Nametable write
-    uint16_t index = getNametableIndex(address);
+    else if (address < 0x3f00)
+    {
+        // Nametable write
+        uint16_t index = getNametableIndex(address);
     
-    // DEBUG: Log nametable writes
-    nametable[index] = value;
-}
+        nametable[index] = value;
+    }
     else if (address < 0x3f20)
     {
-        printf("Palette Changed\n");
-        // Palette data - ONLY invalidate if the palette actually changed
         uint8_t paletteIndex = address - 0x3f00;
         uint8_t oldPaletteValue = palette[paletteIndex];
         
@@ -400,7 +396,6 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
     // PPUCTRL
     case 0x2000:
         ppuCtrl = value;
-        cachedCtrl = value;
         break;
         
     // PPUMASK  
