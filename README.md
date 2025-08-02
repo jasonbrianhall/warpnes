@@ -2,23 +2,27 @@
 
 A 6502 CPU emulator that can run some classic NES games, built with Allegro 4 or SDL for both DOS and Linux platforms (DOS version is very slow, almost unusable as of now because I removed sprite cacheing [plan to readd later])
 
+This was more of "Let's understand how a NES works" then a full emulator.
+
 ## ⚠️ Important Disclaimer
 
-**This emulator is NOT cycle-accurate and has significant compatibility issues, but it does work for a few games.**
+**This emulator is NOT cycle-accurate and has significant compatibility issues, but it does work for some commercial game.**
 
-This is a hobby project that implements basic NES functionality. Don't expect commercial-level compatibility or accuracy.
+This is a hobby project that implements basic NES functionality. Don't expect commercial-level compatibility or accuracy.  I try to fix bugs as I find and understand them so the compatibility should increase over time unless I get bored of the project.
 
 ## What Works
 
-- **Super Mario Bros** - 100% playable
+- **Super Mario Bros** - 100% playable but XScroll Glitch with the scoring
 - **Mario Bros** - 100% playable  
 - **Popeye** - 100% playable
-- **Many NROM games** - Excellent compatibility
-- **Basic MMC1, MMC3, UxROM support** - Limited but functional
+- **Duck Tales** - 100% playab
+- **Many NROM games** - Excellent compatibility; most work without flaws
+- **Basic MMC1, MM2, MMC3, UxROM support** - Limited but functional
 - **Audio output** - Excellent APU emulation (~95% accurate)
 - **Controllers** - Keyboard and joystick input
-- **Save states** - F5-F8 for save/load
+- **Save states** - F5-F8 for save/load (Some reload issues on certain games); needs implemented per game 
 - **Smooth scrolling** - VSync implementation provides fluid gameplay
+
 
 ## What's Broken
 
@@ -28,6 +32,10 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 - **PPU timing** - VBlank, sprite 0 hit, and scrolling issues
 - **APU accuracy** - Very good audio quality (~95% accurate)
 - **Many mappers** - Limited mapper support
+- **MS Pacman** - For whatever reason;  think it's looking for VBlank Timing but not sure (gives title screen)
+- **Final Fantasy** - Game works but it has some rendering issues (I had it working better at one point but broke it)
+- **Super Mario Brothers 2/3** - Stuck in an infinite loop after hitting start and sprites are wrong (pretty much all mapper 4 game are broken)
+- **Punch out** - Mapper 9 game; title screen has some tile/sprite priority issues and ring is messed up.
 
 ## Controls
 
