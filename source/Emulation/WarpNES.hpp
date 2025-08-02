@@ -132,6 +132,7 @@ public:
     bool trainer;        // 512-byte trainer present
   } nesHeader;
   PPU* getPPU() { return ppu; }
+  const std::string& getROMBaseName() const { return romBaseName; }
 
 private:
   // 6502 CPU state

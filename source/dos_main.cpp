@@ -1549,7 +1549,7 @@ void AllegroMainWindow::handleGameInputNoEsc()
         nPressed = false;
     }
     
-    // Save/Load state handling (F5-F8 keys)
+    // Save/Load state handling (F5-F8 keys) - ROM-BASED NAMING
     static bool f5Pressed = false;
     static bool f6Pressed = false;
     static bool f7Pressed = false;
@@ -1558,17 +1558,30 @@ void AllegroMainWindow::handleGameInputNoEsc()
     // F5 - Save/Load State 1
     if (key[KEY_F5] && !f5Pressed) {
         if (smbEngine) {
-            if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
-                // Shift+F5 - Load State 1
-                if (smbEngine->loadState("save1")) {
-                    setStatusMessage("State 1 loaded");
+            std::string romBase = smbEngine->getROMBaseName();
+            std::cout << "Rom Base: " << romBase << std::endl;
+            if (!romBase.empty()) {
+#ifdef __DJGPP__
+                // DOS 8.3 limitation: use .sv1 extension
+                std::string filename = romBase.substr(0, 6) + ".sv1";
+#else
+                std::string filename = romBase + ".slot1.sav";
+#endif
+                
+                if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
+                    // Shift+F5 - Load State 1
+                    if (smbEngine->loadState(filename)) {
+                        setStatusMessage("State 1 loaded");
+                    } else {
+                        setStatusMessage("Failed to load state 1");
+                    }
                 } else {
-                    setStatusMessage("Failed to load state 1");
+                    // F5 - Save State 1
+                    smbEngine->saveState(filename);
+                    setStatusMessage("State 1 saved");
                 }
             } else {
-                // F5 - Save State 1
-                smbEngine->saveState("save1");
-                setStatusMessage("State 1 saved");
+                setStatusMessage("No ROM loaded");
             }
         }
         f5Pressed = true;
@@ -1581,17 +1594,29 @@ void AllegroMainWindow::handleGameInputNoEsc()
     // F6 - Save/Load State 2
     if (key[KEY_F6] && !f6Pressed) {
         if (smbEngine) {
-            if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
-                // Shift+F6 - Load State 2
-                if (smbEngine->loadState("save2")) {
-                    setStatusMessage("State 2 loaded");
+            std::string romBase = smbEngine->getROMBaseName();
+            if (!romBase.empty()) {
+#ifdef __DJGPP__
+                // DOS 8.3 limitation: use .sv2 extension
+                std::string filename = romBase.substr(0, 6) + ".sv2";
+#else
+                std::string filename = romBase + ".slot2.sav";
+#endif
+                
+                if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
+                    // Shift+F6 - Load State 2
+                    if (smbEngine->loadState(filename)) {
+                        setStatusMessage("State 2 loaded");
+                    } else {
+                        setStatusMessage("Failed to load state 2");
+                    }
                 } else {
-                    setStatusMessage("Failed to load state 2");
+                    // F6 - Save State 2
+                    smbEngine->saveState(filename);
+                    setStatusMessage("State 2 saved");
                 }
             } else {
-                // F6 - Save State 2
-                smbEngine->saveState("save2");
-                setStatusMessage("State 2 saved");
+                setStatusMessage("No ROM loaded");
             }
         }
         f6Pressed = true;
@@ -1604,17 +1629,29 @@ void AllegroMainWindow::handleGameInputNoEsc()
     // F7 - Save/Load State 3
     if (key[KEY_F7] && !f7Pressed) {
         if (smbEngine) {
-            if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
-                // Shift+F7 - Load State 3
-                if (smbEngine->loadState("save3")) {
-                    setStatusMessage("State 3 loaded");
+            std::string romBase = smbEngine->getROMBaseName();
+            if (!romBase.empty()) {
+#ifdef __DJGPP__
+                // DOS 8.3 limitation: use .sv3 extension
+                std::string filename = romBase.substr(0, 6) + ".sv3";
+#else
+                std::string filename = romBase + ".slot3.sav";
+#endif
+                
+                if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
+                    // Shift+F7 - Load State 3
+                    if (smbEngine->loadState(filename)) {
+                        setStatusMessage("State 3 loaded");
+                    } else {
+                        setStatusMessage("Failed to load state 3");
+                    }
                 } else {
-                    setStatusMessage("Failed to load state 3");
+                    // F7 - Save State 3
+                    smbEngine->saveState(filename);
+                    setStatusMessage("State 3 saved");
                 }
             } else {
-                // F7 - Save State 3
-                smbEngine->saveState("save3");
-                setStatusMessage("State 3 saved");
+                setStatusMessage("No ROM loaded");
             }
         }
         f7Pressed = true;
@@ -1627,17 +1664,29 @@ void AllegroMainWindow::handleGameInputNoEsc()
     // F8 - Save/Load State 4
     if (key[KEY_F8] && !f8Pressed) {
         if (smbEngine) {
-            if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
-                // Shift+F8 - Load State 4
-                if (smbEngine->loadState("save4")) {
-                    setStatusMessage("State 4 loaded");
+            std::string romBase = smbEngine->getROMBaseName();
+            if (!romBase.empty()) {
+#ifdef __DJGPP__
+                // DOS 8.3 limitation: use .sv4 extension
+                std::string filename = romBase.substr(0, 6) + ".sv4";
+#else
+                std::string filename = romBase + ".slot4.sav";
+#endif
+                
+                if (key[KEY_LSHIFT] || key[KEY_RSHIFT]) {
+                    // Shift+F8 - Load State 4
+                    if (smbEngine->loadState(filename)) {
+                        setStatusMessage("State 4 loaded");
+                    } else {
+                        setStatusMessage("Failed to load state 4");
+                    }
                 } else {
-                    setStatusMessage("Failed to load state 4");
+                    // F8 - Save State 4
+                    smbEngine->saveState(filename);
+                    setStatusMessage("State 4 saved");
                 }
             } else {
-                // F8 - Save State 4
-                smbEngine->saveState("save4");
-                setStatusMessage("State 4 saved");
+                setStatusMessage("No ROM loaded");
             }
         }
         f8Pressed = true;
@@ -1653,6 +1702,7 @@ void AllegroMainWindow::handleGameInputNoEsc()
         checkPlayerInput(PLAYER_2);
     }
 }
+
 void AllegroMainWindow::handleMenuInput()
 {
     // Check for key presses
