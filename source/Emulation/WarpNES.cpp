@@ -69,11 +69,15 @@ WarpNES::WarpNES()
 
   zapper = new Zapper();
   zapperEnabled = 0;
-  loadSRAM();
+  if (nesHeader.battery) {
+      loadSRAM();
+  }
 }
 
 WarpNES::~WarpNES() {
-  saveSRAM();
+  if (nesHeader.battery) {
+      saveSRAM();
+  }
   delete apu;
   delete ppu;
 
