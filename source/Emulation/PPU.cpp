@@ -991,7 +991,8 @@ void PPU::renderScanline(int scanline, int mapper) {
             case 9:
                 renderBackgroundScanlineMMC2(scanline);
                 break;
-             default:
+            case 1:
+            default:
                 renderBackgroundScanlineMMC1(scanline);
                 break;             
         }
