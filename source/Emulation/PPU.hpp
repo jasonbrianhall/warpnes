@@ -147,7 +147,6 @@ private:
     void renderBackgroundScanlineMMC2(int scanline);
     void clearScanline(int scanline);
     void checkSprite0HitScanline(int scanline);
-    uint8_t spriteMask[256 * 240]; 
     
     static ScalingCache g_scalingCache;
     
