@@ -69,9 +69,11 @@ WarpNES::WarpNES()
 
   zapper = new Zapper();
   zapperEnabled = 0;
+  loadSRAM();
 }
 
 WarpNES::~WarpNES() {
+  saveSRAM();
   delete apu;
   delete ppu;
 
@@ -2002,17 +2004,17 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
       apu->writeRegister(address, value);
       break;
     }
-  } else if (address >= 0x6000 && address < 0x8000) {
-    // SRAM area ($6000-$7FFF)
-    if (sramEnabled && sram && nesHeader.battery) {
-      uint16_t sramAddr = address - 0x6000;
-      if (sramAddr < sramSize) {
-        sram[sramAddr] = value;
-        sramDirty = true; // Mark SRAM as needing to be saved
-                          // No auto-save - player controls when to save
-      }
+ } else if (address >= 0x6000 && address < 0x8000) {
+  // SRAM area ($6000-$7FFF)
+  if (sramEnabled && sram && nesHeader.battery) {
+    uint16_t sramAddr = address - 0x6000;
+    if (sramAddr < sramSize) {
+      sram[sramAddr] = value;
+      sramDirty = true;
+      //printf("SRAM: $%04X = $%02X\n", address, value);
     }
-  } else if (address >= 0x8000) {
+  }
+} else if (address >= 0x8000) {
     // Mapper registers
     if (nesHeader.mapper == 1) {
       writeMMC1Register(address, value);
