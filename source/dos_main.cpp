@@ -11,7 +11,6 @@
 #include "Emulation/Controller.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
-#include "helper.hpp"
 
 // DOS-specific includes (will be ignored on Linux)
 #ifdef __DJGPP__
