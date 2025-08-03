@@ -422,7 +422,8 @@ case 0x2005:
         // Only set future scanlines, not all scanlines
         if (currentScanline >= 0 && currentScanline < 240) {
             // Set scroll for remaining scanlines in this frame
-            for (int i = currentScanline; i < 240; i++) {
+            int tempScanline = (currentScanline + 7) & ~7; // rounds up to next multiple of 8
+            for (int i = tempScanline; i < 240; i++) {
                 scanlineScrollX[i] = value;
             }
         } else {
