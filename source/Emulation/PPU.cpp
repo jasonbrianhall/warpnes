@@ -995,7 +995,8 @@ void PPU::renderScanline(int scanline, int mapper) {
                 renderBackgroundScanlineMMC2(scanline);
                 break;
             case 66:
-                renderBackgroundScanlineGxROM(scanline);
+                renderBackgroundScanlineMMC1(scanline);
+                //renderBackgroundScanlineGxROM(scanline);
                 break;             
 
             default:
