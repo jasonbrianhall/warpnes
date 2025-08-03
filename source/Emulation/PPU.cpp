@@ -983,6 +983,7 @@ void PPU::renderScanline(int scanline, int mapper) {
     }
     
     // Render background first
+    //printf("ppumask %x\n", ppuMask);
     if (ppuMask & 0x08) {
         switch (mapper) {
             case 9:
