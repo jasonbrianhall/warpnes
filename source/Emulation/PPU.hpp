@@ -145,6 +145,8 @@ private:
     void renderScanline(int scanline, int mapper);
     void renderBackgroundScanlineMMC1(int scanline);
     void renderBackgroundScanlineMMC2(int scanline);
+    void renderBackgroundScanlineGxROM(int scanline);
+
     void clearScanline(int scanline);
     void checkSprite0HitScanline(int scanline);
     

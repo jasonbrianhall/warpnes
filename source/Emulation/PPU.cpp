@@ -988,10 +988,16 @@ void PPU::renderScanline(int scanline, int mapper) {
     //printf("ppumask %x\n", ppuMask);
     if (ppuMask & 0x08) {
         switch (mapper) {
+            case 1:
+                renderBackgroundScanlineMMC1(scanline);
+                break;             
             case 9:
                 renderBackgroundScanlineMMC2(scanline);
                 break;
-            case 1:
+            case 66:
+                renderBackgroundScanlineGxROM(scanline);
+                break;             
+
             default:
                 renderBackgroundScanlineMMC1(scanline);
                 break;             
