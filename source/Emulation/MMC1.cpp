@@ -57,7 +57,7 @@ void WarpNES::writeMMC1Register(uint16_t address, uint8_t value) {
 void WarpNES::updateMMC1Banks() {
     uint8_t totalPRGBanks = prgSize / 0x4000;
 
-    // Handle PRG banking only
+    // Handle PRG banking
     if (prgSize == 32768) {
         mmc1.currentPRGBank = 0;
     } else {
@@ -77,8 +77,24 @@ void WarpNES::updateMMC1Banks() {
         }
     }
 
-    // DON'T TOUCH CHR BANKS - leave mmc1.chrBank0 and mmc1.chrBank1 alone
-    // The readCHRData function will use them directly
+    if (nesHeader.chrROMPages > 0) {
+        uint8_t chrMode = (mmc1.control >> 4) & 0x01;
+        uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks
+        
+        if (chrMode == 0) {
+            // 8KB CHR mode - ignore low bit of chrBank0
+            mmc1.currentCHRBank0 = (mmc1.chrBank0 >> 1) % (totalCHRBanks / 2);
+            mmc1.currentCHRBank1 = mmc1.currentCHRBank0; // Same 8KB bank
+        } else {
+            // 4KB CHR mode - separate banks
+            mmc1.currentCHRBank0 = mmc1.chrBank0 % totalCHRBanks;
+            mmc1.currentCHRBank1 = mmc1.chrBank1 % totalCHRBanks;
+        }
+    } else {
+        // CHR-RAM - banks are ignored, direct access
+        mmc1.currentCHRBank0 = 0;
+        mmc1.currentCHRBank1 = 0;
+    }
 }
 
 void PPU::renderBackgroundScanlineMMC1(int scanline) {

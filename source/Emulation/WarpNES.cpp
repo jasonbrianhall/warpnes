@@ -771,7 +771,6 @@ void WarpNES::reset() {
     // Reset MMC1 state properly
     mmc1 = MMC1State(); // Reset to default constructor state
 
-    // CRITICAL: Force proper reset state according to MMC1 spec
     mmc1.control = 0x0C; // Mode 3: 16KB PRG mode, last bank fixed at $C000
     mmc1.shiftRegister = 0x10;
     mmc1.shiftCount = 0;
@@ -779,7 +778,6 @@ void WarpNES::reset() {
     mmc1.chrBank0 = 0;
     mmc1.chrBank1 = 0;
 
-    // CRITICAL: Call updateMMC1Banks to initialize CHR banking
     updateMMC1Banks();
   } else if (nesHeader.mapper == 66) {
     gxrom = GxROMState();
@@ -1773,7 +1771,6 @@ void WarpNES::executeInstruction() {
 }
 
 void WarpNES::catchUpPPU() {
-  // CRITICAL FIX: Don't do complex PPU catch-up during cycle-accurate mode
   // The cycle-accurate loop already keeps PPU in sync
 
   // Simple sync check - just ensure we're not too far off
@@ -1892,7 +1889,6 @@ uint8_t WarpNES::readByte(uint16_t address) {
           break;
         case 3:
         default:
-          // FIXED last bank at $C000 - CRITICAL FOR RESET!
           uint8_t lastBank = totalBanks - 1;
           romAddr = (lastBank * 0x4000) + (address - 0xC000);
           break;
@@ -2116,7 +2112,6 @@ void WarpNES::renderScaled16(uint16_t *buffer, int screenWidth,
         (screenMouseX >= dest_x && screenMouseX < dest_x + dest_w &&
          screenMouseY >= dest_y && screenMouseY < dest_y + dest_h);
 
-    // CRITICAL: Duck Hunt light detection - DO THIS BEFORE DRAWING CROSSHAIR!
     bool currentTrigger = zapper->isTriggerPressed();
 
     if (currentTrigger && inGameArea) {
@@ -2318,30 +2313,29 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return 0;
   }
 
-case 1: // MMC1
-{
-    if (nesHeader.chrROMPages == 0) {
-        if (address < chrSize) {
-            return chrROM[address];
-        }
-    } else {
-        // Direct banking - don't use currentCHRBank variables at all
-        if (address < 0x1000) {
-            // $0000-$0FFF: Always use mmc1.chrBank0 * 4KB
-            uint32_t chrAddr = (mmc1.chrBank0 * 0x1000) + address;
-            if (chrAddr < chrSize) {
-                return chrROM[chrAddr];
+        case 1: // MMC1
+        {
+            if (nesHeader.chrROMPages == 0) {
+                if (address < chrSize) {
+                    return chrROM[address];
+                }
+            } else {
+                // CHR-ROM - use banking
+                uint32_t chrAddr;
+                if (address < 0x1000) {
+                    // $0000-$0FFF: Use currentCHRBank0
+                    chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
+                } else {
+                    // $1000-$1FFF: Use currentCHRBank1  
+                    chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
+                }
+                
+                if (chrAddr < chrSize) {
+                    return chrROM[chrAddr];
+                }
             }
-        } else {
-            // $1000-$1FFF: Use mmc1.chrBank1 * 4KB  
-            uint32_t chrAddr = (mmc1.chrBank1 * 0x1000) + (address - 0x1000);
-            if (chrAddr < chrSize) {
-                return chrROM[chrAddr];
-            }
+            return 0;
         }
-    }
-    return 0;
-}
   case 2: // UxROM
   {
     // UxROM always uses CHR-RAM - direct access, no banking
