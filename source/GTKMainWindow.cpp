@@ -146,12 +146,26 @@ RenderBackend GTK3MainWindow::getRenderBackend() const {
 bool GTK3MainWindow::detect_best_backend() {
     printf("=== Auto-detecting best rendering backend ===\n");
     
+    // Make sure widgets are shown before trying SDL
+    gtk_widget_show_all(window);
+    
+    // Process pending events to ensure widgets are realized
+    while (gtk_events_pending()) {
+        gtk_main_iteration();
+    }
+    
+    // Small delay to ensure window is fully created
+    g_usleep(100000);  // 100ms delay
+    
     // Try SDL first (hardware acceleration preferred)
-    /*if (init_sdl_backend()) {
+    printf("Testing SDL backend\n");
+    if (init_sdl_backend()) {
         current_backend = RenderBackend::SDL_HARDWARE;
         printf("SUCCESS: Using SDL hardware-accelerated rendering\n");
         return true;
-    }*/
+    }
+    
+    printf("SDL backend failed, falling back to Cairo\n");
     
     // Fall back to Cairo
     if (init_cairo_backend()) {
@@ -163,6 +177,7 @@ bool GTK3MainWindow::detect_best_backend() {
     printf("ERROR: No rendering backend could be initialized\n");
     return false;
 }
+
 
 bool GTK3MainWindow::switchRenderBackend(RenderBackend new_backend) {
     if (new_backend == current_backend) {
@@ -1060,15 +1075,87 @@ void GTK3MainWindow::show_video_options_dialog() {
 }
 
 void GTK3MainWindow::show_rendering_dialog() {
-    // Implementation from the rendering_dialog artifact would go here
-    GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                              GTK_DIALOG_MODAL,
-                                              GTK_MESSAGE_INFO,
-                                              GTK_BUTTONS_OK,
-                                              "Current Backend: %s\n\nBackend switching dialog not yet implemented.",
-                                              backend_to_string(current_backend));
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("Rendering Backend",
+                                                   GTK_WINDOW(window),
+                                                   GTK_DIALOG_MODAL,
+                                                   "_Cancel", GTK_RESPONSE_CANCEL,
+                                                   "_OK", GTK_RESPONSE_OK,
+                                                   nullptr);
     
-    gtk_dialog_run(GTK_DIALOG(dialog));
+    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 20);
+    
+    // Current backend
+    char current_text[128];
+    snprintf(current_text, sizeof(current_text), "Current: %s", backend_to_string(current_backend));
+    GtkWidget* current_label = gtk_label_new(current_text);
+    gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
+    
+    // Backend selection
+    GSList* group = nullptr;
+    
+    GtkWidget* auto_radio = gtk_radio_button_new_with_label(group, "Auto-detect");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(auto_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), auto_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* sdl_radio = gtk_radio_button_new_with_label(group, "SDL Hardware");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(sdl_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), sdl_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* cairo_radio = gtk_radio_button_new_with_label(group, "Cairo Software");
+    gtk_box_pack_start(GTK_BOX(vbox), cairo_radio, FALSE, FALSE, 0);
+    
+    // Set current selection
+    switch (preferred_backend) {
+        case RenderBackend::AUTO:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(auto_radio), TRUE);
+            break;
+        case RenderBackend::SDL_HARDWARE:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sdl_radio), TRUE);
+            break;
+        case RenderBackend::CAIRO_SOFTWARE:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cairo_radio), TRUE);
+            break;
+    }
+    
+    gtk_widget_show_all(dialog);
+    
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+        RenderBackend new_backend = RenderBackend::AUTO;
+        
+        if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(auto_radio))) {
+            new_backend = RenderBackend::AUTO;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(sdl_radio))) {
+            new_backend = RenderBackend::SDL_HARDWARE;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(cairo_radio))) {
+            new_backend = RenderBackend::CAIRO_SOFTWARE;
+        }
+        
+        if (new_backend != current_backend) {
+            bool was_running = game_running;
+            if (was_running) {
+                game_running = false;
+            }
+            
+            if (switchRenderBackend(new_backend)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Switched to %s", backend_to_string(current_backend));
+                set_status_message(msg);
+            }
+            
+            if (was_running) {
+                game_running = true;
+            }
+            
+            gtk_widget_queue_draw(drawing_area);
+        }
+        
+        preferred_backend = new_backend;
+        save_video_settings();
+    }
+    
     gtk_widget_destroy(dialog);
 }
 
