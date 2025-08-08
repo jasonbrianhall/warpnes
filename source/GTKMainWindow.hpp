@@ -27,6 +27,15 @@ enum class RenderBackend {
     AUTO            // Auto-detect best option
 };
 
+enum class FilterType {
+    NONE,
+    HQ2X,
+    HQ3X,
+    SCALE2X,
+    SCALE3X,
+    BILINEAR
+};
+
 class GTK3MainWindow {
 public:
     GTK3MainWindow();
@@ -42,6 +51,9 @@ public:
     void setRenderBackend(RenderBackend backend);
     RenderBackend getRenderBackend() const;
     bool switchRenderBackend(RenderBackend new_backend);
+    void setFilter(FilterType filter);
+    FilterType getFilter() const { return current_filter; }
+    
 
 private:
     // Rendering backend state
@@ -193,6 +205,18 @@ private:
     void handle_sdl_events();
     void handle_sdl_key_event(SDL_Event* event);
 
+    FilterType current_filter;
+    SDL_Texture* filtered_texture;
+    uint32_t* filter_buffer;
+    int filter_scale;
+    
+    void apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height);
+    void apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height);
+    void apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height);
+    void update_filter_texture();
+    uint32_t rgb565_to_rgb888(uint16_t color);
+    static void on_options_filters(GtkMenuItem* item, gpointer user_data);
+    void show_filters_dialog();
 };
 
 #endif // GTK3MAINWINDOW_HPP

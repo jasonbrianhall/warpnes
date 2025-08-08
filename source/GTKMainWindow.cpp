@@ -39,7 +39,9 @@ GTK3MainWindow::GTK3MainWindow()
       // Resolution settings
       current_resolution_index(0), custom_width(800), custom_height(600),
       use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(false),
-      force_texture_recreation(false)
+      force_texture_recreation(false),
+      // Filter settings - ADD THESE LINES
+      current_filter(FilterType::NONE), filtered_texture(nullptr), filter_buffer(nullptr), filter_scale(1)
 {
     strcpy(status_message, "Ready");
     
@@ -72,6 +74,7 @@ GTK3MainWindow::~GTK3MainWindow() {
     shutdown();
     delete[] nes_framebuffer;
     delete[] rgba_framebuffer;
+    delete[] filter_buffer;
 }
 
 bool GTK3MainWindow::initialize() {
@@ -350,6 +353,11 @@ void GTK3MainWindow::create_menubar() {
     g_signal_connect(rendering_item, "activate", G_CALLBACK(on_options_rendering), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), rendering_item);
     
+    // ADD THIS NEW MENU ITEM:
+    GtkWidget* filters_item = gtk_menu_item_new_with_label("Filters");
+    g_signal_connect(filters_item, "activate", G_CALLBACK(on_options_filters), this);
+    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), filters_item);
+    
     // Help menu
     GtkWidget* help_menu = gtk_menu_new();
     GtkWidget* help_item = gtk_menu_item_new_with_label("Help");
@@ -359,6 +367,98 @@ void GTK3MainWindow::create_menubar() {
     GtkWidget* about_item = gtk_menu_item_new_with_label("About");
     g_signal_connect(about_item, "activate", G_CALLBACK(on_help_about), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), about_item);
+}
+
+void GTK3MainWindow::on_options_filters(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->show_filters_dialog();
+}
+
+void GTK3MainWindow::show_filters_dialog() {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("Video Filters",
+                                                   GTK_WINDOW(window),
+                                                   GTK_DIALOG_MODAL,
+                                                   "_Cancel", GTK_RESPONSE_CANCEL,
+                                                   "_OK", GTK_RESPONSE_OK,
+                                                   nullptr);
+    
+    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 20);
+    
+    // Current filter info
+    char current_text[128];
+    const char* current_name = 
+        (current_filter == FilterType::NONE) ? "None" :
+        (current_filter == FilterType::SCALE2X) ? "Scale2x" :
+        (current_filter == FilterType::HQ2X) ? "hq2x" :
+        (current_filter == FilterType::HQ3X) ? "hq3x" : "Unknown";
+    snprintf(current_text, sizeof(current_text), "Current filter: %s", current_name);
+    GtkWidget* current_label = gtk_label_new(current_text);
+    gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
+    
+    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
+    
+    // Filter selection
+    GSList* group = nullptr;
+    
+    GtkWidget* none_radio = gtk_radio_button_new_with_label(group, "None (fastest)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(none_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), none_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* scale2x_radio = gtk_radio_button_new_with_label(group, "Scale2x (pixel-perfect)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(scale2x_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), scale2x_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* hq2x_radio = gtk_radio_button_new_with_label(group, "hq2x (smooth)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(hq2x_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), hq2x_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* hq3x_radio = gtk_radio_button_new_with_label(group, "hq3x (3x smooth)");
+    gtk_box_pack_start(GTK_BOX(vbox), hq3x_radio, FALSE, FALSE, 0);
+    
+    // Set current selection
+    switch (current_filter) {
+        case FilterType::NONE:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(none_radio), TRUE);
+            break;
+        case FilterType::SCALE2X:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(scale2x_radio), TRUE);
+            break;
+        case FilterType::HQ2X:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq2x_radio), TRUE);
+            break;
+        case FilterType::HQ3X:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq3x_radio), TRUE);
+            break;
+    }
+    
+    // Note for SDL only
+    if (current_backend != RenderBackend::SDL_HARDWARE) {
+        GtkWidget* note_label = gtk_label_new("Note: Filters only work with SDL rendering backend");
+        gtk_box_pack_start(GTK_BOX(vbox), note_label, FALSE, FALSE, 0);
+    }
+    
+    gtk_widget_show_all(dialog);
+    
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+        FilterType new_filter = FilterType::NONE;
+        
+        if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(none_radio))) {
+            new_filter = FilterType::NONE;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scale2x_radio))) {
+            new_filter = FilterType::SCALE2X;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq2x_radio))) {
+            new_filter = FilterType::HQ2X;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq3x_radio))) {
+            new_filter = FilterType::HQ3X;
+        }
+        
+        setFilter(new_filter);
+    }
+    
+    gtk_widget_destroy(dialog);
 }
 
 void GTK3MainWindow::apply_resolution(int width, int height) {
@@ -425,8 +525,18 @@ void GTK3MainWindow::setup_drawing_area() {
     gtk_widget_set_size_request(drawing_area, 256, 240);
     gtk_widget_set_can_focus(drawing_area, TRUE);
     
-    GdkRGBA black = {0.0, 0.0, 0.0, 1.0};
-    gtk_widget_override_background_color(drawing_area, GTK_STATE_FLAG_NORMAL, &black);
+    // Replace the deprecated function with CSS styling
+    GtkCssProvider* css_provider = gtk_css_provider_new();
+    const char* css_data = "drawingarea { background-color: black; }";
+    
+    gtk_css_provider_load_from_data(css_provider, css_data, -1, NULL);
+    
+    GtkStyleContext* style_context = gtk_widget_get_style_context(drawing_area);
+    gtk_style_context_add_provider(style_context, 
+                                  GTK_STYLE_PROVIDER(css_provider),
+                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    
+    g_object_unref(css_provider);
 }
 
 // Backend initialization
@@ -681,6 +791,11 @@ void GTK3MainWindow::cleanup_sdl_backend() {
     
     printf("Cleaning up SDL backend\n");
     
+    if (filtered_texture) {
+        SDL_DestroyTexture(filtered_texture);
+        filtered_texture = nullptr;
+    }
+    
     if (sdl_texture) {
         SDL_DestroyTexture(sdl_texture);
         sdl_texture = nullptr;
@@ -696,10 +811,8 @@ void GTK3MainWindow::cleanup_sdl_backend() {
         sdl_window = nullptr;
     }
     
-    // Clean up environment variable
     unsetenv("SDL_WINDOWID");
     
-    // Only quit SDL video if we're not using it for audio
     if (!Configuration::getAudioEnabled()) {
         SDL_Quit();
     } else {
@@ -746,31 +859,56 @@ void GTK3MainWindow::render_frame() {
 void GTK3MainWindow::render_frame_sdl() {
     if (!sdl_renderer || !sdl_texture) return;
     
-    // Handle SDL events first
     handle_sdl_events();
     
-    // Update texture
-    void* pixels;
-    int pitch;
-    if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
-        memcpy(pixels, nes_framebuffer, 256 * 240 * sizeof(uint16_t));
-        SDL_UnlockTexture(sdl_texture);
+    SDL_Texture* render_texture = sdl_texture;
+    int source_width = 256;
+    int source_height = 240;
+    
+    // Apply filtering if enabled
+    if (current_filter != FilterType::NONE && filter_buffer) {
+        switch (current_filter) {
+            case FilterType::SCALE2X:
+                apply_scale2x_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
+            case FilterType::HQ2X:
+                apply_hq2x_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
+            case FilterType::HQ3X:
+                apply_hq3x_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
+            default:
+                break;
+        }
+        
+        update_filter_texture();
+        render_texture = filtered_texture;
+        source_width = 256 * filter_scale;
+        source_height = 240 * filter_scale;
+    } else {
+        // Update original texture
+        void* pixels;
+        int pitch;
+        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
+            memcpy(pixels, nes_framebuffer, 256 * 240 * sizeof(uint16_t));
+            SDL_UnlockTexture(sdl_texture);
+        }
     }
     
     // Clear and render
     SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
     SDL_RenderClear(sdl_renderer);
     
-    // Get current window size
     int window_width, window_height;
     SDL_GetWindowSize(sdl_window, &window_width, &window_height);
     
     SDL_Rect dest_rect;
-    calculate_render_rect(256, 240, window_width, window_height, dest_rect);
+    calculate_render_rect(source_width, source_height, window_width, window_height, dest_rect);
     
-    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
+    SDL_RenderCopy(sdl_renderer, render_texture, NULL, &dest_rect);
     SDL_RenderPresent(sdl_renderer);
 }
+
 
 void GTK3MainWindow::render_frame_cairo() {
     gtk_widget_queue_draw(drawing_area);
@@ -1561,6 +1699,196 @@ RenderBackend GTK3MainWindow::string_to_backend(const char* str) {
     if (strcmp(str, "SDL_HARDWARE") == 0) return RenderBackend::SDL_HARDWARE;
     if (strcmp(str, "CAIRO_SOFTWARE") == 0) return RenderBackend::CAIRO_SOFTWARE;
     return RenderBackend::AUTO;
+}
+
+
+uint32_t GTK3MainWindow::rgb565_to_rgb888(uint16_t color) {
+    uint8_t r = (color >> 11) & 0x1F;
+    uint8_t g = (color >> 5) & 0x3F;
+    uint8_t b = color & 0x1F;
+    
+    r = (r * 255 + 15) / 31;
+    g = (g * 255 + 31) / 63;
+    b = (b * 255 + 15) / 31;
+    
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+void GTK3MainWindow::apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    // Simple Scale2x algorithm
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint16_t C = input[y * width + x];  // Current pixel
+            
+            // Get neighbors (with bounds checking)
+            uint16_t A = (y > 0) ? input[(y-1) * width + x] : C;           // Above
+            uint16_t B = (x < width-1) ? input[y * width + (x+1)] : C;     // Right
+            uint16_t D = (x > 0) ? input[y * width + (x-1)] : C;           // Left
+            uint16_t E = (y < height-1) ? input[(y+1) * width + x] : C;    // Below
+            
+            uint32_t color = rgb565_to_rgb888(C);
+            
+            // Scale2x logic
+            int out_y = y * 2;
+            int out_x = x * 2;
+            int out_width = width * 2;
+            
+            if (A != E && D != B) {
+                output[out_y * out_width + out_x] = (D == A) ? rgb565_to_rgb888(A) : color;
+                output[out_y * out_width + (out_x + 1)] = (A == B) ? rgb565_to_rgb888(A) : color;
+                output[(out_y + 1) * out_width + out_x] = (D == E) ? rgb565_to_rgb888(E) : color;
+                output[(out_y + 1) * out_width + (out_x + 1)] = (E == B) ? rgb565_to_rgb888(E) : color;
+            } else {
+                // No scaling pattern, just duplicate
+                output[out_y * out_width + out_x] = color;
+                output[out_y * out_width + (out_x + 1)] = color;
+                output[(out_y + 1) * out_width + out_x] = color;
+                output[(out_y + 1) * out_width + (out_x + 1)] = color;
+            }
+        }
+    }
+}
+
+void GTK3MainWindow::apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    // Simplified hq2x-style filter
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            // Get 3x3 neighborhood
+            uint16_t w[9];
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int ny = y + dy;
+                    int nx = x + dx;
+                    
+                    // Clamp to bounds
+                    if (ny < 0) ny = 0;
+                    if (ny >= height) ny = height - 1;
+                    if (nx < 0) nx = 0;
+                    if (nx >= width) nx = width - 1;
+                    
+                    w[(dy + 1) * 3 + (dx + 1)] = input[ny * width + nx];
+                }
+            }
+            
+            uint32_t colors[9];
+            for (int i = 0; i < 9; i++) {
+                colors[i] = rgb565_to_rgb888(w[i]);
+            }
+            
+            // hq2x pattern matching (simplified)
+            uint32_t c = colors[4]; // Center pixel
+            int out_y = y * 2;
+            int out_x = x * 2;
+            int out_width = width * 2;
+            
+            // Check for diagonal patterns and smooth accordingly
+            bool diag1 = (w[0] == w[8]) && (w[0] != w[4]);
+            bool diag2 = (w[2] == w[6]) && (w[2] != w[4]);
+            
+            if (diag1 || diag2) {
+                // Apply smoothing
+                uint32_t blend1 = colors[1]; // Top
+                uint32_t blend2 = colors[3]; // Left
+                uint32_t blend3 = colors[5]; // Right
+                uint32_t blend4 = colors[7]; // Bottom
+                
+                output[out_y * out_width + out_x] = c;
+                output[out_y * out_width + (out_x + 1)] = blend1;
+                output[(out_y + 1) * out_width + out_x] = blend2;
+                output[(out_y + 1) * out_width + (out_x + 1)] = c;
+            } else {
+                // Simple duplication
+                output[out_y * out_width + out_x] = c;
+                output[out_y * out_width + (out_x + 1)] = c;
+                output[(out_y + 1) * out_width + out_x] = c;
+                output[(out_y + 1) * out_width + (out_x + 1)] = c;
+            }
+        }
+    }
+}
+
+void GTK3MainWindow::apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    // Simplified hq3x implementation
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t color = rgb565_to_rgb888(input[y * width + x]);
+            
+            // For now, just do a simple 3x scale
+            // A full hq3x would require extensive pattern matching
+            int out_y = y * 3;
+            int out_x = x * 3;
+            int out_width = width * 3;
+            
+            for (int dy = 0; dy < 3; dy++) {
+                for (int dx = 0; dx < 3; dx++) {
+                    output[(out_y + dy) * out_width + (out_x + dx)] = color;
+                }
+            }
+        }
+    }
+}
+
+void GTK3MainWindow::update_filter_texture() {
+    if (!sdl_renderer || !filter_buffer) return;
+    
+    int output_width = 256 * filter_scale;
+    int output_height = 240 * filter_scale;
+    
+    if (!filtered_texture) {
+        filtered_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                           SDL_TEXTUREACCESS_STREAMING,
+                                           output_width, output_height);
+        if (!filtered_texture) return;
+    }
+    
+    void* pixels;
+    int pitch;
+    if (SDL_LockTexture(filtered_texture, NULL, &pixels, &pitch) == 0) {
+        memcpy(pixels, filter_buffer, output_width * output_height * sizeof(uint32_t));
+        SDL_UnlockTexture(filtered_texture);
+    }
+}
+
+void GTK3MainWindow::setFilter(FilterType filter) {
+    current_filter = filter;
+    
+    // Clean up old filter resources
+    if (filtered_texture) {
+        SDL_DestroyTexture(filtered_texture);
+        filtered_texture = nullptr;
+    }
+    
+    delete[] filter_buffer;
+    filter_buffer = nullptr;
+    
+    // Set up new filter
+    switch (filter) {
+        case FilterType::NONE:
+            filter_scale = 1;
+            break;
+        case FilterType::HQ2X:
+        case FilterType::SCALE2X:
+            filter_scale = 2;
+            filter_buffer = new uint32_t[256 * 240 * 4]; // 2x scale
+            break;
+        case FilterType::HQ3X:
+        case FilterType::SCALE3X:
+            filter_scale = 3;
+            filter_buffer = new uint32_t[256 * 240 * 9]; // 3x scale
+            break;
+        case FilterType::BILINEAR:
+            filter_scale = 1;
+            break;
+    }
+    
+    char status_msg[128];
+    snprintf(status_msg, sizeof(status_msg), "Filter changed to %s", 
+             filter == FilterType::NONE ? "None" :
+             filter == FilterType::HQ2X ? "hq2x" :
+             filter == FilterType::HQ3X ? "hq3x" :
+             filter == FilterType::SCALE2X ? "Scale2x" :
+             filter == FilterType::SCALE3X ? "Scale3x" : "Bilinear");
+    set_status_message(status_msg);
 }
 
 // Main function
