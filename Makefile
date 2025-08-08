@@ -146,7 +146,7 @@ $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/
 
 # Default target - build Allegro versions for Linux (unchanged for compatibility)
 .PHONY: all
-all: linux-allegro
+all: linux-sdl linux-allegro linux-gtk3
 
 # Main build targets
 .PHONY: linux
