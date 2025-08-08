@@ -236,7 +236,7 @@ void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
 void GTK3MainWindow::create_widgets() {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3 Dual Rendering");
+    gtk_window_set_title(GTK_WINDOW(window), "WarpNES");
     gtk_window_set_default_size(GTK_WINDOW(window), 256, 240);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
@@ -490,32 +490,9 @@ bool GTK3MainWindow::init_sdl_backend() {
     }
     
     printf("SDL backend initialized successfully\n");
+    printf("Note: Use the GTK window to close the application\n");
     sdl_initialized = true;
     return true;
-}
-
-void GTK3MainWindow::handle_sdl_events() {
-    if (!sdl_initialized) return;
-    
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        switch (event.type) {
-            case SDL_QUIT:
-                // User closed SDL window
-                game_running = false;
-                break;
-            case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
-                    game_running = false;
-                }
-                break;
-            case SDL_KEYDOWN:
-            case SDL_KEYUP:
-                // Convert SDL keys to GDK keys and handle
-                handle_sdl_key_event(&event);
-                break;
-        }
-    }
 }
 
 void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
@@ -575,22 +552,65 @@ void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
             gdk_key = GDK_KEY_u;
             break;
         
-        // F5-F9 keys
+        // F5-F9 keys with save/load functionality
         case SDLK_F5:
-            gdk_key = shift_pressed ? GDK_KEY_F5 : GDK_KEY_F5;  // You can differentiate these
-            break;
         case SDLK_F6:
-            gdk_key = shift_pressed ? GDK_KEY_F6 : GDK_KEY_F6;
-            break;
         case SDLK_F7:
-            gdk_key = shift_pressed ? GDK_KEY_F7 : GDK_KEY_F7;
-            break;
         case SDLK_F8:
-            gdk_key = shift_pressed ? GDK_KEY_F8 : GDK_KEY_F8;
-            break;
         case SDLK_F9:
-            gdk_key = shift_pressed ? GDK_KEY_F9 : GDK_KEY_F9;
-            break;
+            if (event->type == SDL_KEYDOWN && engine) {
+                std::string romBase = engine->getROMBaseName();
+                
+                if (!romBase.empty()) {
+                    std::string filename;
+                    int slot = 0;
+                    
+                    switch (event->key.keysym.sym) {
+                        case SDLK_F5:
+                            slot = 1;
+                            filename = romBase + ".slot1.sav";
+                            break;
+                        case SDLK_F6:
+                            slot = 2;
+                            filename = romBase + ".slot2.sav";
+                            break;
+                        case SDLK_F7:
+                            slot = 3;
+                            filename = romBase + ".slot3.sav";
+                            break;
+                        case SDLK_F8:
+                            slot = 4;
+                            filename = romBase + ".slot4.sav";
+                            break;
+                        case SDLK_F9:
+                            slot = 5;
+                            filename = romBase + ".slot5.sav";
+                            break;
+                    }
+                    
+                    if (shift_pressed) {
+                        // Shift+F[5-9] - Load State
+                        if (engine->loadState(filename)) {
+                            char msg[64];
+                            sprintf(msg, "State %d loaded", slot);
+                            set_status_message(msg);
+                        } else {
+                            char msg[64];
+                            sprintf(msg, "Failed to load state %d", slot);
+                            set_status_message(msg);
+                        }
+                    } else {
+                        // F[5-9] - Save State
+                        engine->saveState(filename);
+                        char msg[64];
+                        sprintf(msg, "State %d saved", slot);
+                        set_status_message(msg);
+                    }
+                } else {
+                    set_status_message("No ROM loaded");
+                }
+            }
+            return; // Don't process as regular key
             
         case SDLK_F11:
             if (event->type == SDL_KEYDOWN) {
@@ -609,22 +629,38 @@ void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
     }
     
     if (gdk_key != 0) {
-        // For F5-F9, you might want to store both the key and modifier state
-        if (event->key.keysym.sym >= SDLK_F5 && event->key.keysym.sym <= SDLK_F9) {
-            // Option 1: Store separate entries for Shift+F combinations
-            if (shift_pressed) {
-                // You could use custom key codes or handle differently
-                // For example, use a custom mapping or bit flags
-                key_states[gdk_key | 0x1000] = (event->type == SDL_KEYDOWN);  // Add flag for shift
-            } else {
-                key_states[gdk_key] = (event->type == SDL_KEYDOWN);
-            }
-        } else {
-            key_states[gdk_key] = (event->type == SDL_KEYDOWN);
-        }
+        key_states[gdk_key] = (event->type == SDL_KEYDOWN);
     }
 }
 
+void GTK3MainWindow::handle_sdl_events() {
+    if (!sdl_initialized) return;
+    
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_QUIT:
+                // Switch to Cairo backend when SDL window is closed
+                printf("SDL window closed by user - switching to Cairo backend\n");
+                switchRenderBackend(RenderBackend::CAIRO_SOFTWARE);
+                set_status_message("Switched to Cairo rendering (SDL window was closed)");
+                break;
+            case SDL_WINDOWEVENT:
+                if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
+                    // Switch to Cairo backend when SDL window is closed
+                    printf("SDL window close event - switching to Cairo backend\n");
+                    switchRenderBackend(RenderBackend::CAIRO_SOFTWARE);
+                    set_status_message("Switched to Cairo rendering (SDL window was closed)");
+                }
+                break;
+            case SDL_KEYDOWN:
+            case SDL_KEYUP:
+                // Convert SDL keys to GDK keys and handle
+                handle_sdl_key_event(&event);
+                break;
+        }
+    }
+}
 
 bool GTK3MainWindow::init_cairo_backend() {
     printf("Initializing Cairo backend\n");
@@ -1243,10 +1279,10 @@ void GTK3MainWindow::show_rendering_dialog() {
 void GTK3MainWindow::show_about_dialog() {
     GtkWidget* dialog = gtk_about_dialog_new();
     
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3 Dual Rendering");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.0");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), 
-                                 "A high-performance NES emulator with dual rendering backends");
+                                 "A Beta NES emulator that emulates some commercial games.");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), 
                                   "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall");
     
@@ -1410,7 +1446,6 @@ void GTK3MainWindow::save_key_mappings() {
     FILE* file = fopen("gtk3_controls.cfg", "w");
     if (!file) return;
     
-    fprintf(file, "# GTK3 Dual Rendering WarpNES Control Configuration\n");
     fprintf(file, "P1_UP=%u\n", player1_keys.up);
     fprintf(file, "P1_DOWN=%u\n", player1_keys.down);
     fprintf(file, "P1_LEFT=%u\n", player1_keys.left);
@@ -1472,7 +1507,7 @@ void GTK3MainWindow::save_video_settings() {
     FILE* file = fopen("video_settings.cfg", "w");
     if (!file) return;
     
-    fprintf(file, "# WarpNES GTK3 Dual Rendering Video Settings\n");
+    fprintf(file, "# WarpNES GTK3 Video Settings\n");
     fprintf(file, "current_resolution_index=%d\n", current_resolution_index);
     fprintf(file, "custom_width=%d\n", custom_width);
     fprintf(file, "custom_height=%d\n", custom_height);
@@ -1523,8 +1558,7 @@ RenderBackend GTK3MainWindow::string_to_backend(const char* str) {
 int main(int argc, char* argv[]) {
     Configuration::initialize("config.cfg");
     
-    printf("WarpNES GTK3 Dual Rendering - NES Emulator\n");
-    printf("Supporting both SDL hardware and Cairo software rendering\n");
+    printf("WarpNES GTK3 NES Emulator\n");
     
     const char* rom_filename = nullptr;
     
@@ -1543,7 +1577,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    printf("GTK3 dual rendering window initialized successfully\n");
+    printf("GTK3 window initialized successfully\n");
     
     if (rom_filename) {
         printf("Loading ROM: %s\n", rom_filename);
