@@ -190,6 +190,9 @@ private:
     void save_video_settings();
     const char* backend_to_string(RenderBackend backend);
     RenderBackend string_to_backend(const char* str);
+    void handle_sdl_events();
+    void handle_sdl_key_event(SDL_Event* event);
+
 };
 
 #endif // GTK3MAINWINDOW_HPP
