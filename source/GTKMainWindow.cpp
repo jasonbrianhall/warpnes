@@ -24,17 +24,28 @@ const GTK3MainWindow::Resolution GTK3MainWindow::PRESET_RESOLUTIONS[] = {
 
 const int GTK3MainWindow::NUM_PRESET_RESOLUTIONS = sizeof(PRESET_RESOLUTIONS) / sizeof(PRESET_RESOLUTIONS[0]);
 
-
 GTK3MainWindow::GTK3MainWindow() 
-    : window(nullptr), sdl_socket(nullptr), engine(nullptr), 
+    : window(nullptr), drawing_area(nullptr), engine(nullptr), 
       game_running(false), game_paused(false),
       frame_timer_id(0), status_message_id(0),
-      sdl_window(nullptr), sdl_renderer(nullptr), sdl_texture(nullptr),
+      // SDL backend
+      sdl_window(nullptr), sdl_renderer(nullptr), sdl_texture(nullptr), sdl_initialized(false),
+      // Cairo backend  
+      cairo_surface(nullptr), cairo_context(nullptr), cairo_buffer(nullptr), cairo_initialized(false),
+      // Shared framebuffer
+      nes_framebuffer(nullptr), rgba_framebuffer(nullptr), framebuffer_width(256), framebuffer_height(240),
+      // Rendering backend
+      current_backend(RenderBackend::AUTO), preferred_backend(RenderBackend::AUTO), backend_switching_enabled(true),
+      // Resolution settings
       current_resolution_index(0), custom_width(800), custom_height(600),
       use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(false),
       force_texture_recreation(false)
 {
     strcpy(status_message, "Ready");
+    
+    // Allocate shared framebuffers
+    nes_framebuffer = new uint16_t[256 * 240];
+    rgba_framebuffer = new uint32_t[256 * 240];
     
     // Initialize Player 1 default keys
     player1_keys.up = GDK_KEY_Up;
@@ -59,58 +70,34 @@ GTK3MainWindow::GTK3MainWindow()
 
 GTK3MainWindow::~GTK3MainWindow() {
     shutdown();
+    delete[] nes_framebuffer;
+    delete[] rgba_framebuffer;
 }
 
 bool GTK3MainWindow::initialize() {
     // Initialize GTK
     gtk_init(nullptr, nullptr);
     
-    // Initialize SDL video and audio subsystem
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
-        printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
-        return false;
-    }
-    
     create_widgets();
     load_key_mappings();
     load_video_settings();
     
-    // ONLY ADD THIS PART - Get screen dimensions using SDL
-    SDL_DisplayMode display_mode;
-    if (SDL_GetCurrentDisplayMode(0, &display_mode) == 0) {
-        int screen_width = display_mode.w;
-        int screen_height = display_mode.h;
-        printf("Detected screen resolution: %dx%d\n", screen_width, screen_height);
-        
-        // Set default resolution to screen size if not already configured
-        if (!use_custom_resolution && current_resolution_index == 0) {
-            use_custom_resolution = true;
-            custom_width = screen_width;
-            custom_height = screen_height;
-            printf("Using screen resolution as default: %dx%d\n", custom_width, custom_height);
+    // Detect and initialize the best rendering backend
+    if (current_backend == RenderBackend::AUTO) {
+        if (!detect_best_backend()) {
+            printf("ERROR: Could not initialize any rendering backend\n");
+            return false;
+        }
+    } else {
+        if (!switchRenderBackend(preferred_backend)) {
+            printf("ERROR: Could not initialize preferred rendering backend\n");
+            return false;
         }
     }
-    // END OF ADDITION
     
-    // Apply initial resolution
-    if (use_custom_resolution) {
-        apply_resolution(custom_width, custom_height);
-    } else {
-        apply_resolution(PRESET_RESOLUTIONS[current_resolution_index].width,
-                        PRESET_RESOLUTIONS[current_resolution_index].height);
-    }
-    
-    // Show the window
-    gtk_widget_show_all(window);
-    
-    // Initialize SDL after GTK window is shown
-    if (!init_sdl()) {
-        printf("ERROR: SDL initialization failed\n");
-        return false;
-    }
-    
-    // Initialize audio - KEEP THIS EXACTLY AS IT WAS
+    // Initialize audio
     if (Configuration::getAudioEnabled()) {
+        SDL_Init(SDL_INIT_AUDIO);
         SDL_AudioSpec desiredSpec;
         desiredSpec.freq = Configuration::getAudioFrequency();
         desiredSpec.format = AUDIO_S8;
@@ -128,21 +115,105 @@ bool GTK3MainWindow::initialize() {
         }
     }
     
-    // Grab focus for key events
+    // Apply initial resolution and show window
+    if (use_custom_resolution) {
+        apply_resolution(custom_width, custom_height);
+    } else {
+        apply_resolution(PRESET_RESOLUTIONS[current_resolution_index].width,
+                        PRESET_RESOLUTIONS[current_resolution_index].height);
+    }
+    
+    gtk_widget_show_all(window);
     gtk_widget_grab_focus(window);
     
-    set_status_message("WarpNES GTK3+SDL - Load a ROM file to begin");
+    char status_msg[256];
+    snprintf(status_msg, sizeof(status_msg), "WarpNES GTK3 (%s) - Load a ROM to begin", 
+             backend_to_string(current_backend));
+    set_status_message(status_msg);
     
     return true;
 }
 
-// FIXED: Audio callback function
+// Rendering backend control functions
+void GTK3MainWindow::setRenderBackend(RenderBackend backend) {
+    preferred_backend = backend;
+}
+
+RenderBackend GTK3MainWindow::getRenderBackend() const {
+    return current_backend;
+}
+
+bool GTK3MainWindow::detect_best_backend() {
+    printf("=== Auto-detecting best rendering backend ===\n");
+    
+    // Try SDL first (hardware acceleration preferred)
+    /*if (init_sdl_backend()) {
+        current_backend = RenderBackend::SDL_HARDWARE;
+        printf("SUCCESS: Using SDL hardware-accelerated rendering\n");
+        return true;
+    }*/
+    
+    // Fall back to Cairo
+    if (init_cairo_backend()) {
+        current_backend = RenderBackend::CAIRO_SOFTWARE;
+        printf("SUCCESS: Using Cairo software rendering\n");
+        return true;
+    }
+    
+    printf("ERROR: No rendering backend could be initialized\n");
+    return false;
+}
+
+bool GTK3MainWindow::switchRenderBackend(RenderBackend new_backend) {
+    if (new_backend == current_backend) {
+        return true;
+    }
+    
+    printf("=== Switching rendering backend to %s ===\n", backend_to_string(new_backend));
+    
+    // Clean up current backend
+    if (current_backend == RenderBackend::SDL_HARDWARE) {
+        cleanup_sdl_backend();
+    } else if (current_backend == RenderBackend::CAIRO_SOFTWARE) {
+        cleanup_cairo_backend();
+    }
+    
+    // Initialize new backend
+    bool success = false;
+    if (new_backend == RenderBackend::SDL_HARDWARE) {
+        success = init_sdl_backend();
+    } else if (new_backend == RenderBackend::CAIRO_SOFTWARE) {
+        success = init_cairo_backend();
+    } else if (new_backend == RenderBackend::AUTO) {
+        return detect_best_backend();
+    }
+    
+    if (success) {
+        current_backend = new_backend;
+        printf("SUCCESS: Switched to %s rendering\n", backend_to_string(new_backend));
+        
+        char status_msg[256];
+        snprintf(status_msg, sizeof(status_msg), "Switched to %s rendering", 
+                 backend_to_string(current_backend));
+        set_status_message(status_msg);
+        
+        return true;
+    } else {
+        printf("ERROR: Failed to switch to %s rendering\n", backend_to_string(new_backend));
+        if (!detect_best_backend()) {
+            printf("CRITICAL: No rendering backend available\n");
+            return false;
+        }
+        return true;
+    }
+}
+
+// Audio callback function
 void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(userdata);
     if (window && window->engine) {
         window->engine->audioCallback(buffer, len);
     } else {
-        // Fill with silence if no engine
         memset(buffer, 0, len);
     }
 }
@@ -150,11 +221,9 @@ void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
 void GTK3MainWindow::create_widgets() {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3+SDL");
+    gtk_window_set_title(GTK_WINDOW(window), "WarpNES GTK3 Dual Rendering");
     gtk_window_set_default_size(GTK_WINDOW(window), 256, 240);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
-    
-    // FIXED: Allow proper resizing
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
     
     // Set focus and connect key events
@@ -176,9 +245,9 @@ void GTK3MainWindow::create_widgets() {
     create_menubar();
     gtk_box_pack_start(GTK_BOX(main_vbox), menubar, FALSE, FALSE, 0);
     
-    // Create SDL area
-    setup_sdl_area();
-    gtk_box_pack_start(GTK_BOX(main_vbox), sdl_socket, TRUE, TRUE, 0);
+    // Create unified drawing area
+    setup_drawing_area();
+    gtk_box_pack_start(GTK_BOX(main_vbox), drawing_area, TRUE, TRUE, 0);
     
     // Create status bar
     status_bar = gtk_statusbar_new();
@@ -188,32 +257,27 @@ void GTK3MainWindow::create_widgets() {
 gboolean GTK3MainWindow::on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
     GTK3MainWindow* window_obj = static_cast<GTK3MainWindow*>(user_data);
     
-    // Only process if we have a valid SDL socket
-    if (!window_obj->sdl_socket) {
+    if (!window_obj->drawing_area) {
         return FALSE;
     }
     
-    // Prevent resize loops by checking if size actually changed significantly
     static int last_event_width = 0;
     static int last_event_height = 0;
     
     if (abs(event->width - last_event_width) < 5 && abs(event->height - last_event_height) < 5) {
-        return FALSE; // Skip if size didn't change much
+        return FALSE;
     }
     
     last_event_width = event->width;
     last_event_height = event->height;
     
-    // Force SDL texture recreation on next render
     window_obj->force_texture_recreation = true;
     
-    // Force a redraw of the SDL socket
-    if (window_obj->sdl_socket) {
-        gtk_widget_queue_draw(window_obj->sdl_socket);
+    if (window_obj->drawing_area) {
+        gtk_widget_queue_draw(window_obj->drawing_area);
     }
     
-    // Don't print every resize to avoid spam
-    return FALSE; // Continue normal event processing
+    return FALSE;
 }
 
 void GTK3MainWindow::create_menubar() {
@@ -225,7 +289,7 @@ void GTK3MainWindow::create_menubar() {
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
     
-    GtkWidget* open_item = gtk_menu_item_new_with_label("Open ROM...");
+    GtkWidget* open_item = gtk_menu_item_new_with_label("Open ROM");
     g_signal_connect(open_item, "activate", G_CALLBACK(on_file_open), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), open_item);
     
@@ -255,18 +319,21 @@ void GTK3MainWindow::create_menubar() {
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(options_item), options_menu);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), options_item);
     
-    GtkWidget* controls_item = gtk_menu_item_new_with_label("Controls...");
+    GtkWidget* controls_item = gtk_menu_item_new_with_label("Controls");
     g_signal_connect(controls_item, "activate", G_CALLBACK(on_options_controls), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), controls_item);
     
-    GtkWidget* video_item = gtk_menu_item_new_with_label("Video...");
+    GtkWidget* video_item = gtk_menu_item_new_with_label("Video");
     g_signal_connect(video_item, "activate", G_CALLBACK(on_options_video), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), video_item);
     
-    // NEW: Resolution menu item
-    GtkWidget* resolution_item = gtk_menu_item_new_with_label("Resolution...");
+    GtkWidget* resolution_item = gtk_menu_item_new_with_label("Resolution");
     g_signal_connect(resolution_item, "activate", G_CALLBACK(on_options_resolution), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), resolution_item);
+    
+    GtkWidget* rendering_item = gtk_menu_item_new_with_label("Rendering");
+    g_signal_connect(rendering_item, "activate", G_CALLBACK(on_options_rendering), this);
+    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), rendering_item);
     
     // Help menu
     GtkWidget* help_menu = gtk_menu_new();
@@ -282,17 +349,11 @@ void GTK3MainWindow::create_menubar() {
 void GTK3MainWindow::apply_resolution(int width, int height) {
     printf("Applying resolution: %dx%d\n", width, height);
     
-    // Resize the GTK window
     gtk_window_resize(GTK_WINDOW(window), width, height);
+    gtk_widget_set_size_request(drawing_area, width, height);
     
-    // Update the SDL socket size
-    gtk_widget_set_size_request(sdl_socket, width, height);
-    
-    // CRITICAL: Force texture recreation on next render
     force_texture_recreation = true;
-    
-    // Force a redraw
-    gtk_widget_queue_draw(sdl_socket);
+    gtk_widget_queue_draw(drawing_area);
     
     char status_msg[256];
     snprintf(status_msg, sizeof(status_msg), "Resolution changed to %dx%d", width, height);
@@ -303,7 +364,6 @@ void GTK3MainWindow::calculate_render_rect(int source_width, int source_height,
                                           int target_width, int target_height, 
                                           SDL_Rect& dest_rect) {
     if (!maintain_aspect_ratio) {
-        // Stretch to fill entire area
         dest_rect.x = 0;
         dest_rect.y = 0;
         dest_rect.w = target_width;
@@ -312,10 +372,8 @@ void GTK3MainWindow::calculate_render_rect(int source_width, int source_height,
     }
     
     float source_aspect = (float)source_width / (float)source_height;
-    float target_aspect = (float)target_width / (float)target_height;
     
     if (integer_scaling) {
-        // Calculate the largest integer scale that fits
         int scale_x = target_width / source_width;
         int scale_y = target_height / source_height;
         int scale = (scale_x < scale_y) ? scale_x : scale_y;
@@ -327,22 +385,18 @@ void GTK3MainWindow::calculate_render_rect(int source_width, int source_height,
         dest_rect.x = (target_width - dest_rect.w) / 2;
         dest_rect.y = (target_height - dest_rect.h) / 2;
     } else {
-        // FIXED: Aspect-correct scaling - always scale to fit the SMALLER dimension
-        int scale_x_pixels = target_width;  // If we fit to width
-        int scale_y_pixels = (int)(target_width / source_aspect);  // Corresponding height
+        int scale_x_pixels = target_width;
+        int scale_y_pixels = (int)(target_width / source_aspect);
         
-        int scale_y_pixels_alt = target_height;  // If we fit to height  
-        int scale_x_pixels_alt = (int)(target_height * source_aspect);  // Corresponding width
+        int scale_y_pixels_alt = target_height;
+        int scale_x_pixels_alt = (int)(target_height * source_aspect);
         
-        // Choose the scaling that fits entirely within the target area
         if (scale_y_pixels <= target_height) {
-            // Fit to width (target is wide/normal)
             dest_rect.w = scale_x_pixels;
             dest_rect.h = scale_y_pixels;
             dest_rect.x = 0;
             dest_rect.y = (target_height - dest_rect.h) / 2;
         } else {
-            // Fit to height (target is tall)
             dest_rect.w = scale_x_pixels_alt;
             dest_rect.h = scale_y_pixels_alt;
             dest_rect.x = (target_width - dest_rect.w) / 2;
@@ -351,164 +405,254 @@ void GTK3MainWindow::calculate_render_rect(int source_width, int source_height,
     }
 }
 
-void GTK3MainWindow::setup_sdl_area() {
-    // Create a GTK drawing area for SDL to render into
-    sdl_socket = gtk_drawing_area_new();
-    gtk_widget_set_size_request(sdl_socket, 256, 240);
-    gtk_widget_set_can_focus(sdl_socket, TRUE);
+void GTK3MainWindow::setup_drawing_area() {
+    drawing_area = gtk_drawing_area_new();
+    gtk_widget_set_size_request(drawing_area, 256, 240);
+    gtk_widget_set_can_focus(drawing_area, TRUE);
     
-    // Set the drawing area to black background to prevent bleedthrough
     GdkRGBA black = {0.0, 0.0, 0.0, 1.0};
-    gtk_widget_override_background_color(sdl_socket, GTK_STATE_FLAG_NORMAL, &black);
+    gtk_widget_override_background_color(drawing_area, GTK_STATE_FLAG_NORMAL, &black);
 }
 
-bool GTK3MainWindow::init_sdl() {
-    printf("=== Initializing SDL ===\n");
+// Backend initialization
+bool GTK3MainWindow::init_sdl_backend() {
+    printf("Initializing SDL backend\n");
     
-    // Wait for the widget to be realized
-    gtk_widget_realize(sdl_socket);
+    if (sdl_initialized) {
+        return true;
+    }
     
-    // Get the native window handle
-    GdkWindow* gdk_window = gtk_widget_get_window(sdl_socket);
-    if (!gdk_window) {
-        printf("ERROR: Could not get GDK window\n");
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
     
-    // Get X11 window ID
-    unsigned long window_id = gdk_x11_window_get_xid(gdk_window);
+    gtk_widget_realize(drawing_area);
     
-    // Set SDL to use this window
-    char window_id_str[32];
-    snprintf(window_id_str, sizeof(window_id_str), "%lu", window_id);
+    GdkWindow* gdk_window = gtk_widget_get_window(drawing_area);
+    if (!gdk_window) {
+        printf("ERROR: Could not get GDK window for SDL\n");
+        SDL_Quit();
+        return false;
+    }
+    
+    unsigned long window_id = gdk_x11_window_get_xid(gdk_window);
     SDL_SetHint(SDL_HINT_VIDEO_WINDOW_SHARE_PIXEL_FORMAT, "1");
     
-    // Create SDL window from existing window
     sdl_window = SDL_CreateWindowFrom((void*)(uintptr_t)window_id);
     if (!sdl_window) {
         printf("ERROR: SDL_CreateWindowFrom failed: %s\n", SDL_GetError());
+        SDL_Quit();
         return false;
     }
     
-    // Create SDL renderer with VSync
     sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 
                                      SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!sdl_renderer) {
         printf("ERROR: SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(sdl_window);
+        sdl_window = nullptr;
+        SDL_Quit();
         return false;
     }
     
-    // Create texture for NES framebuffer (RGB565 format)
     sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
                                    SDL_TEXTUREACCESS_STREAMING, 256, 240);
     if (!sdl_texture) {
         printf("ERROR: SDL_CreateTexture failed: %s\n", SDL_GetError());
+        cleanup_sdl_backend();
         return false;
     }
     
-    printf("SUCCESS: SDL initialized and embedded in GTK\n");
+    sdl_initialized = true;
     return true;
 }
 
+bool GTK3MainWindow::init_cairo_backend() {
+    printf("Initializing Cairo backend\n");
+    
+    if (cairo_initialized) {
+        return true;
+    }
+    
+    g_signal_connect(drawing_area, "draw", G_CALLBACK(on_cairo_draw), this);
+    g_signal_connect(drawing_area, "configure-event", G_CALLBACK(on_cairo_configure), this);
+    
+    cairo_initialized = true;
+    return true;
+}
+
+void GTK3MainWindow::cleanup_sdl_backend() {
+    if (!sdl_initialized) return;
+    
+    printf("Cleaning up SDL backend\n");
+    
+    if (sdl_texture) {
+        SDL_DestroyTexture(sdl_texture);
+        sdl_texture = nullptr;
+    }
+    
+    if (sdl_renderer) {
+        SDL_DestroyRenderer(sdl_renderer);
+        sdl_renderer = nullptr;
+    }
+    
+    if (sdl_window) {
+        SDL_DestroyWindow(sdl_window);
+        sdl_window = nullptr;
+    }
+    
+    if (!Configuration::getAudioEnabled()) {
+        SDL_Quit();
+    } else {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
+    
+    sdl_initialized = false;
+}
+
+void GTK3MainWindow::cleanup_cairo_backend() {
+    if (!cairo_initialized) return;
+    
+    printf("Cleaning up Cairo backend\n");
+    
+    if (cairo_context) {
+        cairo_destroy(cairo_context);
+        cairo_context = nullptr;
+    }
+    
+    if (cairo_surface) {
+        cairo_surface_destroy(cairo_surface);
+        cairo_surface = nullptr;
+    }
+    
+    g_signal_handlers_disconnect_by_func(drawing_area, (gpointer)on_cairo_draw, this);
+    g_signal_handlers_disconnect_by_func(drawing_area, (gpointer)on_cairo_configure, this);
+    
+    cairo_initialized = false;
+}
+
+// Rendering functions
 void GTK3MainWindow::render_frame() {
-    if (!sdl_renderer) return;
-
-    int widget_width  = gtk_widget_get_allocated_width(sdl_socket);
-    int widget_height = gtk_widget_get_allocated_height(sdl_socket);
-
-    // Ensure minimum NES native resolution
-    if (widget_width < 256 || widget_height < 240) {
-        widget_width  = 256;
-        widget_height = 240;
+    if (!game_running || !engine) return;
+    
+    engine->render16(nes_framebuffer);
+    
+    if (current_backend == RenderBackend::SDL_HARDWARE) {
+        render_frame_sdl();
+    } else if (current_backend == RenderBackend::CAIRO_SOFTWARE) {
+        render_frame_cairo();
     }
+}
 
-    // Set the viewport to match the widget size
-    SDL_RenderSetViewport(sdl_renderer, NULL);  // Reset viewport first
-    SDL_RenderSetLogicalSize(sdl_renderer, widget_width, widget_height);
-
-    // Recreate texture if needed
-    static int last_width = 0, last_height = 0;
-    bool size_changed = (widget_width != last_width ||
-                         widget_height != last_height ||
-                         !sdl_texture || force_texture_recreation);
-
-    if (size_changed) {
-        if (sdl_texture) {
-            SDL_DestroyTexture(sdl_texture);
-            sdl_texture = nullptr;
-        }
-
-        // Create texture for NES native resolution (256x240)
-        sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565,
-                                        SDL_TEXTUREACCESS_STREAMING, 256, 240);
-        if (!sdl_texture) {
-            printf("ERROR: Failed to recreate SDL texture: %s\n", SDL_GetError());
-            return;
-        }
-
-        last_width  = widget_width;
-        last_height = widget_height;
-        force_texture_recreation = false;
-        
-        printf("Recreated texture for widget size: %dx%d\n", widget_width, widget_height);
+void GTK3MainWindow::render_frame_sdl() {
+    if (!sdl_renderer || !sdl_texture) return;
+    
+    void* pixels;
+    int pitch;
+    if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
+        memcpy(pixels, nes_framebuffer, 256 * 240 * sizeof(uint16_t));
+        SDL_UnlockTexture(sdl_texture);
     }
-
-    // Clear the renderer with black background
+    
     SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
     SDL_RenderClear(sdl_renderer);
-
-    if (game_running && engine) {
-        // Get NES frame data
-        static uint16_t nes_buffer[256 * 240];
-        engine->render16(nes_buffer);
-
-        // Update texture with NES frame data
-        void* pixels;
-        int pitch;
-        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
-            memcpy(pixels, nes_buffer, sizeof(nes_buffer));
-            SDL_UnlockTexture(sdl_texture);
-        }
-
-        // SCALE UP to fill screen while maintaining 1.33 aspect ratio
-        SDL_Rect dest_rect;
-        
-        // Always choose the scaling that gives us the LARGEST possible size
-        // Try scaling to full height first
-        int scaled_width = (int)(widget_height * 1.33f);
-        
-        
-        if (scaled_width <= widget_width) {
-            // Scaling to full height fits within width - use full height
-            dest_rect.w = scaled_width;
-            dest_rect.h = widget_height;
-            dest_rect.x = (widget_width - scaled_width) / 2;
-            dest_rect.y = 0;
-        } else {
-            // Scaling to full height would be too wide - scale to full width instead
-            dest_rect.w = widget_width;
-            dest_rect.h = (int)(widget_width / 1.33f);
-            dest_rect.x = 0;
-            dest_rect.y = (widget_height - dest_rect.h) / 2;
-        }
-
-        // Render the NES frame
-        SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
-        
-        // Debug output (remove in production)
-        static int debug_counter = 0;
-        if (debug_counter++ % 60 == 0) {  // Print every 60 frames (1 second at 60fps)
-            printf("Widget: %dx%d, Dest rect: %d,%d %dx%d\n", 
-                   widget_width, widget_height, 
-                   dest_rect.x, dest_rect.y, dest_rect.w, dest_rect.h);
-        }
-    }
-
+    
+    int widget_width = gtk_widget_get_allocated_width(drawing_area);
+    int widget_height = gtk_widget_get_allocated_height(drawing_area);
+    
+    SDL_Rect dest_rect;
+    calculate_render_rect(256, 240, widget_width, widget_height, dest_rect);
+    
+    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
     SDL_RenderPresent(sdl_renderer);
 }
 
+void GTK3MainWindow::render_frame_cairo() {
+    gtk_widget_queue_draw(drawing_area);
+}
 
+void GTK3MainWindow::convert_nes_to_rgba() {
+    for (int i = 0; i < 256 * 240; i++) {
+        uint16_t rgb565 = nes_framebuffer[i];
+        
+        uint8_t r = (rgb565 >> 11) & 0x1F;
+        uint8_t g = (rgb565 >> 5) & 0x3F;
+        uint8_t b = rgb565 & 0x1F;
+        
+        r = (r * 255) / 31;
+        g = (g * 255) / 63;
+        b = (b * 255) / 31;
+        
+        rgba_framebuffer[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+    }
+}
 
+gboolean GTK3MainWindow::on_cairo_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
+    GTK3MainWindow* window_obj = static_cast<GTK3MainWindow*>(user_data);
+    
+    if (!window_obj->game_running || !window_obj->engine) {
+        cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+        cairo_paint(cr);
+        return TRUE;
+    }
+    
+    window_obj->convert_nes_to_rgba();
+    
+    cairo_surface_t* surface = cairo_image_surface_create_for_data(
+        (unsigned char*)window_obj->rgba_framebuffer,
+        CAIRO_FORMAT_RGB24,
+        256, 240,
+        256 * 4
+    );
+    
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return TRUE;
+    }
+    
+    int widget_width = gtk_widget_get_allocated_width(widget);
+    int widget_height = gtk_widget_get_allocated_height(widget);
+    
+    double scale_x = (double)widget_width / 256.0;
+    double scale_y = (double)widget_height / 240.0;
+    
+    if (window_obj->maintain_aspect_ratio) {
+        double scale = (scale_x < scale_y) ? scale_x : scale_y;
+        scale_x = scale_y = scale;
+    }
+    
+    double offset_x = (widget_width - 256 * scale_x) / 2.0;
+    double offset_y = (widget_height - 240 * scale_y) / 2.0;
+    
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_paint(cr);
+    
+    cairo_save(cr);
+    cairo_translate(cr, offset_x, offset_y);
+    cairo_scale(cr, scale_x, scale_y);
+    
+    cairo_pattern_t* pattern = cairo_pattern_create_for_surface(surface);
+    if (window_obj->integer_scaling) {
+        cairo_pattern_set_filter(pattern, CAIRO_FILTER_NEAREST);
+    } else {
+        cairo_pattern_set_filter(pattern, CAIRO_FILTER_BILINEAR);
+    }
+    
+    cairo_set_source(cr, pattern);
+    cairo_paint(cr);
+    cairo_pattern_destroy(pattern);
+    cairo_restore(cr);
+    
+    cairo_surface_destroy(surface);
+    return TRUE;
+}
+
+gboolean GTK3MainWindow::on_cairo_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
+    return FALSE;
+}
+
+// Game loop and timing
 gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     
@@ -518,13 +662,8 @@ gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
     }
     
     if (!window->game_paused) {
-        // Process input
         window->process_input();
-        
-        // Update game engine
         window->engine->update();
-        
-        // Render frame
         window->render_frame();
     }
     
@@ -539,11 +678,9 @@ void GTK3MainWindow::process_input() {
 void GTK3MainWindow::update_controller_state() {
     if (!engine) return;
     
-    // Get references to controllers
     Controller& controller1 = engine->getController1();
     Controller& controller2 = engine->getController2();
     
-    // Update Player 1 controller
     controller1.setButtonState(PLAYER_1, BUTTON_UP, key_states[player1_keys.up]);
     controller1.setButtonState(PLAYER_1, BUTTON_DOWN, key_states[player1_keys.down]);
     controller1.setButtonState(PLAYER_1, BUTTON_LEFT, key_states[player1_keys.left]);
@@ -553,7 +690,6 @@ void GTK3MainWindow::update_controller_state() {
     controller1.setButtonState(PLAYER_1, BUTTON_START, key_states[player1_keys.start]);
     controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key_states[player1_keys.select]);
     
-    // Update Player 2 controller
     controller2.setButtonState(PLAYER_2, BUTTON_UP, key_states[player2_keys.up]);
     controller2.setButtonState(PLAYER_2, BUTTON_DOWN, key_states[player2_keys.down]);
     controller2.setButtonState(PLAYER_2, BUTTON_LEFT, key_states[player2_keys.left]);
@@ -565,7 +701,6 @@ void GTK3MainWindow::update_controller_state() {
 }
 
 void GTK3MainWindow::run(const char* rom_filename) {
-    // Load ROM if specified
     if (rom_filename && !engine) {
         engine = new WarpNES();
         
@@ -585,14 +720,12 @@ void GTK3MainWindow::run(const char* rom_filename) {
         snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
         set_status_message(status_msg);
         
-        // Start the game loop timer
         if (!frame_timer_id) {
             printf("Starting game timer\n");
             frame_timer_id = g_timeout_add(17, frame_update_callback, this);
         }
     }
     
-    // Run GTK main loop
     gtk_main();
 }
 
@@ -610,28 +743,10 @@ void GTK3MainWindow::shutdown() {
     }
     
     SDL_CloseAudio();
-    cleanup_sdl();
+    cleanup_sdl_backend();
+    cleanup_cairo_backend();
     save_key_mappings();
-    save_video_settings(); // Save video settings on shutdown
-}
-
-void GTK3MainWindow::cleanup_sdl() {
-    if (sdl_texture) {
-        SDL_DestroyTexture(sdl_texture);
-        sdl_texture = nullptr;
-    }
-    
-    if (sdl_renderer) {
-        SDL_DestroyRenderer(sdl_renderer);
-        sdl_renderer = nullptr;
-    }
-    
-    if (sdl_window) {
-        SDL_DestroyWindow(sdl_window);
-        sdl_window = nullptr;
-    }
-    
-    SDL_Quit();
+    save_video_settings();
 }
 
 // Static callback implementations
@@ -689,7 +804,6 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
         
-        // Stop any existing game
         if (window->game_running) {
             window->game_running = false;
             if (window->frame_timer_id) {
@@ -703,7 +817,6 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
             window->engine = nullptr;
         }
         
-        // Load new ROM
         window->engine = new WarpNES();
         
         if (!window->engine->loadROM(filename)) {
@@ -719,7 +832,6 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
             snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
             window->set_status_message(status_msg);
             
-            // Start the game loop timer
             if (!window->frame_timer_id) {
                 printf("Starting game timer from file open\n");
                 window->frame_timer_id = g_timeout_add(17, frame_update_callback, window);
@@ -766,6 +878,16 @@ void GTK3MainWindow::on_options_video(GtkMenuItem* item, gpointer user_data) {
     window->show_video_options_dialog();
 }
 
+void GTK3MainWindow::on_options_resolution(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->show_resolution_dialog();
+}
+
+void GTK3MainWindow::on_options_rendering(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->show_rendering_dialog();
+}
+
 void GTK3MainWindow::on_help_about(GtkMenuItem* item, gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     window->show_about_dialog();
@@ -788,7 +910,20 @@ void GTK3MainWindow::show_video_options_dialog() {
                                               GTK_DIALOG_MODAL,
                                               GTK_MESSAGE_INFO,
                                               GTK_BUTTONS_OK,
-                                              "Video Options:\nF11 - Toggle fullscreen\nSDL handles VSync automatically");
+                                              "Video Options:\nF11 - Toggle fullscreen\nUse Options > Rendering to switch backends");
+    
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+void GTK3MainWindow::show_rendering_dialog() {
+    // Implementation from the rendering_dialog artifact would go here
+    GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                              GTK_DIALOG_MODAL,
+                                              GTK_MESSAGE_INFO,
+                                              GTK_BUTTONS_OK,
+                                              "Current Backend: %s\n\nBackend switching dialog not yet implemented.",
+                                              backend_to_string(current_backend));
     
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
@@ -797,10 +932,10 @@ void GTK3MainWindow::show_video_options_dialog() {
 void GTK3MainWindow::show_about_dialog() {
     GtkWidget* dialog = gtk_about_dialog_new();
     
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3+SDL");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3 Dual Rendering");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.0");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), 
-                                 "A high-performance NES emulator with GTK3 interface and SDL rendering");
+                                 "A high-performance NES emulator with dual rendering backends");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), 
                                   "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall");
     
@@ -810,6 +945,116 @@ void GTK3MainWindow::show_about_dialog() {
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(window));
     
     gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+void GTK3MainWindow::show_resolution_dialog() {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("Resolution Settings",
+                                                   GTK_WINDOW(window),
+                                                   GTK_DIALOG_MODAL,
+                                                   "_Cancel", GTK_RESPONSE_CANCEL,
+                                                   "_Apply", GTK_RESPONSE_APPLY,
+                                                   "_OK", GTK_RESPONSE_OK,
+                                                   nullptr);
+    
+    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
+    
+    GtkWidget* preset_frame = gtk_frame_new("Preset Resolutions");
+    gtk_box_pack_start(GTK_BOX(vbox), preset_frame, FALSE, FALSE, 0);
+    
+    GtkWidget* preset_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(preset_frame), preset_vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(preset_vbox), 10);
+    
+    GSList* resolution_group = nullptr;
+    GtkWidget* preset_radios[NUM_PRESET_RESOLUTIONS];
+    
+    for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
+        preset_radios[i] = gtk_radio_button_new_with_label(resolution_group, 
+                                                          PRESET_RESOLUTIONS[i].name);
+        resolution_group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(preset_radios[i]));
+        gtk_box_pack_start(GTK_BOX(preset_vbox), preset_radios[i], FALSE, FALSE, 0);
+        
+        if (i == current_resolution_index && !use_custom_resolution) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(preset_radios[i]), TRUE);
+        }
+    }
+    
+    GtkWidget* custom_frame = gtk_frame_new("Custom Resolution");
+    gtk_box_pack_start(GTK_BOX(vbox), custom_frame, FALSE, FALSE, 0);
+    
+    GtkWidget* custom_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(custom_frame), custom_vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(custom_vbox), 10);
+    
+    GtkWidget* custom_radio = gtk_radio_button_new_with_label(resolution_group, "Custom:");
+    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_radio, FALSE, FALSE, 0);
+    
+    if (use_custom_resolution) {
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(custom_radio), TRUE);
+    }
+    
+    GtkWidget* custom_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_hbox, FALSE, FALSE, 0);
+    
+    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Width:"), FALSE, FALSE, 0);
+    GtkWidget* width_spin = gtk_spin_button_new_with_range(256, 7680, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(width_spin), custom_width);
+    gtk_box_pack_start(GTK_BOX(custom_hbox), width_spin, FALSE, FALSE, 0);
+    
+    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Height:"), FALSE, FALSE, 0);
+    GtkWidget* height_spin = gtk_spin_button_new_with_range(240, 4320, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(height_spin), custom_height);
+    gtk_box_pack_start(GTK_BOX(custom_hbox), height_spin, FALSE, FALSE, 0);
+    
+    GtkWidget* scaling_frame = gtk_frame_new("Scaling Options");
+    gtk_box_pack_start(GTK_BOX(vbox), scaling_frame, FALSE, FALSE, 0);
+    
+    GtkWidget* scaling_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(scaling_frame), scaling_vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(scaling_vbox), 10);
+    
+    GtkWidget* aspect_check = gtk_check_button_new_with_label("Maintain aspect ratio");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(aspect_check), maintain_aspect_ratio);
+    gtk_box_pack_start(GTK_BOX(scaling_vbox), aspect_check, FALSE, FALSE, 0);
+    
+    GtkWidget* integer_check = gtk_check_button_new_with_label("Integer scaling (pixel-perfect)");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(integer_check), integer_scaling);
+    gtk_box_pack_start(GTK_BOX(scaling_vbox), integer_check, FALSE, FALSE, 0);
+    
+    gtk_widget_show_all(dialog);
+    
+    gint result;
+    do {
+        result = gtk_dialog_run(GTK_DIALOG(dialog));
+        
+        if (result == GTK_RESPONSE_APPLY || result == GTK_RESPONSE_OK) {
+            maintain_aspect_ratio = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(aspect_check));
+            integer_scaling = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(integer_check));
+            
+            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(custom_radio))) {
+                use_custom_resolution = true;
+                custom_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(width_spin));
+                custom_height = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(height_spin));
+                apply_resolution(custom_width, custom_height);
+            } else {
+                use_custom_resolution = false;
+                for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
+                    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(preset_radios[i]))) {
+                        current_resolution_index = i;
+                        apply_resolution(PRESET_RESOLUTIONS[i].width, PRESET_RESOLUTIONS[i].height);
+                        break;
+                    }
+                }
+            }
+            
+            save_video_settings();
+        }
+    } while (result == GTK_RESPONSE_APPLY);
+    
     gtk_widget_destroy(dialog);
 }
 
@@ -854,7 +1099,7 @@ void GTK3MainWindow::save_key_mappings() {
     FILE* file = fopen("gtk3_controls.cfg", "w");
     if (!file) return;
     
-    fprintf(file, "# GTK3+SDL WarpNES Control Configuration\n");
+    fprintf(file, "# GTK3 Dual Rendering WarpNES Control Configuration\n");
     fprintf(file, "P1_UP=%u\n", player1_keys.up);
     fprintf(file, "P1_DOWN=%u\n", player1_keys.down);
     fprintf(file, "P1_LEFT=%u\n", player1_keys.left);
@@ -875,142 +1120,6 @@ void GTK3MainWindow::save_key_mappings() {
     fclose(file);
 }
 
-void GTK3MainWindow::set_status_message(const char* message) {
-    if (status_message_id) {
-        gtk_statusbar_remove(GTK_STATUSBAR(status_bar), 0, status_message_id);
-    }
-    
-    strncpy(status_message, message, sizeof(status_message) - 1);
-    status_message[sizeof(status_message) - 1] = '\0';
-    
-    status_message_id = gtk_statusbar_push(GTK_STATUSBAR(status_bar), 0, status_message);
-}
-
-
-
-
-void GTK3MainWindow::show_resolution_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Resolution Settings",
-                                                   GTK_WINDOW(window),
-                                                   GTK_DIALOG_MODAL,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_Apply", GTK_RESPONSE_APPLY,
-                                                   "_OK", GTK_RESPONSE_OK,
-                                                   nullptr);
-    
-    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(content_area), vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
-    
-    // Preset resolutions
-    GtkWidget* preset_frame = gtk_frame_new("Preset Resolutions");
-    gtk_box_pack_start(GTK_BOX(vbox), preset_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* preset_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(preset_frame), preset_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(preset_vbox), 10);
-    
-    GSList* resolution_group = nullptr;
-    GtkWidget* preset_radios[NUM_PRESET_RESOLUTIONS];
-    
-    for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
-        preset_radios[i] = gtk_radio_button_new_with_label(resolution_group, 
-                                                          PRESET_RESOLUTIONS[i].name);
-        resolution_group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(preset_radios[i]));
-        gtk_box_pack_start(GTK_BOX(preset_vbox), preset_radios[i], FALSE, FALSE, 0);
-        
-        if (i == current_resolution_index && !use_custom_resolution) {
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(preset_radios[i]), TRUE);
-        }
-    }
-    
-    // Custom resolution
-    GtkWidget* custom_frame = gtk_frame_new("Custom Resolution");
-    gtk_box_pack_start(GTK_BOX(vbox), custom_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* custom_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(custom_frame), custom_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(custom_vbox), 10);
-    
-    GtkWidget* custom_radio = gtk_radio_button_new_with_label(resolution_group, "Custom:");
-    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_radio, FALSE, FALSE, 0);
-    
-    if (use_custom_resolution) {
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(custom_radio), TRUE);
-    }
-    
-    GtkWidget* custom_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_hbox, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Width:"), FALSE, FALSE, 0);
-    GtkWidget* width_spin = gtk_spin_button_new_with_range(256, 7680, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(width_spin), custom_width);
-    gtk_box_pack_start(GTK_BOX(custom_hbox), width_spin, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Height:"), FALSE, FALSE, 0);
-    GtkWidget* height_spin = gtk_spin_button_new_with_range(240, 4320, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(height_spin), custom_height);
-    gtk_box_pack_start(GTK_BOX(custom_hbox), height_spin, FALSE, FALSE, 0);
-    
-    // Scaling options
-    GtkWidget* scaling_frame = gtk_frame_new("Scaling Options");
-    gtk_box_pack_start(GTK_BOX(vbox), scaling_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* scaling_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(scaling_frame), scaling_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(scaling_vbox), 10);
-    
-    GtkWidget* aspect_check = gtk_check_button_new_with_label("Maintain aspect ratio");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(aspect_check), maintain_aspect_ratio);
-    gtk_box_pack_start(GTK_BOX(scaling_vbox), aspect_check, FALSE, FALSE, 0);
-    
-    GtkWidget* integer_check = gtk_check_button_new_with_label("Integer scaling (pixel-perfect)");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(integer_check), integer_scaling);
-    gtk_box_pack_start(GTK_BOX(scaling_vbox), integer_check, FALSE, FALSE, 0);
-    
-    gtk_widget_show_all(dialog);
-    
-    gint result;
-    do {
-        result = gtk_dialog_run(GTK_DIALOG(dialog));
-        
-        if (result == GTK_RESPONSE_APPLY || result == GTK_RESPONSE_OK) {
-            // Update scaling options
-            maintain_aspect_ratio = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(aspect_check));
-            integer_scaling = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(integer_check));
-            
-            // Determine which resolution to use
-            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(custom_radio))) {
-                use_custom_resolution = true;
-                custom_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(width_spin));
-                custom_height = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(height_spin));
-                apply_resolution(custom_width, custom_height);
-            } else {
-                use_custom_resolution = false;
-                for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
-                    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(preset_radios[i]))) {
-                        current_resolution_index = i;
-                        apply_resolution(PRESET_RESOLUTIONS[i].width, PRESET_RESOLUTIONS[i].height);
-                        break;
-                    }
-                }
-            }
-            
-            save_video_settings();
-        }
-    } while (result == GTK_RESPONSE_APPLY);
-    
-    gtk_widget_destroy(dialog);
-}
-
-// Menu callback for resolution dialog
-void GTK3MainWindow::on_options_resolution(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_resolution_dialog();
-}
-
-// Configuration file handling for video settings
 void GTK3MainWindow::load_video_settings() {
     FILE* file = fopen("video_settings.cfg", "r");
     if (!file) return;
@@ -1037,6 +1146,10 @@ void GTK3MainWindow::load_video_settings() {
                 maintain_aspect_ratio = (strcmp(value, "true") == 0);
             } else if (strcmp(key, "integer_scaling") == 0) {
                 integer_scaling = (strcmp(value, "true") == 0);
+            } else if (strcmp(key, "preferred_backend") == 0) {
+                preferred_backend = string_to_backend(value);
+            } else if (strcmp(key, "backend_switching_enabled") == 0) {
+                backend_switching_enabled = (strcmp(value, "true") == 0);
             }
         }
     }
@@ -1048,7 +1161,7 @@ void GTK3MainWindow::save_video_settings() {
     FILE* file = fopen("video_settings.cfg", "w");
     if (!file) return;
     
-    fprintf(file, "# WarpNES GTK3+SDL Video Settings\n");
+    fprintf(file, "# WarpNES GTK3 Dual Rendering Video Settings\n");
     fprintf(file, "current_resolution_index=%d\n", current_resolution_index);
     fprintf(file, "custom_width=%d\n", custom_width);
     fprintf(file, "custom_height=%d\n", custom_height);
@@ -1056,22 +1169,57 @@ void GTK3MainWindow::save_video_settings() {
     fprintf(file, "maintain_aspect_ratio=%s\n", maintain_aspect_ratio ? "true" : "false");
     fprintf(file, "integer_scaling=%s\n", integer_scaling ? "true" : "false");
     
+    const char* backend_str = "AUTO";
+    switch (preferred_backend) {
+        case RenderBackend::SDL_HARDWARE: backend_str = "SDL_HARDWARE"; break;
+        case RenderBackend::CAIRO_SOFTWARE: backend_str = "CAIRO_SOFTWARE"; break;
+        case RenderBackend::AUTO: backend_str = "AUTO"; break;
+    }
+    fprintf(file, "preferred_backend=%s\n", backend_str);
+    fprintf(file, "backend_switching_enabled=%s\n", backend_switching_enabled ? "true" : "false");
+    
     fclose(file);
 }
 
+void GTK3MainWindow::set_status_message(const char* message) {
+    if (status_message_id) {
+        gtk_statusbar_remove(GTK_STATUSBAR(status_bar), 0, status_message_id);
+    }
+    
+    strncpy(status_message, message, sizeof(status_message) - 1);
+    status_message[sizeof(status_message) - 1] = '\0';
+    
+    status_message_id = gtk_statusbar_push(GTK_STATUSBAR(status_bar), 0, status_message);
+}
+
+// Utility functions
+const char* GTK3MainWindow::backend_to_string(RenderBackend backend) {
+    switch (backend) {
+        case RenderBackend::SDL_HARDWARE: return "SDL Hardware";
+        case RenderBackend::CAIRO_SOFTWARE: return "Cairo Software";
+        case RenderBackend::AUTO: return "Auto";
+        default: return "Unknown";
+    }
+}
+
+RenderBackend GTK3MainWindow::string_to_backend(const char* str) {
+    if (strcmp(str, "SDL_HARDWARE") == 0) return RenderBackend::SDL_HARDWARE;
+    if (strcmp(str, "CAIRO_SOFTWARE") == 0) return RenderBackend::CAIRO_SOFTWARE;
+    return RenderBackend::AUTO;
+}
 
 // Main function
 int main(int argc, char* argv[]) {
     Configuration::initialize("config.cfg");
     
-    printf("WarpNES GTK3+SDL - Hardware Accelerated NES Emulator\n");
-    printf("Using SDL for rendering with GTK3 interface\n");
+    printf("WarpNES GTK3 Dual Rendering - NES Emulator\n");
+    printf("Supporting both SDL hardware and Cairo software rendering\n");
     
     const char* rom_filename = nullptr;
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--neszapper") == 0) {
-            printf("NES Zapper support noted (not yet implemented in GTK3+SDL version)\n");
+            printf("NES Zapper support noted (not yet implemented)\n");
         } else if (argv[i][0] != '-') {
             rom_filename = argv[i];
         }
@@ -1080,11 +1228,11 @@ int main(int argc, char* argv[]) {
     GTK3MainWindow main_window;
     
     if (!main_window.initialize()) {
-        fprintf(stderr, "Failed to initialize GTK3+SDL window\n");
+        fprintf(stderr, "Failed to initialize GTK3 window\n");
         return 1;
     }
     
-    printf("GTK3+SDL window initialized successfully\n");
+    printf("GTK3 dual rendering window initialized successfully\n");
     
     if (rom_filename) {
         printf("Loading ROM: %s\n", rom_filename);
@@ -1096,4 +1244,3 @@ int main(int argc, char* argv[]) {
     
     return 0;
 }
-

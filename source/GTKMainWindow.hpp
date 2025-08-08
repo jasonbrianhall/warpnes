@@ -5,6 +5,7 @@
 #include <gdk/gdkkeysyms.h>
 #include <gdk/gdkx.h>
 #include <SDL2/SDL.h>
+#include <cairo.h>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -19,6 +20,13 @@
 class WarpNES;
 class Controller;
 
+// Rendering backend enum
+enum class RenderBackend {
+    SDL_HARDWARE,    // Hardware-accelerated SDL
+    CAIRO_SOFTWARE, // Software Cairo/2D rendering
+    AUTO            // Auto-detect best option
+};
+
 class GTK3MainWindow {
 public:
     GTK3MainWindow();
@@ -29,19 +37,43 @@ public:
     void run(const char* rom_filename);
     void shutdown();
     PPU* getPPU() { return engine ? engine->getPPU() : nullptr; }
+    
+    // Rendering backend control
+    void setRenderBackend(RenderBackend backend);
+    RenderBackend getRenderBackend() const;
+    bool switchRenderBackend(RenderBackend new_backend);
 
 private:
+    // Rendering backend state
+    RenderBackend current_backend;
+    RenderBackend preferred_backend;
+    bool backend_switching_enabled;
+    
     // GTK widgets
     GtkWidget* window;
     GtkWidget* main_vbox;
-    GtkWidget* sdl_socket;
+    GtkWidget* drawing_area;  // Unified drawing area for both backends
     GtkWidget* menubar;
     GtkWidget* status_bar;
     bool force_texture_recreation;
-    // SDL components
+    
+    // SDL components (only used when SDL backend is active)
     SDL_Window* sdl_window;
     SDL_Renderer* sdl_renderer;
     SDL_Texture* sdl_texture;
+    bool sdl_initialized;
+    
+    // Cairo components (only used when Cairo backend is active)
+    cairo_surface_t* cairo_surface;
+    cairo_t* cairo_context;
+    uint32_t* cairo_buffer;  // RGBA buffer for Cairo
+    bool cairo_initialized;
+    
+    // Shared framebuffer (converted from NES RGB565 to appropriate format)
+    uint16_t* nes_framebuffer;    // Raw NES data (RGB565)
+    uint32_t* rgba_framebuffer;   // Converted RGBA data
+    int framebuffer_width;
+    int framebuffer_height;
     
     // Resolution and scaling
     struct Resolution {
@@ -90,12 +122,14 @@ private:
     // Widget creation and setup
     void create_widgets();
     void create_menubar();
-    void setup_sdl_area();
+    void setup_drawing_area();
     
-    // SDL setup and management
-    bool init_sdl();
-    void cleanup_sdl();
-    void recreate_sdl_for_resolution(int width, int height);
+    // Backend initialization and cleanup
+    bool init_sdl_backend();
+    bool init_cairo_backend();
+    void cleanup_sdl_backend();
+    void cleanup_cairo_backend();
+    bool detect_best_backend();
     
     // Resolution management
     void apply_resolution(int width, int height);
@@ -106,8 +140,15 @@ private:
     // Audio callback
     static void audio_callback(void* userdata, uint8_t* buffer, int len);
     
-    // Rendering
+    // Rendering - unified interface
     void render_frame();
+    void render_frame_sdl();
+    void render_frame_cairo();
+    void convert_nes_to_rgba();  // Convert RGB565 to RGBA32
+    
+    // Cairo-specific rendering callbacks
+    static gboolean on_cairo_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
+    static gboolean on_cairo_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data);
     
     // Game loop and timing
     static gboolean frame_update_callback(gpointer user_data);
@@ -126,12 +167,14 @@ private:
     static void on_options_controls(GtkMenuItem* item, gpointer user_data);
     static void on_options_video(GtkMenuItem* item, gpointer user_data);
     static void on_options_resolution(GtkMenuItem* item, gpointer user_data);
+    static void on_options_rendering(GtkMenuItem* item, gpointer user_data);  // NEW
     static void on_help_about(GtkMenuItem* item, gpointer user_data);
     
     // Dialog functions
     void show_controls_dialog();
     void show_video_options_dialog();
     void show_resolution_dialog();
+    void show_rendering_dialog();  // NEW
     void show_about_dialog();
     
     // Window callbacks
@@ -145,6 +188,8 @@ private:
     void save_key_mappings();
     void load_video_settings();
     void save_video_settings();
+    const char* backend_to_string(RenderBackend backend);
+    RenderBackend string_to_backend(const char* str);
 };
 
 #endif // GTK3MAINWINDOW_HPP
