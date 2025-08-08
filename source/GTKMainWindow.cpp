@@ -522,23 +522,76 @@ void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
     // Convert SDL keys to our key state system
     guint gdk_key = 0;
     
+    // Check for Shift modifier
+    bool shift_pressed = (event->key.keysym.mod & KMOD_SHIFT) != 0;
+    
     switch (event->key.keysym.sym) {
-        case SDLK_UP: gdk_key = GDK_KEY_Up; break;
-        case SDLK_DOWN: gdk_key = GDK_KEY_Down; break;
-        case SDLK_LEFT: gdk_key = GDK_KEY_Left; break;
-        case SDLK_RIGHT: gdk_key = GDK_KEY_Right; break;
-        case SDLK_x: gdk_key = GDK_KEY_x; break;
-        case SDLK_z: gdk_key = GDK_KEY_z; break;
-        case SDLK_RIGHTBRACKET: gdk_key = GDK_KEY_bracketright; break;
-        case SDLK_LEFTBRACKET: gdk_key = GDK_KEY_bracketleft; break;
-        case SDLK_w: gdk_key = GDK_KEY_w; break;
-        case SDLK_s: gdk_key = GDK_KEY_s; break;
-        case SDLK_a: gdk_key = GDK_KEY_a; break;
-        case SDLK_d: gdk_key = GDK_KEY_d; break;
-        case SDLK_j: gdk_key = GDK_KEY_j; break;
-        case SDLK_k: gdk_key = GDK_KEY_k; break;
-        case SDLK_i: gdk_key = GDK_KEY_i; break;
-        case SDLK_u: gdk_key = GDK_KEY_u; break;
+        case SDLK_UP:
+            gdk_key = GDK_KEY_Up;
+            break;
+        case SDLK_DOWN:
+            gdk_key = GDK_KEY_Down;
+            break;
+        case SDLK_LEFT:
+            gdk_key = GDK_KEY_Left;
+            break;
+        case SDLK_RIGHT:
+            gdk_key = GDK_KEY_Right;
+            break;
+        case SDLK_x:
+            gdk_key = GDK_KEY_x;
+            break;
+        case SDLK_z:
+            gdk_key = GDK_KEY_z;
+            break;
+        case SDLK_RIGHTBRACKET:
+            gdk_key = GDK_KEY_bracketright;
+            break;
+        case SDLK_LEFTBRACKET:
+            gdk_key = GDK_KEY_bracketleft;
+            break;
+        case SDLK_w:
+            gdk_key = GDK_KEY_w;
+            break;
+        case SDLK_s:
+            gdk_key = GDK_KEY_s;
+            break;
+        case SDLK_a:
+            gdk_key = GDK_KEY_a;
+            break;
+        case SDLK_d:
+            gdk_key = GDK_KEY_d;
+            break;
+        case SDLK_j:
+            gdk_key = GDK_KEY_j;
+            break;
+        case SDLK_k:
+            gdk_key = GDK_KEY_k;
+            break;
+        case SDLK_i:
+            gdk_key = GDK_KEY_i;
+            break;
+        case SDLK_u:
+            gdk_key = GDK_KEY_u;
+            break;
+        
+        // F5-F9 keys
+        case SDLK_F5:
+            gdk_key = shift_pressed ? GDK_KEY_F5 : GDK_KEY_F5;  // You can differentiate these
+            break;
+        case SDLK_F6:
+            gdk_key = shift_pressed ? GDK_KEY_F6 : GDK_KEY_F6;
+            break;
+        case SDLK_F7:
+            gdk_key = shift_pressed ? GDK_KEY_F7 : GDK_KEY_F7;
+            break;
+        case SDLK_F8:
+            gdk_key = shift_pressed ? GDK_KEY_F8 : GDK_KEY_F8;
+            break;
+        case SDLK_F9:
+            gdk_key = shift_pressed ? GDK_KEY_F9 : GDK_KEY_F9;
+            break;
+            
         case SDLK_F11:
             if (event->type == SDL_KEYDOWN) {
                 static bool fullscreen = false;
@@ -556,7 +609,19 @@ void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
     }
     
     if (gdk_key != 0) {
-        key_states[gdk_key] = (event->type == SDL_KEYDOWN);
+        // For F5-F9, you might want to store both the key and modifier state
+        if (event->key.keysym.sym >= SDLK_F5 && event->key.keysym.sym <= SDLK_F9) {
+            // Option 1: Store separate entries for Shift+F combinations
+            if (shift_pressed) {
+                // You could use custom key codes or handle differently
+                // For example, use a custom mapping or bit flags
+                key_states[gdk_key | 0x1000] = (event->type == SDL_KEYDOWN);  // Add flag for shift
+            } else {
+                key_states[gdk_key] = (event->type == SDL_KEYDOWN);
+            }
+        } else {
+            key_states[gdk_key] = (event->type == SDL_KEYDOWN);
+        }
     }
 }
 
@@ -852,11 +917,14 @@ void GTK3MainWindow::shutdown() {
     save_video_settings();
 }
 
-// Static callback implementations
 gboolean GTK3MainWindow::on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
     GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
     window->key_states[event->keyval] = true;
     
+    // Check for Shift modifier
+    bool shift_pressed = (event->state & GDK_SHIFT_MASK) != 0;
+    
+    // Handle F11 for fullscreen toggle
     if (event->keyval == GDK_KEY_F11) {
         static bool is_fullscreen = false;
         if (is_fullscreen) {
@@ -866,9 +934,77 @@ gboolean GTK3MainWindow::on_key_press(GtkWidget* widget, GdkEventKey* event, gpo
             gtk_window_fullscreen(GTK_WINDOW(window->window));
             is_fullscreen = true;
         }
+        return TRUE; // Event handled
     }
     
-    return FALSE;
+    // Handle F5-F9 for save/load states
+    if (window->engine) {
+        std::string romBase = window->engine->getROMBaseName();
+        
+        if (!romBase.empty()) {
+            std::string filename;
+            int slot = 0;
+            bool handled = false;
+            
+            switch (event->keyval) {
+                case GDK_KEY_F5:
+                    slot = 1;
+                    filename = romBase + ".slot1.sav";
+                    handled = true;
+                    break;
+                case GDK_KEY_F6:
+                    slot = 2;
+                    filename = romBase + ".slot2.sav";
+                    handled = true;
+                    break;
+                case GDK_KEY_F7:
+                    slot = 3;
+                    filename = romBase + ".slot3.sav";
+                    handled = true;
+                    break;
+                case GDK_KEY_F8:
+                    slot = 4;
+                    filename = romBase + ".slot4.sav";
+                    handled = true;
+                    break;
+                case GDK_KEY_F9:
+                    slot = 5;
+                    filename = romBase + ".slot5.sav";
+                    handled = true;
+                    break;
+            }
+            
+            if (handled) {
+                if (shift_pressed) {
+                    // Shift+F[5-9] - Load State
+                    if (window->engine->loadState(filename)) {
+                        char msg[64];
+                        sprintf(msg, "State %d loaded", slot);
+                        window->set_status_message(msg);
+                    } else {
+                        char msg[64];
+                        sprintf(msg, "Failed to load state %d", slot);
+                        window->set_status_message(msg);
+                    }
+                } else {
+                    // F[5-9] - Save State
+                    window->engine->saveState(filename);
+                    char msg[64];
+                    sprintf(msg, "State %d saved", slot);
+                    window->set_status_message(msg);
+                }
+                return TRUE; // Event handled
+            }
+        } else {
+            // Handle F5-F9 when no ROM is loaded
+            if (event->keyval >= GDK_KEY_F5 && event->keyval <= GDK_KEY_F9) {
+                window->set_status_message("No ROM loaded");
+                return TRUE;
+            }
+        }
+    }
+    
+    return FALSE; // Event not handled, continue propagation
 }
 
 gboolean GTK3MainWindow::on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
