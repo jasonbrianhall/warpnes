@@ -780,15 +780,23 @@ void GTK3MainWindow::convert_nes_to_rgba() {
     for (int i = 0; i < 256 * 240; i++) {
         uint16_t rgb565 = nes_framebuffer[i];
         
+        // Extract RGB components
         uint8_t r = (rgb565 >> 11) & 0x1F;
         uint8_t g = (rgb565 >> 5) & 0x3F;
         uint8_t b = rgb565 & 0x1F;
         
-        r = (r * 255) / 31;
-        g = (g * 255) / 63;
-        b = (b * 255) / 31;
+        // Convert to 8-bit with proper rounding
+        r = (r * 255 + 15) / 31;  // Add half of divisor for rounding
+        g = (g * 255 + 31) / 63;  // Add half of divisor for rounding
+        b = (b * 255 + 15) / 31;  // Add half of divisor for rounding
         
-        rgba_framebuffer[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        // Cairo on little-endian systems expects BGRA format
+        // Format: 0xAARRGGBB on little-endian becomes BB GG RR AA in memory
+        #if G_BYTE_ORDER == G_LITTLE_ENDIAN
+            rgba_framebuffer[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;  // ARGB32
+        #else
+            rgba_framebuffer[i] = (b << 24) | (g << 16) | (r << 8) | 0xFF;  // BGRA
+        #endif
     }
 }
 
@@ -803,9 +811,10 @@ gboolean GTK3MainWindow::on_cairo_draw(GtkWidget* widget, cairo_t* cr, gpointer 
     
     window_obj->convert_nes_to_rgba();
     
+    // Try CAIRO_FORMAT_ARGB32 first, then RGB24 if colors look wrong
     cairo_surface_t* surface = cairo_image_surface_create_for_data(
         (unsigned char*)window_obj->rgba_framebuffer,
-        CAIRO_FORMAT_RGB24,
+        CAIRO_FORMAT_ARGB32,  // Try this format
         256, 240,
         256 * 4
     );
