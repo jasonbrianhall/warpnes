@@ -422,40 +422,130 @@ bool GTK3MainWindow::init_sdl_backend() {
         return true;
     }
     
+    // Initialize SDL video subsystem first
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
     
-    gtk_widget_realize(drawing_area);
+    // CRITICAL: Ensure the drawing area widget is realized and mapped
+    if (!gtk_widget_get_realized(drawing_area)) {
+        printf("Drawing area not realized, forcing realization\n");
+        gtk_widget_realize(drawing_area);
+    }
     
+    // Wait a moment for the widget to be fully realized
+    while (gtk_events_pending()) {
+        gtk_main_iteration();
+    }
+    
+    // Double-check the widget is mapped and visible
+    if (!gtk_widget_get_mapped(drawing_area)) {
+        printf("Drawing area not mapped, forcing map\n");
+        gtk_widget_map(drawing_area);
+        
+        // Process events again
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
+    }
+    
+    // Get the native window handle
     GdkWindow* gdk_window = gtk_widget_get_window(drawing_area);
     if (!gdk_window) {
-        printf("ERROR: Could not get GDK window for SDL\n");
+        printf("ERROR: Could not get GDK window for SDL - widget not realized properly\n");
         SDL_Quit();
         return false;
     }
     
+    // Verify we have a valid X11 window
+    if (!GDK_IS_X11_WINDOW(gdk_window)) {
+        printf("ERROR: Not running on X11 - SDL embedding not supported\n");
+        SDL_Quit();
+        return false;
+    }
+    
+    // Get X11 window ID
     unsigned long window_id = gdk_x11_window_get_xid(gdk_window);
-    SDL_SetHint(SDL_HINT_VIDEO_WINDOW_SHARE_PIXEL_FORMAT, "1");
+    printf("Got X11 window ID: %lu\n", window_id);
     
-    sdl_window = SDL_CreateWindowFrom((void*)(uintptr_t)window_id);
-    if (!sdl_window) {
-        printf("ERROR: SDL_CreateWindowFrom failed: %s\n", SDL_GetError());
+    // Set SDL environment variable to use our window
+    char window_id_str[32];
+    snprintf(window_id_str, sizeof(window_id_str), "%lu", window_id);
+    
+    // IMPORTANT: Set the window ID environment variable
+    if (setenv("SDL_WINDOWID", window_id_str, 1) != 0) {
+        printf("ERROR: Failed to set SDL_WINDOWID environment variable\n");
         SDL_Quit();
         return false;
     }
     
+    // Alternative method: Use SDL hints
+    SDL_SetHint(SDL_HINT_VIDEO_WINDOW_SHARE_PIXEL_FORMAT, "1");
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    
+    // Get widget dimensions
+    int widget_width = gtk_widget_get_allocated_width(drawing_area);
+    int widget_height = gtk_widget_get_allocated_height(drawing_area);
+    
+    printf("Widget dimensions: %dx%d\n", widget_width, widget_height);
+    
+    // Create SDL window - try both methods
+    sdl_window = nullptr;
+    
+    // Method 1: Create window from existing window ID
+    sdl_window = SDL_CreateWindowFrom((void*)(uintptr_t)window_id);
+    
+    if (!sdl_window) {
+        printf("Method 1 failed: %s\n", SDL_GetError());
+        
+        // Method 2: Create a new window and hope SDL can embed it
+        printf("Trying method 2: Creating positioned window\n");
+        
+        // Get the absolute position of our widget
+        int abs_x, abs_y;
+        gdk_window_get_origin(gdk_window, &abs_x, &abs_y);
+        
+        sdl_window = SDL_CreateWindow("WarpNES SDL",
+                                     abs_x, abs_y,
+                                     widget_width, widget_height,
+                                     SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS);
+    }
+    
+    if (!sdl_window) {
+        printf("ERROR: Both SDL window creation methods failed: %s\n", SDL_GetError());
+        unsetenv("SDL_WINDOWID");
+        SDL_Quit();
+        return false;
+    }
+    
+    printf("SDL window created successfully\n");
+    
+    // Create SDL renderer with hardware acceleration
     sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 
                                      SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    
     if (!sdl_renderer) {
-        printf("ERROR: SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(sdl_window);
-        sdl_window = nullptr;
-        SDL_Quit();
-        return false;
+        printf("Hardware acceleration failed, trying software: %s\n", SDL_GetError());
+        
+        // Try software rendering as fallback
+        sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_SOFTWARE);
+        
+        if (!sdl_renderer) {
+            printf("ERROR: SDL_CreateRenderer failed completely: %s\n", SDL_GetError());
+            SDL_DestroyWindow(sdl_window);
+            sdl_window = nullptr;
+            unsetenv("SDL_WINDOWID");
+            SDL_Quit();
+            return false;
+        } else {
+            printf("Using SDL software renderer\n");
+        }
+    } else {
+        printf("Using SDL hardware renderer\n");
     }
     
+    // Create texture for NES framebuffer
     sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
                                    SDL_TEXTUREACCESS_STREAMING, 256, 240);
     if (!sdl_texture) {
@@ -464,10 +554,16 @@ bool GTK3MainWindow::init_sdl_backend() {
         return false;
     }
     
+    // Test rendering to make sure everything works
+    SDL_SetRenderDrawColor(sdl_renderer, 64, 64, 64, 255);
+    SDL_RenderClear(sdl_renderer);
+    SDL_RenderPresent(sdl_renderer);
+    
+    printf("SDL backend test render successful\n");
+    
     sdl_initialized = true;
     return true;
 }
-
 bool GTK3MainWindow::init_cairo_backend() {
     printf("Initializing Cairo backend\n");
     
@@ -502,6 +598,10 @@ void GTK3MainWindow::cleanup_sdl_backend() {
         sdl_window = nullptr;
     }
     
+    // Clean up environment variable
+    unsetenv("SDL_WINDOWID");
+    
+    // Only quit SDL video if we're not using it for audio
     if (!Configuration::getAudioEnabled()) {
         SDL_Quit();
     } else {
@@ -546,28 +646,71 @@ void GTK3MainWindow::render_frame() {
 }
 
 void GTK3MainWindow::render_frame_sdl() {
-    if (!sdl_renderer || !sdl_texture) return;
+    if (!sdl_renderer || !sdl_texture || !sdl_initialized) {
+        printf("SDL render attempted but components not ready\n");
+        return;
+    }
     
+    // Recreate texture if needed (window resize, etc.)
+    if (force_texture_recreation) {
+        SDL_DestroyTexture(sdl_texture);
+        
+        sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
+                                       SDL_TEXTUREACCESS_STREAMING, 256, 240);
+        if (!sdl_texture) {
+            printf("ERROR: Failed to recreate SDL texture: %s\n", SDL_GetError());
+            return;
+        }
+        
+        force_texture_recreation = false;
+        printf("SDL texture recreated\n");
+    }
+    
+    // Update SDL texture with NES frame data
     void* pixels;
     int pitch;
     if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
         memcpy(pixels, nes_framebuffer, 256 * 240 * sizeof(uint16_t));
         SDL_UnlockTexture(sdl_texture);
+    } else {
+        printf("WARNING: Failed to lock SDL texture: %s\n", SDL_GetError());
+        return;
     }
     
+    // Clear renderer
     SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(sdl_renderer);
+    if (SDL_RenderClear(sdl_renderer) != 0) {
+        printf("WARNING: SDL_RenderClear failed: %s\n", SDL_GetError());
+    }
     
+    // Calculate scaling and render
     int widget_width = gtk_widget_get_allocated_width(drawing_area);
     int widget_height = gtk_widget_get_allocated_height(drawing_area);
+    
+    // Ensure minimum size
+    if (widget_width < 256) widget_width = 256;
+    if (widget_height < 240) widget_height = 240;
     
     SDL_Rect dest_rect;
     calculate_render_rect(256, 240, widget_width, widget_height, dest_rect);
     
-    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect);
+    // Render the NES frame
+    if (SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, &dest_rect) != 0) {
+        printf("WARNING: SDL_RenderCopy failed: %s\n", SDL_GetError());
+        return;
+    }
+    
+    // Present the frame
     SDL_RenderPresent(sdl_renderer);
+    
+    // Debug output occasionally
+    static int debug_counter = 0;
+    if (debug_counter++ % 300 == 0) {  // Every 5 seconds at 60fps
+        printf("SDL render: Widget %dx%d, Dest %d,%d %dx%d\n", 
+               widget_width, widget_height, 
+               dest_rect.x, dest_rect.y, dest_rect.w, dest_rect.h);
+    }
 }
-
 void GTK3MainWindow::render_frame_cairo() {
     gtk_widget_queue_draw(drawing_area);
 }
