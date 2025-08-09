@@ -393,7 +393,9 @@ void GTK3MainWindow::show_filters_dialog() {
         (current_filter == FilterType::NONE) ? "None" :
         (current_filter == FilterType::SCALE2X) ? "Scale2x" :
         (current_filter == FilterType::HQ2X) ? "hq2x" :
-        (current_filter == FilterType::HQ3X) ? "hq3x" : "Unknown";
+        (current_filter == FilterType::HQ3X) ? "hq3x" :
+        (current_filter == FilterType::CRT_SCANLINES) ? "CRT Scanlines" :
+        (current_filter == FilterType::NTSC) ? "NTSC Composite" : "Unknown";
     snprintf(current_text, sizeof(current_text), "Current filter: %s", current_name);
     GtkWidget* current_label = gtk_label_new(current_text);
     gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
@@ -416,7 +418,15 @@ void GTK3MainWindow::show_filters_dialog() {
     gtk_box_pack_start(GTK_BOX(vbox), hq2x_radio, FALSE, FALSE, 0);
     
     GtkWidget* hq3x_radio = gtk_radio_button_new_with_label(group, "hq3x (3x smooth)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(hq3x_radio));
     gtk_box_pack_start(GTK_BOX(vbox), hq3x_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* crt_radio = gtk_radio_button_new_with_label(group, "CRT Scanlines (retro CRT effect)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(crt_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), crt_radio, FALSE, FALSE, 0);
+    
+    GtkWidget* ntsc_radio = gtk_radio_button_new_with_label(group, "NTSC Composite (authentic TV look)");
+    gtk_box_pack_start(GTK_BOX(vbox), ntsc_radio, FALSE, FALSE, 0);
     
     // Set current selection
     switch (current_filter) {
@@ -431,6 +441,12 @@ void GTK3MainWindow::show_filters_dialog() {
             break;
         case FilterType::HQ3X:
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq3x_radio), TRUE);
+            break;
+        case FilterType::CRT_SCANLINES:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(crt_radio), TRUE);
+            break;
+        case FilterType::NTSC:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ntsc_radio), TRUE);
             break;
     }
     
@@ -453,6 +469,10 @@ void GTK3MainWindow::show_filters_dialog() {
             new_filter = FilterType::HQ2X;
         } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq3x_radio))) {
             new_filter = FilterType::HQ3X;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(crt_radio))) {
+            new_filter = FilterType::CRT_SCANLINES;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ntsc_radio))) {
+            new_filter = FilterType::NTSC;
         }
         
         setFilter(new_filter);
@@ -877,6 +897,12 @@ void GTK3MainWindow::render_frame_sdl() {
             case FilterType::HQ3X:
                 apply_hq3x_filter(nes_framebuffer, filter_buffer, 256, 240);
                 break;
+            case FilterType::CRT_SCANLINES:
+                apply_crt_scanlines_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
+            case FilterType::NTSC:
+                apply_ntsc_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
             default:
                 break;
         }
@@ -908,7 +934,6 @@ void GTK3MainWindow::render_frame_sdl() {
     SDL_RenderCopy(sdl_renderer, render_texture, NULL, &dest_rect);
     SDL_RenderPresent(sdl_renderer);
 }
-
 
 void GTK3MainWindow::render_frame_cairo() {
     gtk_widget_queue_draw(drawing_area);
@@ -1868,6 +1893,7 @@ void GTK3MainWindow::setFilter(FilterType filter) {
             break;
         case FilterType::HQ2X:
         case FilterType::SCALE2X:
+        case FilterType::CRT_SCANLINES:
             filter_scale = 2;
             filter_buffer = new uint32_t[256 * 240 * 4]; // 2x scale
             break;
@@ -1876,9 +1902,18 @@ void GTK3MainWindow::setFilter(FilterType filter) {
             filter_scale = 3;
             filter_buffer = new uint32_t[256 * 240 * 9]; // 3x scale
             break;
+        case FilterType::NTSC:
+            filter_scale = 1;
+            filter_buffer = new uint32_t[256 * 240]; // Same size, different processing
+            break;
         case FilterType::BILINEAR:
             filter_scale = 1;
             break;
+    }
+    
+    // Initialize NTSC filter if needed
+    if (filter == FilterType::NTSC) {
+        init_ntsc_filter();
     }
     
     char status_msg[128];
@@ -1887,9 +1922,206 @@ void GTK3MainWindow::setFilter(FilterType filter) {
              filter == FilterType::HQ2X ? "hq2x" :
              filter == FilterType::HQ3X ? "hq3x" :
              filter == FilterType::SCALE2X ? "Scale2x" :
-             filter == FilterType::SCALE3X ? "Scale3x" : "Bilinear");
+             filter == FilterType::SCALE3X ? "Scale3x" :
+             filter == FilterType::CRT_SCANLINES ? "CRT Scanlines" :
+             filter == FilterType::NTSC ? "NTSC Composite" : "Bilinear");
     set_status_message(status_msg);
 }
+
+
+void GTK3MainWindow::apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    const float scanline_intensity = 0.25f; // How dark the scanlines are (0.0 = invisible, 1.0 = black)
+    const float phosphor_decay = 0.95f;     // Simulates phosphor persistence
+    const float beam_width = 1.2f;          // Width of the electron beam
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t color = rgb565_to_rgb888(input[y * width + x]);
+            
+            // Extract RGB components
+            uint8_t r = (color >> 16) & 0xFF;
+            uint8_t g = (color >> 8) & 0xFF;
+            uint8_t b = color & 0xFF;
+            
+            // Apply phosphor glow effect
+            float glow_factor = 1.0f + 0.1f * sinf(x * 0.5f);
+            r = (uint8_t)(std::min(255.0f, r * glow_factor));
+            g = (uint8_t)(std::min(255.0f, g * glow_factor));
+            b = (uint8_t)(std::min(255.0f, b * glow_factor));
+            
+            // 2x scaling with scanlines
+            int out_y = y * 2;
+            int out_x = x * 2;
+            int out_width = width * 2;
+            
+            // Top row - normal brightness
+            uint32_t top_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+            output[out_y * out_width + out_x] = top_color;
+            output[out_y * out_width + (out_x + 1)] = top_color;
+            
+            // Bottom row - darkened for scanline effect
+            uint8_t dark_r = (uint8_t)(r * (1.0f - scanline_intensity));
+            uint8_t dark_g = (uint8_t)(g * (1.0f - scanline_intensity));
+            uint8_t dark_b = (uint8_t)(b * (1.0f - scanline_intensity));
+            uint32_t bottom_color = (0xFF << 24) | (dark_r << 16) | (dark_g << 8) | dark_b;
+            
+            output[(out_y + 1) * out_width + out_x] = bottom_color;
+            output[(out_y + 1) * out_width + (out_x + 1)] = bottom_color;
+        }
+    }
+}
+
+// NTSC Composite filter implementation
+void GTK3MainWindow::apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    // NTSC composite video simulation
+    const float color_bleeding = 0.15f;     // How much colors bleed into adjacent pixels
+    const float dot_crawl = 0.08f;          // Simulates dot crawl artifact
+    const float rainbow_banding = 0.12f;    // Rainbow banding on high contrast edges
+    const float chroma_resolution = 0.6f;   // Chroma resolution vs luma
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t center_color = rgb565_to_rgb888(input[y * width + x]);
+            
+            // Get neighboring pixels for blending
+            uint32_t left_color = (x > 0) ? 
+                rgb565_to_rgb888(input[y * width + (x - 1)]) : center_color;
+            uint32_t right_color = (x < width - 1) ? 
+                rgb565_to_rgb888(input[y * width + (x + 1)]) : center_color;
+            
+            // Extract RGB components
+            uint8_t r = (center_color >> 16) & 0xFF;
+            uint8_t g = (center_color >> 8) & 0xFF;
+            uint8_t b = center_color & 0xFF;
+            
+            // Convert to YIQ color space (simplified)
+            float y_luma = 0.299f * r + 0.587f * g + 0.114f * b;
+            float i_chroma = 0.596f * r - 0.274f * g - 0.322f * b;
+            float q_chroma = 0.211f * r - 0.523f * g + 0.312f * b;
+            
+            // Apply chroma resolution reduction
+            i_chroma *= chroma_resolution;
+            q_chroma *= chroma_resolution;
+            
+            // Add NTSC artifacts
+            float phase = (x + y * 3) * 0.5f; // NTSC color carrier phase
+            
+            // Dot crawl effect
+            float dot_crawl_offset = dot_crawl * sinf(phase * 2.0f);
+            i_chroma += dot_crawl_offset;
+            
+            // Color bleeding from adjacent pixels
+            uint8_t left_r = (left_color >> 16) & 0xFF;
+            uint8_t left_g = (left_color >> 8) & 0xFF;
+            uint8_t left_b = left_color & 0xFF;
+            
+            uint8_t right_r = (right_color >> 16) & 0xFF;
+            uint8_t right_g = (right_color >> 8) & 0xFF;
+            uint8_t right_b = right_color & 0xFF;
+            
+            r = (uint8_t)(r * (1.0f - color_bleeding) + 
+                         (left_r + right_r) * 0.5f * color_bleeding);
+            g = (uint8_t)(g * (1.0f - color_bleeding) + 
+                         (left_g + right_g) * 0.5f * color_bleeding);
+            b = (uint8_t)(b * (1.0f - color_bleeding) + 
+                         (left_b + right_b) * 0.5f * color_bleeding);
+            
+            // Rainbow banding on high contrast edges
+            if (abs(r - left_r) > 50 || abs(r - right_r) > 50) {
+                float rainbow_phase = phase + x * 0.3f;
+                r = (uint8_t)std::min(255.0f, r + rainbow_banding * 50.0f * sinf(rainbow_phase));
+                g = (uint8_t)std::min(255.0f, g + rainbow_banding * 50.0f * sinf(rainbow_phase + 2.0f));
+                b = (uint8_t)std::min(255.0f, b + rainbow_banding * 50.0f * sinf(rainbow_phase + 4.0f));
+            }
+            
+            // Apply gamma correction for NTSC
+            apply_gamma_correction(&center_color, ntsc_settings.gamma);
+            
+            // Add some random noise to simulate analog signal
+            float noise = ((rand() % 100) / 100.0f - 0.5f) * 0.02f;
+            r = (uint8_t)std::max(0.0f, std::min(255.0f, r + noise * 255.0f));
+            g = (uint8_t)std::max(0.0f, std::min(255.0f, g + noise * 255.0f));
+            b = (uint8_t)std::max(0.0f, std::min(255.0f, b + noise * 255.0f));
+            
+            output[y * width + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+// Helper functions for NTSC filter
+void GTK3MainWindow::init_ntsc_filter() {
+    // Initialize NTSC settings with default values for authentic CRT TV look
+    ntsc_settings.hue = 0.0f;
+    ntsc_settings.saturation = 0.0f;
+    ntsc_settings.contrast = 0.0f;
+    ntsc_settings.brightness = 0.0f;
+    ntsc_settings.gamma = 1.8f;          // Typical CRT gamma
+    ntsc_settings.sharpness = 0.2f;
+    ntsc_settings.resolution = 0.7f;
+    ntsc_settings.artifacts = 0.0f;
+    ntsc_settings.fringing = 0.0f;
+    ntsc_settings.bleed = 0.0f;
+}
+
+uint32_t GTK3MainWindow::apply_ntsc_artifacts(uint32_t color, int x, int y) {
+    // Apply NTSC-specific color artifacts
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >> 8) & 0xFF;
+    uint8_t b = color & 0xFF;
+    
+    // Simulate NTSC color carrier interference
+    float phase = (x * 3.579545f + y * 0.1f); // NTSC color subcarrier frequency
+    
+    // Add color fringing
+    float fringe_offset = ntsc_settings.fringing * sinf(phase);
+    r = (uint8_t)std::max(0.0f, std::min(255.0f, r + fringe_offset * 20.0f));
+    g = (uint8_t)std::max(0.0f, std::min(255.0f, g + fringe_offset * 15.0f));
+    b = (uint8_t)std::max(0.0f, std::min(255.0f, b + fringe_offset * 10.0f));
+    
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+uint32_t GTK3MainWindow::blend_colors(uint32_t color1, uint32_t color2, float ratio) {
+    // Blend two RGBA colors
+    uint8_t r1 = (color1 >> 16) & 0xFF;
+    uint8_t g1 = (color1 >> 8) & 0xFF;
+    uint8_t b1 = color1 & 0xFF;
+    
+    uint8_t r2 = (color2 >> 16) & 0xFF;
+    uint8_t g2 = (color2 >> 8) & 0xFF;
+    uint8_t b2 = color2 & 0xFF;
+    
+    uint8_t r = (uint8_t)(r1 * (1.0f - ratio) + r2 * ratio);
+    uint8_t g = (uint8_t)(g1 * (1.0f - ratio) + g2 * ratio);
+    uint8_t b = (uint8_t)(b1 * (1.0f - ratio) + b2 * ratio);
+    
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+void GTK3MainWindow::apply_gamma_correction(uint32_t* color, float gamma) {
+    // Apply gamma correction to simulate CRT monitor characteristics
+    uint8_t r = (*color >> 16) & 0xFF;
+    uint8_t g = (*color >> 8) & 0xFF;
+    uint8_t b = *color & 0xFF;
+    
+    // Normalize to 0-1 range
+    float rf = r / 255.0f;
+    float gf = g / 255.0f;
+    float bf = b / 255.0f;
+    
+    // Apply gamma correction
+    rf = powf(rf, 1.0f / gamma);
+    gf = powf(gf, 1.0f / gamma);
+    bf = powf(bf, 1.0f / gamma);
+    
+    // Convert back to 0-255 range
+    r = (uint8_t)(rf * 255.0f);
+    g = (uint8_t)(gf * 255.0f);
+    b = (uint8_t)(bf * 255.0f);
+    
+    *color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
 
 // Main function
 int main(int argc, char* argv[]) {

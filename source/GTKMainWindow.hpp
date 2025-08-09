@@ -33,7 +33,9 @@ enum class FilterType {
     HQ3X,
     SCALE2X,
     SCALE3X,
-    BILINEAR
+    BILINEAR,
+    CRT_SCANLINES,   // NEW: CRT scanlines effect
+    NTSC             // NEW: NTSC composite video simulation
 };
 
 class GTK3MainWindow {
@@ -210,13 +212,36 @@ private:
     uint32_t* filter_buffer;
     int filter_scale;
     
+    // Filter implementations
     void apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height);
     void apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height);
     void apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height);
+    void apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height);  // NEW
+    void apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height);          // NEW
+    
     void update_filter_texture();
     uint32_t rgb565_to_rgb888(uint16_t color);
     static void on_options_filters(GtkMenuItem* item, gpointer user_data);
     void show_filters_dialog();
+    
+    // NTSC filter helper functions
+    struct NTSCSettings {
+        float hue = 0.0f;
+        float saturation = 0.0f;
+        float contrast = 0.0f;
+        float brightness = 0.0f;
+        float gamma = 1.8f;
+        float sharpness = 0.2f;
+        float resolution = 0.7f;
+        float artifacts = 0.0f;
+        float fringing = 0.0f;
+        float bleed = 0.0f;
+    } ntsc_settings;
+    
+    void init_ntsc_filter();
+    uint32_t apply_ntsc_artifacts(uint32_t color, int x, int y);
+    uint32_t blend_colors(uint32_t color1, uint32_t color2, float ratio);
+    void apply_gamma_correction(uint32_t* color, float gamma);
 };
 
 #endif // GTK3MAINWINDOW_HPP
