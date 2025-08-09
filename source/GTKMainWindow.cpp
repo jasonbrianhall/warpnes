@@ -240,9 +240,14 @@ void GTK3MainWindow::create_widgets() {
     // Create main window
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "WarpNES");
-    gtk_window_set_default_size(GTK_WINDOW(window), 256, 240);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
+    
+    // Get screen dimensions and set window to full screen size
+    GdkScreen* screen = gdk_screen_get_default();
+    int screen_width = gdk_screen_get_width(screen);
+    int screen_height = gdk_screen_get_height(screen);
+    gtk_window_set_default_size(GTK_WINDOW(window), screen_width, screen_height);
     
     // Set focus and connect key events
     gtk_widget_set_can_focus(window, TRUE);
@@ -573,18 +578,19 @@ bool GTK3MainWindow::init_sdl_backend() {
         return false;
     }
     
-    // Don't try to embed - create a separate SDL window
-    int widget_width = gtk_widget_get_allocated_width(drawing_area);
-    int widget_height = gtk_widget_get_allocated_height(drawing_area);
+    // Get current display mode to get screen size
+    SDL_DisplayMode display_mode;
+    if (SDL_GetCurrentDisplayMode(0, &display_mode) != 0) {
+        printf("WARNING: Could not get display mode, using defaults: %s\n", SDL_GetError());
+        display_mode.w = 1920;
+        display_mode.h = 1080;
+    }
     
-    if (widget_width < 256) widget_width = 800;
-    if (widget_height < 240) widget_height = 600;
-    
-    // Create standalone SDL window
+    // Create standalone SDL window at full screen size
     sdl_window = SDL_CreateWindow("WarpNES SDL",
                                  SDL_WINDOWPOS_CENTERED,
                                  SDL_WINDOWPOS_CENTERED,
-                                 widget_width, widget_height,
+                                 display_mode.w, display_mode.h,
                                  SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     
     if (!sdl_window) {
