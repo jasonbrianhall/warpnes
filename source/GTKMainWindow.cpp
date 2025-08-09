@@ -567,6 +567,9 @@ void GTK3MainWindow::setup_drawing_area() {
 // Backend initialization
 bool GTK3MainWindow::init_sdl_backend() {
     printf("Initializing SDL backend\n");
+    if (!engine) {
+        return false;
+    }
     
     if (sdl_initialized) {
         return true;
