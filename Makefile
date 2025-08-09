@@ -24,9 +24,12 @@ ALLEGRO_LIBS_LINUX = -lalleg
 ALLEGRO_CFLAGS_WIN = -I/usr/x86_64-w64-mingw32/include
 ALLEGRO_LIBS_WIN = -lalleg -lwinmm -static-libgcc -static-libstdc++
 
-# GTK3 flags for Linux only (uses GTK3's built-in OpenGL support)
+# GTK3 flags for Linux and Windows
 GTK3_CFLAGS_LINUX = $(shell pkg-config --cflags gtk+-3.0 2>/dev/null || echo "-I/usr/include/gtk-3.0") $(shell pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/include/SDL2")
-GTK3_LIBS_LINUX = $(shell pkg-config --libs gtk+-3.0 gl glu sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lSDL2")
+GTK3_LIBS_LINUX = $(shell pkg-config --libs gtk+-3.0 sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lSDL2")
+
+GTK3_CFLAGS_WIN = -I/usr/x86_64-w64-mingw32/include/gtk-3.0 -I/usr/x86_64-w64-mingw32/include/glib-2.0 -I/usr/x86_64-w64-mingw32/lib/glib-2.0/include -I/usr/x86_64-w64-mingw32/include/pango-1.0 -I/usr/x86_64-w64-mingw32/include/cairo -I/usr/x86_64-w64-mingw32/include/gdk-pixbuf-2.0 -I/usr/x86_64-w64-mingw32/include/atk-1.0 -I/usr/x86_64-w64-mingw32/include/SDL2
+GTK3_LIBS_WIN = -lgtk-3 -lgdk-3 -lgdi32 -limm32 -lshell32 -lole32 -Wl,-luuid -lwinmm -lglib-2.0 -lintl -lgobject-2.0 -lgmodule-2.0 -lcairo -lpango-1.0 -latk-1.0 -lcairo-gobject -lgdk_pixbuf-2.0 -lgio-2.0 -lpangocairo-1.0 -lpangowin32-1.0 -lmingw32 -lSDL2main -lSDL2 -static-libgcc -static-libstdc++
 
 # SDL Platform-specific settings
 CXXFLAGS_LINUX_SDL = $(CXXFLAGS_COMMON) $(SDL_CFLAGS_LINUX) -DLINUX -DSDL_BUILD -std=c++17
@@ -36,8 +39,9 @@ CXXFLAGS_WIN_SDL = $(CXXFLAGS_COMMON) $(SDL_CFLAGS_WIN)     -DWIN32 -DSDL_BUILD 
 CXXFLAGS_LINUX_ALLEGRO = $(CXXFLAGS_COMMON) $(ALLEGRO_CFLAGS_LINUX) -DLINUX -DALLEGRO_BUILD
 CXXFLAGS_WIN_ALLEGRO = $(CXXFLAGS_COMMON) $(ALLEGRO_CFLAGS_WIN)     -DWIN32 -DALLEGRO_BUILD
 
-# GTK3 Platform-specific settings (Linux only)
+# GTK3 Platform-specific settings
 CXXFLAGS_LINUX_GTK3 = $(CXXFLAGS_COMMON) $(GTK3_CFLAGS_LINUX) -DLINUX -DGTK3_BUILD -std=c++17
+CXXFLAGS_WIN_GTK3 = $(CXXFLAGS_COMMON) $(GTK3_CFLAGS_WIN) -DWIN32 -DGTK3_BUILD -std=c++17
 
 # Debug-specific flags
 CXXFLAGS_LINUX_SDL_DEBUG = $(CXXFLAGS_LINUX_SDL) $(DEBUG_FLAGS)
@@ -45,6 +49,7 @@ CXXFLAGS_WIN_SDL_DEBUG = $(CXXFLAGS_WIN_SDL) $(DEBUG_FLAGS)
 CXXFLAGS_LINUX_ALLEGRO_DEBUG = $(CXXFLAGS_LINUX_ALLEGRO) $(DEBUG_FLAGS)
 CXXFLAGS_WIN_ALLEGRO_DEBUG = $(CXXFLAGS_WIN_ALLEGRO) $(DEBUG_FLAGS)
 CXXFLAGS_LINUX_GTK3_DEBUG = $(CXXFLAGS_LINUX_GTK3) $(DEBUG_FLAGS)
+CXXFLAGS_WIN_GTK3_DEBUG = $(CXXFLAGS_WIN_GTK3) $(DEBUG_FLAGS)
 
 # Linker flags
 LDFLAGS_LINUX_SDL = $(SDL_LIBS_LINUX)
@@ -52,6 +57,7 @@ LDFLAGS_WIN_SDL = $(SDL_LIBS_WIN)
 LDFLAGS_LINUX_ALLEGRO = $(ALLEGRO_LIBS_LINUX)
 LDFLAGS_WIN_ALLEGRO = $(ALLEGRO_LIBS_WIN)
 LDFLAGS_LINUX_GTK3 = $(GTK3_LIBS_LINUX)
+LDFLAGS_WIN_GTK3 = $(GTK3_LIBS_WIN)
 
 # Windows DLL settings
 DLL_SOURCE_DIR = /usr/x86_64-w64-mingw32/sys-root/mingw/bin
@@ -99,9 +105,11 @@ OBJS_WIN_ALLEGRO = $(patsubst %.cpp,%.win.allegro.o,$(ALLEGRO_SOURCE_FILES))
 OBJS_LINUX_ALLEGRO_DEBUG = $(patsubst %.cpp,%.allegro.debug.o,$(ALLEGRO_SOURCE_FILES))
 OBJS_WIN_ALLEGRO_DEBUG = $(patsubst %.cpp,%.win.allegro.debug.o,$(ALLEGRO_SOURCE_FILES))
 
-# Object files for GTK3 versions (Linux only)
+# Object files for GTK3 versions
 OBJS_LINUX_GTK3 = $(patsubst %.cpp,%.gtk3.o,$(GTK3_SOURCE_FILES))
+OBJS_WIN_GTK3 = $(patsubst %.cpp,%.win.gtk3.o,$(GTK3_SOURCE_FILES))
 OBJS_LINUX_GTK3_DEBUG = $(patsubst %.cpp,%.gtk3.debug.o,$(GTK3_SOURCE_FILES))
+OBJS_WIN_GTK3_DEBUG = $(patsubst %.cpp,%.win.gtk3.debug.o,$(GTK3_SOURCE_FILES))
 
 # Target executables - SDL versions
 TARGET_LINUX_SDL = warpnes-sdl
@@ -115,9 +123,11 @@ TARGET_WIN_ALLEGRO = warpnes-allegro.exe
 TARGET_LINUX_ALLEGRO_DEBUG = warpnes-allegro_debug
 TARGET_WIN_ALLEGRO_DEBUG = warpnes-allegro_debug.exe
 
-# Target executables - GTK3 versions (Linux only)
+# Target executables - GTK3 versions
 TARGET_LINUX_GTK3 = warpnes-gtk3
+TARGET_WIN_GTK3 = warpnes-gtk3.exe
 TARGET_LINUX_GTK3_DEBUG = warpnes-gtk3_debug
+TARGET_WIN_GTK3_DEBUG = warpnes-gtk3_debug.exe
 
 # Build directories
 BUILD_DIR = build
@@ -130,7 +140,9 @@ BUILD_DIR_WIN_SDL_DEBUG = $(BUILD_DIR)/windows-sdl-debug
 BUILD_DIR_LINUX_ALLEGRO_DEBUG = $(BUILD_DIR)/linux-allegro-debug
 BUILD_DIR_WIN_ALLEGRO_DEBUG = $(BUILD_DIR)/windows-allegro-debug
 BUILD_DIR_LINUX_GTK3 = $(BUILD_DIR)/linux-gtk3
+BUILD_DIR_WIN_GTK3 = $(BUILD_DIR)/windows-gtk3
 BUILD_DIR_LINUX_GTK3_DEBUG = $(BUILD_DIR)/linux-gtk3-debug
+BUILD_DIR_WIN_GTK3_DEBUG = $(BUILD_DIR)/windows-gtk3-debug
 
 # Create necessary directories
 $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/source/SMB \
@@ -142,7 +154,9 @@ $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/
 	$(BUILD_DIR_LINUX_ALLEGRO_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_ALLEGRO_DEBUG)/source/SMB \
 	$(BUILD_DIR_WIN_ALLEGRO_DEBUG)/source/Emulation $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/source/SMB \
 	$(BUILD_DIR_LINUX_GTK3)/source/Emulation $(BUILD_DIR_LINUX_GTK3)/source/SMB \
-	$(BUILD_DIR_LINUX_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_GTK3_DEBUG)/source/SMB)
+	$(BUILD_DIR_WIN_GTK3)/source/Emulation $(BUILD_DIR_WIN_GTK3)/source/SMB \
+	$(BUILD_DIR_LINUX_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_GTK3_DEBUG)/source/SMB \
+	$(BUILD_DIR_WIN_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_WIN_GTK3_DEBUG)/source/SMB)
 
 # Default target - build Allegro versions for Linux (unchanged for compatibility)
 .PHONY: all
@@ -153,7 +167,7 @@ all: linux-sdl linux-allegro linux-gtk3
 linux: linux-sdl linux-allegro linux-gtk3
 
 .PHONY: windows  
-windows: windows-sdl windows-allegro
+windows: windows-sdl windows-gtk3
 
 # SDL-specific targets
 .PHONY: linux-sdl
@@ -169,13 +183,16 @@ linux-allegro: $(BUILD_DIR_LINUX_ALLEGRO)/$(TARGET_LINUX_ALLEGRO)
 .PHONY: windows-allegro
 windows-allegro: $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO) collect-dlls-win-allegro
 
-# GTK3-specific targets (Linux only)
+# GTK3-specific targets
 .PHONY: linux-gtk3
 linux-gtk3: $(BUILD_DIR_LINUX_GTK3)/$(TARGET_LINUX_GTK3)
 
+.PHONY: windows-gtk3
+windows-gtk3: $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3) collect-dlls-win-gtk3
+
 # Debug targets
 .PHONY: debug
-debug: linux-sdl-debug windows-sdl-debug linux-allegro-debug windows-allegro-debug linux-gtk3-debug
+debug: linux-sdl-debug windows-sdl-debug linux-allegro-debug windows-allegro-debug linux-gtk3-debug windows-gtk3-debug
 
 .PHONY: linux-sdl-debug
 linux-sdl-debug: $(BUILD_DIR_LINUX_SDL_DEBUG)/$(TARGET_LINUX_SDL_DEBUG)
@@ -191,6 +208,9 @@ windows-allegro-debug: $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG
 
 .PHONY: linux-gtk3-debug
 linux-gtk3-debug: $(BUILD_DIR_LINUX_GTK3_DEBUG)/$(TARGET_LINUX_GTK3_DEBUG)
+
+.PHONY: windows-gtk3-debug
+windows-gtk3-debug: $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG) collect-dlls-win-gtk3-debug
 
 #
 # DLL collection targets for Windows builds
@@ -231,9 +251,27 @@ collect-dlls-win-allegro-debug: $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLE
 		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-allegro/"; \
 	fi
 
+.PHONY: collect-dlls-win-gtk3
+collect-dlls-win-gtk3: $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3)
+	@echo "Collecting DLLs for Windows GTK3 build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_GTK3); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
+.PHONY: collect-dlls-win-gtk3-debug
+collect-dlls-win-gtk3-debug: $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG)
+	@echo "Collecting DLLs for Windows GTK3 debug build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_GTK3_DEBUG); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
 # Convenience target to collect all DLLs
 .PHONY: collect-dlls-all
-collect-dlls-all: collect-dlls-win-sdl collect-dlls-win-allegro collect-dlls-win-sdl-debug collect-dlls-win-allegro-debug
+collect-dlls-all: collect-dlls-win-sdl collect-dlls-win-allegro collect-dlls-win-gtk3 collect-dlls-win-sdl-debug collect-dlls-win-allegro-debug collect-dlls-win-gtk3-debug
 
 #
 # Linux SDL build targets
@@ -355,27 +393,72 @@ $(BUILD_DIR_LINUX_GTK3_DEBUG)/%.gtk3.debug.o: %.cpp
 	@echo "Compiling $< for Linux GTK3 debug..."
 	$(CXX_LINUX) $(CXXFLAGS_LINUX_GTK3_DEBUG) -c $< -o $@
 
+#
+# Windows GTK3 build targets
+#
+$(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3): $(addprefix $(BUILD_DIR_WIN_GTK3)/,$(OBJS_WIN_GTK3))
+	@echo "Linking Windows GTK3 executable..."
+	$(CXX_WIN) $^ -o $@ $(LDFLAGS_WIN_GTK3)
+	@echo "Windows GTK3 build complete: $@"
+
+$(BUILD_DIR_WIN_GTK3)/%.win.gtk3.o: %.cpp
+	@echo "Compiling $< for Windows GTK3..."
+	$(CXX_WIN) $(CXXFLAGS_WIN_GTK3) -c $< -o $@
+
+#
+# Windows GTK3 debug build targets
+#
+$(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG): $(addprefix $(BUILD_DIR_WIN_GTK3_DEBUG)/,$(OBJS_WIN_GTK3_DEBUG))
+	@echo "Linking Windows GTK3 debug executable..."
+	$(CXX_WIN) $^ -o $@ $(LDFLAGS_WIN_GTK3)
+	@echo "Windows GTK3 debug build complete: $@"
+
+$(BUILD_DIR_WIN_GTK3_DEBUG)/%.win.gtk3.debug.o: %.cpp
+	@echo "Compiling $< for Windows GTK3 debug..."
+	$(CXX_WIN) $(CXXFLAGS_WIN_GTK3_DEBUG) -c $< -o $@
+
 # Check dependencies target
 .PHONY: check-deps
 check-deps:
 	@echo "Checking dependencies..."
 	@echo "Linux SDL2:"; pkg-config --exists sdl2 && echo "  ✓ SDL2 found" || echo "  ✗ SDL2 not found - install libsdl2-dev"
 	@echo "Linux Allegro:"; test -f /usr/lib/liballeg.so && echo "  ✓ Allegro 4 found" || echo "  ✗ Allegro 4 not found - install liballegro4-dev"
-	@echo "Linux GTK3:"; pkg-config --exists gtk+-3.0 gl glu && echo "  ✓ GTK3 with OpenGL found" || echo "  ✗ GTK3/OpenGL not found - install libgtk-3-dev libgl1-mesa-dev libglu1-mesa-dev"
+	@echo "Linux GTK3:"; pkg-config --exists gtk+-3.0 && echo "  ✓ GTK3 found" || echo "  ✗ GTK3 not found - install libgtk-3-dev"
 	@echo "Windows SDL2:"; test -f /usr/x86_64-w64-mingw32/include/SDL2/SDL.h && echo "  ✓ MinGW SDL2 found" || echo "  ✗ MinGW SDL2 not found - install mingw64-SDL2-devel"
 	@echo "Windows Allegro:"; test -f /usr/x86_64-w64-mingw32/lib/liballeg.a && echo "  ✓ MinGW Allegro 4 found" || echo "  ✗ MinGW Allegro 4 not found - install mingw64-allegro4"
+	@echo "Windows GTK3:"; test -f /usr/x86_64-w64-mingw32/include/gtk-3.0/gtk/gtk.h && echo "  ✓ MinGW GTK3 found" || echo "  ✗ MinGW GTK3 not found - install mingw64-gtk3-devel mingw64-glib2-devel"
 	@echo "DLL collect scripts:"; \
 	test -f build/windows-sdl/collect_dlls.sh && echo "  ✓ SDL collect_dlls.sh found" || echo "  ✗ SDL collect_dlls.sh not found - create in build/windows-sdl/"; \
 	test -f build/windows-allegro/collect_dlls.sh && echo "  ✓ Allegro collect_dlls.sh found" || echo "  ✗ Allegro collect_dlls.sh not found - create in build/windows-allegro/"
 
-# Install dependencies (Ubuntu/Debian)
+# Install dependencies (detect package manager)
 .PHONY: install-deps
 install-deps:
-	@echo "Installing dependencies for Ubuntu/Debian..."
-	sudo apt-get update
-	sudo apt-get install -y libsdl2-dev liballegro4-dev libgtk-3-dev libgl1-mesa-dev libglu1-mesa-dev pkg-config
-	sudo apt-get install -y mingw-w64 || echo "MinGW may need manual installation"
-	@echo "Note: MinGW SDL2 and Allegro libraries may need manual installation"
+	@echo "Detecting package manager and installing dependencies..."
+	@if command -v apt-get >/dev/null 2>&1; then \
+		echo "Detected APT package manager (Debian/Ubuntu)"; \
+		sudo apt-get update; \
+		sudo apt-get install -y libsdl2-dev liballegro4-dev libgtk-3-dev pkg-config; \
+		sudo apt-get install -y mingw-w64 || echo "MinGW may need manual installation"; \
+	elif command -v yum >/dev/null 2>&1; then \
+		echo "Detected YUM package manager (RHEL/CentOS/Fedora)"; \
+		sudo yum update -y; \
+		sudo yum install -y SDL2-devel allegro-devel gtk3-devel pkgconfig; \
+		sudo yum install -y mingw64-gcc-c++ mingw64-SDL2-devel mingw64-allegro4-devel mingw64-gtk3-devel || echo "MinGW packages may need manual installation"; \
+	elif command -v dnf >/dev/null 2>&1; then \
+		echo "Detected DNF package manager (Fedora)"; \
+		sudo dnf update -y; \
+		sudo dnf install -y SDL2-devel allegro-devel gtk3-devel pkgconfig; \
+		sudo dnf install -y mingw64-gcc-c++ mingw64-SDL2-devel mingw64-allegro4-devel mingw64-gtk3-devel || echo "MinGW packages may need manual installation"; \
+	else \
+		echo "Unknown package manager. Please install dependencies manually:"; \
+		echo "  SDL2 development libraries"; \
+		echo "  Allegro 4 development libraries"; \
+		echo "  GTK3 development libraries"; \
+		echo "  pkg-config"; \
+		echo "  MinGW cross-compilation tools (optional, for Windows builds)"; \
+	fi
+	@echo "Note: MinGW SDL2, Allegro, and GTK3 libraries may need manual installation"
 
 # Clean target
 .PHONY: clean
@@ -393,7 +476,9 @@ clean:
 	rm -f $(BUILD_DIR_WIN_ALLEGRO)/$(TARGET_WIN_ALLEGRO) 2>/dev/null || true
 	rm -f $(BUILD_DIR_WIN_ALLEGRO_DEBUG)/$(TARGET_WIN_ALLEGRO_DEBUG) 2>/dev/null || true
 	rm -f $(BUILD_DIR_LINUX_GTK3)/$(TARGET_LINUX_GTK3) 2>/dev/null || true
+	rm -f $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3) 2>/dev/null || true
 	rm -f $(BUILD_DIR_LINUX_GTK3_DEBUG)/$(TARGET_LINUX_GTK3_DEBUG) 2>/dev/null || true
+	rm -f $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG) 2>/dev/null || true
 
 # Test builds (quick compilation test)
 .PHONY: test-builds
@@ -409,44 +494,62 @@ test-builds:
 	@$(MAKE) windows-sdl >/dev/null 2>&1 && echo "  ✓ Windows SDL builds successfully" || echo "  ✗ Windows SDL build failed"
 	@echo "Testing Windows Allegro build..."
 	@$(MAKE) windows-allegro >/dev/null 2>&1 && echo "  ✓ Windows Allegro builds successfully" || echo "  ✗ Windows Allegro build failed"
+	@echo "Testing Windows GTK3 build..."
+	@$(MAKE) windows-gtk3 >/dev/null 2>&1 && echo "  ✓ Windows GTK3 builds successfully" || echo "  ✗ Windows GTK3 build failed"
 
 # Debug what files the makefile thinks it should build
 .PHONY: debug-files
 debug-files:
 	@echo "SDL Source Files:"
-	@for file in $(SDL_SOURCE_FILES); do echo "  $$file"; done
+	@for file in $(SDL_SOURCE_FILES); do echo "  $file"; done
 	@echo ""
 	@echo "SDL Object Files (Linux):"
-	@for file in $(OBJS_LINUX_SDL); do echo "  $$file"; done
+	@for file in $(OBJS_LINUX_SDL); do echo "  $file"; done
 	@echo ""
 	@echo "Allegro Source Files:"
-	@for file in $(ALLEGRO_SOURCE_FILES); do echo "  $$file"; done
+	@for file in $(ALLEGRO_SOURCE_FILES); do echo "  $file"; done
 	@echo ""
 	@echo "Allegro Object Files (Linux):"
-	@for file in $(OBJS_LINUX_ALLEGRO); do echo "  $$file"; done
+	@for file in $(OBJS_LINUX_ALLEGRO); do echo "  $file"; done
 	@echo ""
 	@echo "GTK3 Source Files:"
-	@for file in $(GTK3_SOURCE_FILES); do echo "  $$file"; done
+	@for file in $(GTK3_SOURCE_FILES); do echo "  $file"; done
 	@echo ""
 	@echo "GTK3 Object Files (Linux):"
-	@for file in $(OBJS_LINUX_GTK3); do echo "  $$file"; done
+	@for file in $(OBJS_LINUX_GTK3); do echo "  $file"; done
+	@echo ""
+	@echo "GTK3 Object Files (Windows):"
+	@for file in $(OBJS_WIN_GTK3); do echo "  $file"; done
 
 # Help target
 .PHONY: help
 help:
 	@echo "Available targets:"
-	@echo "  make               - Build warpnes for Linux with Allegro (default)"
+	@echo "  make               - Build warpnes for Linux with SDL, Allegro, and GTK3 (default)"
 	@echo "  make linux         - Build SDL, Allegro, and GTK3 versions for Linux"
-	@echo "  make windows       - Build SDL and Allegro versions for Windows"
+	@echo "  make windows       - Build SDL and GTK3 versions for Windows"
 	@echo ""
 	@echo "  make linux-sdl     - Build warpnes for Linux with SDL"
 	@echo "  make linux-allegro - Build warpnes for Linux with Allegro"
-	@echo "  make linux-gtk3    - Build warpnes for Linux with GTK3 + OpenGL"
+	@echo "  make linux-gtk3    - Build warpnes for Linux with GTK3"
 	@echo "  make windows-sdl   - Build warpnes for Windows with SDL (requires MinGW + DLLs)"
 	@echo "  make windows-allegro - Build warpnes for Windows with Allegro (requires MinGW + DLLs)"
+	@echo "  make windows-gtk3  - Build warpnes for Windows with GTK3 (requires MinGW + DLLs)"
 	@echo ""
 	@echo "  make debug         - Build debug versions for all platforms"
 	@echo "  make linux-sdl-debug     - Build Linux SDL with debug symbols"
 	@echo "  make linux-allegro-debug - Build Linux Allegro with debug symbols"
 	@echo "  make linux-gtk3-debug    - Build Linux GTK3 with debug symbols"
-	@echo "  make windows-sdl-debug
+	@echo "  make windows-sdl-debug   - Build Windows SDL with debug symbols"
+	@echo "  make windows-allegro-debug - Build Windows Allegro with debug symbols"
+	@echo "  make windows-gtk3-debug  - Build Windows GTK3 with debug symbols"
+	@echo ""
+	@echo "  make check-deps    - Check for required dependencies"
+	@echo "  make install-deps  - Install dependencies (Ubuntu/Debian)"
+	@echo "  make test-builds   - Test compilation for all platforms"
+	@echo "  make clean         - Remove all build files"
+	@echo "  make collect-dlls-all - Collect all Windows DLLs"
+	@echo "  make debug-files   - Show source and object file lists"
+	@echo ""
+	@echo "Note: Windows builds require MinGW cross-compilation setup"
+	@echo "  - Windows GTK3 uses the same collect_dlls.sh script as SDL"
