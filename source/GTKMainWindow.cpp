@@ -400,7 +400,8 @@ void GTK3MainWindow::show_filters_dialog() {
         (current_filter == FilterType::HQ2X) ? "hq2x" :
         (current_filter == FilterType::HQ3X) ? "hq3x" :
         (current_filter == FilterType::CRT_SCANLINES) ? "CRT Scanlines" :
-        (current_filter == FilterType::NTSC) ? "NTSC Composite" : "Unknown";
+        (current_filter == FilterType::NTSC) ? "NTSC Composite" :
+        (current_filter == FilterType::SUPER_4XSAI) ? "Super 4xSaI" : "Unknown";
     snprintf(current_text, sizeof(current_text), "Current filter: %s", current_name);
     GtkWidget* current_label = gtk_label_new(current_text);
     gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
@@ -426,6 +427,10 @@ void GTK3MainWindow::show_filters_dialog() {
     group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(hq3x_radio));
     gtk_box_pack_start(GTK_BOX(vbox), hq3x_radio, FALSE, FALSE, 0);
     
+    GtkWidget* sai_radio = gtk_radio_button_new_with_label(group, "Super 4xSaI (premium 4x smooth)");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(sai_radio));
+    gtk_box_pack_start(GTK_BOX(vbox), sai_radio, FALSE, FALSE, 0);
+    
     GtkWidget* crt_radio = gtk_radio_button_new_with_label(group, "CRT Scanlines (retro CRT effect)");
     group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(crt_radio));
     gtk_box_pack_start(GTK_BOX(vbox), crt_radio, FALSE, FALSE, 0);
@@ -446,6 +451,9 @@ void GTK3MainWindow::show_filters_dialog() {
             break;
         case FilterType::HQ3X:
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq3x_radio), TRUE);
+            break;
+        case FilterType::SUPER_4XSAI:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sai_radio), TRUE);
             break;
         case FilterType::CRT_SCANLINES:
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(crt_radio), TRUE);
@@ -474,6 +482,8 @@ void GTK3MainWindow::show_filters_dialog() {
             new_filter = FilterType::HQ2X;
         } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq3x_radio))) {
             new_filter = FilterType::HQ3X;
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(sai_radio))) {
+            new_filter = FilterType::SUPER_4XSAI;
         } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(crt_radio))) {
             new_filter = FilterType::CRT_SCANLINES;
         } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ntsc_radio))) {
@@ -485,7 +495,6 @@ void GTK3MainWindow::show_filters_dialog() {
     
     gtk_widget_destroy(dialog);
 }
-
 void GTK3MainWindow::apply_resolution(int width, int height) {
     printf("Applying resolution: %dx%d\n", width, height);
     
@@ -912,6 +921,9 @@ void GTK3MainWindow::render_frame_sdl() {
             case FilterType::NTSC:
                 apply_ntsc_filter(nes_framebuffer, filter_buffer, 256, 240);
                 break;
+            case FilterType::SUPER_4XSAI:  // ADD THIS CASE
+                apply_4xsai_filter(nes_framebuffer, filter_buffer, 256, 240);
+                break;
             default:
                 break;
         }
@@ -943,6 +955,7 @@ void GTK3MainWindow::render_frame_sdl() {
     SDL_RenderCopy(sdl_renderer, render_texture, NULL, &dest_rect);
     SDL_RenderPresent(sdl_renderer);
 }
+
 
 void GTK3MainWindow::render_frame_cairo() {
     gtk_widget_queue_draw(drawing_area);
@@ -1100,6 +1113,20 @@ void GTK3MainWindow::run(const char* rom_filename) {
         engine->reset();
         game_running = true;
         game_paused = false;
+        
+        // NOW that we have a ROM loaded, try to switch to SDL if we're using Cairo
+        // or if the preferred backend is SDL/AUTO
+        if (current_backend == RenderBackend::CAIRO_SOFTWARE || 
+            preferred_backend == RenderBackend::SDL_HARDWARE ||
+            preferred_backend == RenderBackend::AUTO) {
+            
+            printf("ROM loaded via command line - attempting to switch to SDL backend\n");
+            if (switchRenderBackend(RenderBackend::SDL_HARDWARE)) {
+                printf("Successfully switched to SDL backend after ROM load\n");
+            } else {
+                printf("SDL backend failed, staying with Cairo\n");
+            }
+        }
         
         char status_msg[512];
         snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
@@ -1283,7 +1310,6 @@ void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
             window->engine->reset();
             window->game_running = true;
             window->game_paused = false;
-            
             char status_msg[512];
             snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
             window->set_status_message(status_msg);
@@ -1911,6 +1937,10 @@ void GTK3MainWindow::setFilter(FilterType filter) {
             filter_scale = 3;
             filter_buffer = new uint32_t[256 * 240 * 9]; // 3x scale
             break;
+        case FilterType::SUPER_4XSAI:  // ADD THIS CASE
+            filter_scale = 4;
+            filter_buffer = new uint32_t[256 * 240 * 16]; // 4x scale
+            break;
         case FilterType::NTSC:
             filter_scale = 1;
             filter_buffer = new uint32_t[256 * 240]; // Same size, different processing
@@ -1933,7 +1963,8 @@ void GTK3MainWindow::setFilter(FilterType filter) {
              filter == FilterType::SCALE2X ? "Scale2x" :
              filter == FilterType::SCALE3X ? "Scale3x" :
              filter == FilterType::CRT_SCANLINES ? "CRT Scanlines" :
-             filter == FilterType::NTSC ? "NTSC Composite" : "Bilinear");
+             filter == FilterType::NTSC ? "NTSC Composite" :
+             filter == FilterType::SUPER_4XSAI ? "Super 4xSaI" : "Bilinear");
     set_status_message(status_msg);
 }
 
@@ -2131,6 +2162,175 @@ void GTK3MainWindow::apply_gamma_correction(uint32_t* color, float gamma) {
     *color = (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
+void GTK3MainWindow::apply_4xsai_filter(uint16_t* input, uint32_t* output, int width, int height) {
+    // 4xSaI (4x Scale and Interpolate) filter
+    // Creates 4x4 output for each input pixel using sophisticated interpolation
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            // Get 3x3 neighborhood with bounds checking
+            uint32_t colors[9];
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int ny = y + dy;
+                    int nx = x + dx;
+                    
+                    // Clamp to bounds
+                    if (ny < 0) ny = 0;
+                    if (ny >= height) ny = height - 1;
+                    if (nx < 0) nx = 0;
+                    if (nx >= width) nx = width - 1;
+                    
+                    colors[(dy + 1) * 3 + (dx + 1)] = rgb565_to_rgb888(input[ny * width + nx]);
+                }
+            }
+            
+            // Name the colors for clarity:
+            //  0 | 1 | 2
+            // -----------
+            //  3 | 4 | 5  
+            // -----------
+            //  6 | 7 | 8
+            
+            uint32_t c0 = colors[0], c1 = colors[1], c2 = colors[2];
+            uint32_t c3 = colors[3], c4 = colors[4], c5 = colors[5];
+            uint32_t c6 = colors[6], c7 = colors[7], c8 = colors[8];
+            
+            // Output 4x4 block
+            int out_y = y * 4;
+            int out_x = x * 4;
+            int out_width = width * 4;
+            
+            // 4xSaI algorithm - determine output pixels based on edge patterns
+            uint32_t product1a, product1b, product2a, product2b;
+            
+            // Top-left quadrant
+            if (colors_equal(c3, c1) && !colors_equal(c3, c5)) {
+                product1a = interpolate_4xsai(c3, c3, c4, c1);
+            } else if (colors_equal(c5, c1) && !colors_equal(c3, c5)) {
+                product1a = interpolate_4xsai(c5, c1, c4, c5);
+            } else if (colors_equal(c3, c5) && !colors_equal(c3, c1)) {
+                product1a = c4;
+            } else {
+                product1a = interpolate_4xsai(c1, c3, c4, c5);
+            }
+            
+            // Top-right quadrant  
+            if (colors_equal(c1, c5) && !colors_equal(c1, c7)) {
+                product1b = interpolate_4xsai(c1, c1, c4, c5);
+            } else if (colors_equal(c7, c5) && !colors_equal(c1, c7)) {
+                product1b = interpolate_4xsai(c7, c5, c4, c7);
+            } else if (colors_equal(c1, c7) && !colors_equal(c1, c5)) {
+                product1b = c4;
+            } else {
+                product1b = interpolate_4xsai(c5, c1, c4, c7);
+            }
+            
+            // Bottom-left quadrant
+            if (colors_equal(c3, c7) && !colors_equal(c3, c1)) {
+                product2a = interpolate_4xsai(c3, c7, c4, c3);
+            } else if (colors_equal(c1, c7) && !colors_equal(c3, c1)) {
+                product2a = interpolate_4xsai(c1, c7, c4, c1);
+            } else if (colors_equal(c3, c1) && !colors_equal(c3, c7)) {
+                product2a = c4;
+            } else {
+                product2a = interpolate_4xsai(c7, c3, c4, c1);
+            }
+            
+            // Bottom-right quadrant
+            if (colors_equal(c5, c7) && !colors_equal(c5, c3)) {
+                product2b = interpolate_4xsai(c5, c7, c4, c5);
+            } else if (colors_equal(c3, c7) && !colors_equal(c5, c3)) {
+                product2b = interpolate_4xsai(c3, c7, c4, c3);
+            } else if (colors_equal(c5, c3) && !colors_equal(c5, c7)) {
+                product2b = c4;
+            } else {
+                product2b = interpolate_4xsai(c7, c5, c4, c3);
+            }
+            
+            // Additional refinement for smoother results
+            uint32_t product1a_refined = product1a;
+            uint32_t product1b_refined = product1b;
+            uint32_t product2a_refined = product2a;
+            uint32_t product2b_refined = product2b;
+            
+            // Apply edge-directed interpolation
+            if (!colors_equal(c1, c5) && !colors_equal(c3, c7)) {
+                if (colors_equal(c3, c1)) {
+                    product1a_refined = mix_colors(product1a, c3, 0.75f);
+                }
+                if (colors_equal(c1, c5)) {
+                    product1b_refined = mix_colors(product1b, c1, 0.75f);
+                }
+                if (colors_equal(c3, c7)) {
+                    product2a_refined = mix_colors(product2a, c3, 0.75f);
+                }
+                if (colors_equal(c5, c7)) {
+                    product2b_refined = mix_colors(product2b, c5, 0.75f);
+                }
+            }
+            
+            // Output the 4x4 block
+            // Top half
+            output[out_y * out_width + out_x] = product1a_refined;
+            output[out_y * out_width + (out_x + 1)] = mix_colors(product1a_refined, product1b_refined, 0.5f);
+            output[out_y * out_width + (out_x + 2)] = mix_colors(product1b_refined, product1a_refined, 0.5f);
+            output[out_y * out_width + (out_x + 3)] = product1b_refined;
+            
+            output[(out_y + 1) * out_width + out_x] = mix_colors(product1a_refined, product2a_refined, 0.5f);
+            output[(out_y + 1) * out_width + (out_x + 1)] = mix_colors(c4, product1a_refined, 0.7f);
+            output[(out_y + 1) * out_width + (out_x + 2)] = mix_colors(c4, product1b_refined, 0.7f);
+            output[(out_y + 1) * out_width + (out_x + 3)] = mix_colors(product1b_refined, product2b_refined, 0.5f);
+            
+            // Bottom half
+            output[(out_y + 2) * out_width + out_x] = mix_colors(product2a_refined, product1a_refined, 0.5f);
+            output[(out_y + 2) * out_width + (out_x + 1)] = mix_colors(c4, product2a_refined, 0.7f);
+            output[(out_y + 2) * out_width + (out_x + 2)] = mix_colors(c4, product2b_refined, 0.7f);
+            output[(out_y + 2) * out_width + (out_x + 3)] = mix_colors(product2b_refined, product1b_refined, 0.5f);
+            
+            output[(out_y + 3) * out_width + out_x] = product2a_refined;
+            output[(out_y + 3) * out_width + (out_x + 1)] = mix_colors(product2a_refined, product2b_refined, 0.5f);
+            output[(out_y + 3) * out_width + (out_x + 2)] = mix_colors(product2b_refined, product2a_refined, 0.5f);
+            output[(out_y + 3) * out_width + (out_x + 3)] = product2b_refined;
+        }
+    }
+}
+
+uint32_t GTK3MainWindow::interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4) {
+    // Advanced 4-point interpolation for smoother results
+    uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+    uint8_t r3 = (c3 >> 16) & 0xFF, g3 = (c3 >> 8) & 0xFF, b3 = c3 & 0xFF;
+    uint8_t r4 = (c4 >> 16) & 0xFF, g4 = (c4 >> 8) & 0xFF, b4 = c4 & 0xFF;
+    
+    // Weighted average with emphasis on the center pixel
+    uint8_t r = (r1 + r2 + (r3 * 2) + r4) / 5;
+    uint8_t g = (g1 + g2 + (g3 * 2) + g4) / 5;
+    uint8_t b = (b1 + b2 + (b3 * 2) + b4) / 5;
+    
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+uint32_t GTK3MainWindow::mix_colors(uint32_t c1, uint32_t c2, float ratio) {
+    // Linear interpolation between two colors
+    uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+    
+    uint8_t r = (uint8_t)(r1 * (1.0f - ratio) + r2 * ratio);
+    uint8_t g = (uint8_t)(g1 * (1.0f - ratio) + g2 * ratio);
+    uint8_t b = (uint8_t)(b1 * (1.0f - ratio) + b2 * ratio);
+    
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+bool GTK3MainWindow::colors_equal(uint32_t c1, uint32_t c2) {
+    // Check if colors are similar enough to be considered equal
+    // Allow small differences to account for compression artifacts
+    uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+    
+    return (abs(r1 - r2) < 8) && (abs(g1 - g2) < 8) && (abs(b1 - b2) < 8);
+}
 
 // Main function
 int main(int argc, char* argv[]) {

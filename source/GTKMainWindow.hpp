@@ -34,8 +34,9 @@ enum class FilterType {
     SCALE2X,
     SCALE3X,
     BILINEAR,
-    CRT_SCANLINES,   // NEW: CRT scanlines effect
-    NTSC             // NEW: NTSC composite video simulation
+    CRT_SCANLINES,
+    NTSC,
+    SUPER_4XSAI
 };
 
 class GTK3MainWindow {
@@ -242,6 +243,11 @@ private:
     uint32_t apply_ntsc_artifacts(uint32_t color, int x, int y);
     uint32_t blend_colors(uint32_t color1, uint32_t color2, float ratio);
     void apply_gamma_correction(uint32_t* color, float gamma);
+    void apply_4xsai_filter(uint16_t* input, uint32_t* output, int width, int height);
+    uint32_t interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4);
+    uint32_t mix_colors(uint32_t c1, uint32_t c2, float ratio);
+    bool colors_equal(uint32_t c1, uint32_t c2);
+
 };
 
 #endif // GTK3MAINWINDOW_HPP
