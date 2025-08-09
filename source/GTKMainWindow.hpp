@@ -2,8 +2,6 @@
 #define GTK3MAINWINDOW_HPP
 
 #include <gtk/gtk.h>
-#include <gdk/gdkkeysyms.h>
-#include <gdk/gdkx.h>
 #include <SDL2/SDL.h>
 #include <cairo.h>
 #include <cstdint>
