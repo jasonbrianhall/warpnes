@@ -14,7 +14,6 @@
 
 #include "../Zapper.hpp"
 
-
 // 6502 instruction cycle counts
 const uint8_t WarpNES::instructionCycles[256] = {
     // 0x00-0x0F
@@ -2179,107 +2178,286 @@ void WarpNES::writeMemory(uint16_t address, uint8_t value) {
 
 // Save states
 void WarpNES::saveState(const std::string &filename) {
-  EmulatorSaveState state;
-  memset(&state, 0, sizeof(state));
+    if (!romLoaded) {
+        std::cerr << "Error: Cannot save state - no ROM loaded" << std::endl;
+        return;
+    }
 
-  // Header
-  strcpy(state.header, "NESSAVE");
-  state.version = 1;
+    // Use the existing EmulatorSaveState structure but add mapper data to reserved space
+    EmulatorSaveState state;
+    memset(&state, 0, sizeof(state));
 
-  // CPU state
-  state.cpu_A = regA;
-  state.cpu_X = regX;
-  state.cpu_Y = regY;
-  state.cpu_SP = regSP;
-  state.cpu_P = regP;
-  state.cpu_PC = regPC;
-  state.cpu_cycles = totalCycles;
+    // Header
+    strcpy(state.header, "NESSAVE");
+    state.version = 1; // Keep version 1 for compatibility
 
-  // RAM
-  memcpy(state.ram, ram, sizeof(ram));
+    // CPU state
+    state.cpu_A = regA;
+    state.cpu_X = regX;
+    state.cpu_Y = regY;
+    state.cpu_SP = regSP;
+    state.cpu_P = regP;
+    state.cpu_PC = regPC;
+    state.cpu_cycles = totalCycles;
 
-  // TODO: Add PPU and APU state
+    // RAM
+    memcpy(state.ram, ram, sizeof(ram));
 
-  // Create appropriate filename based on platform
-  std::string actualFilename;
+    // Save PPU state
+    if (ppu) {
+        state.ppu_registers[0] = ppu->getControl();
+        state.ppu_registers[1] = ppu->getMask();
+        state.ppu_registers[2] = ppu->getStatus();
+        state.ppu_registers[3] = ppu->getOAMAddr();
+        state.ppu_registers[4] = ppu->getScrollX();
+        state.ppu_registers[5] = ppu->getScrollY();
+        state.ppu_registers[6] = (ppu->getVRAMAddress() >> 8) & 0xFF;
+        state.ppu_registers[7] = ppu->getVRAMAddress() & 0xFF;
+        
+        // Save PPU memory
+        memcpy(state.ppu_nametable, ppu->getVRAM(), 2048);
+        memcpy(state.ppu_oam, ppu->getOAM(), 256);
+        memcpy(state.ppu_palette, ppu->getPaletteRAM(), 32);
+    }
+
+    // Create appropriate filename
+    std::string actualFilename;
 #ifdef __DJGPP__
-  // DOS 8.3 format
-  std::string baseName = filename;
-  size_t dotPos = baseName.find_last_of('.');
-  if (dotPos != std::string::npos) {
-    baseName = baseName.substr(0, dotPos);
-  }
-  if (baseName.length() > 8) {
-    baseName = baseName.substr(0, 8);
-  }
-  actualFilename = baseName + ".SAV";
+    std::string baseName = filename;
+    size_t dotPos = baseName.find_last_of('.');
+    if (dotPos != std::string::npos) {
+        baseName = baseName.substr(0, dotPos);
+    }
+    if (baseName.length() > 8) {
+        baseName = baseName.substr(0, 8);
+    }
+    actualFilename = baseName + ".SAV";
 #else
-  actualFilename = filename;
+    actualFilename = filename;
 #endif
 
-  std::ofstream file(actualFilename, std::ios::binary);
-  if (file.is_open()) {
-    file.write(reinterpret_cast<const char *>(&state), sizeof(state));
-    file.close();
-    std::cout << "Emulator save state written to: " << actualFilename
-              << std::endl;
-  } else {
-    std::cerr << "Error: Could not save state to: " << actualFilename
-              << std::endl;
-  }
+    std::ofstream file(actualFilename, std::ios::binary);
+    if (file.is_open()) {
+        file.write(reinterpret_cast<const char *>(&state), sizeof(state));
+        
+        // Write extended PPU state
+        if (ppu) {
+            // Write additional PPU timing state
+            uint64_t ppuCycles = ppu->getCurrentCycles();
+            int currentScanline = ppu->getCurrentScanline();
+            int currentCycle = ppu->getCurrentCycle();
+            bool inVBlank = ppu->isInVBlank();
+            bool frameComplete = ppu->isFrameComplete();
+            
+            file.write(reinterpret_cast<const char *>(&ppuCycles), sizeof(ppuCycles));
+            file.write(reinterpret_cast<const char *>(&currentScanline), sizeof(currentScanline));
+            file.write(reinterpret_cast<const char *>(&currentCycle), sizeof(currentCycle));
+            file.write(reinterpret_cast<const char *>(&inVBlank), sizeof(inVBlank));
+            file.write(reinterpret_cast<const char *>(&frameComplete), sizeof(frameComplete));
+        }
+        
+        // Write mapper-specific data separately
+        switch (nesHeader.mapper) {
+            case 1:
+                file.write(reinterpret_cast<const char *>(&mmc1), sizeof(mmc1));
+                break;
+            case 2:
+                file.write(reinterpret_cast<const char *>(&uxrom), sizeof(uxrom));
+                break;
+            case 3:
+                file.write(reinterpret_cast<const char *>(&cnrom), sizeof(cnrom));
+                break;
+            case 4:
+                file.write(reinterpret_cast<const char *>(&mmc3), sizeof(mmc3));
+                break;
+            case 9:
+                file.write(reinterpret_cast<const char *>(&mmc2), sizeof(mmc2));
+                break;
+            case 66:
+                file.write(reinterpret_cast<const char *>(&gxrom), sizeof(gxrom));
+                break;
+        }
+        
+        file.close();
+        std::cout << "Save state written to: " << actualFilename << std::endl;
+    } else {
+        std::cerr << "Error: Could not save state to: " << actualFilename << std::endl;
+    }
 }
 
+
 bool WarpNES::loadState(const std::string &filename) {
-  std::string actualFilename;
+    if (!romLoaded) {
+        std::cerr << "Error: Cannot load state - no ROM loaded" << std::endl;
+        return false;
+    }
+
+    // Safety checks
+    if (!ppu) {
+        std::cerr << "Error: PPU not initialized" << std::endl;
+        return false;
+    }
+
+    if (!apu) {
+        std::cerr << "Error: APU not initialized" << std::endl;
+        return false;
+    }
+
+    std::string actualFilename;
 #ifdef __DJGPP__
-  // DOS 8.3 format
-  std::string baseName = filename;
-  size_t dotPos = baseName.find_last_of('.');
-  if (dotPos != std::string::npos) {
-    baseName = baseName.substr(0, dotPos);
-  }
-  if (baseName.length() > 8) {
-    baseName = baseName.substr(0, 8);
-  }
-  actualFilename = baseName + ".SAV";
+    std::string baseName = filename;
+    size_t dotPos = baseName.find_last_of('.');
+    if (dotPos != std::string::npos) {
+        baseName = baseName.substr(0, dotPos);
+    }
+    if (baseName.length() > 8) {
+        baseName = baseName.substr(0, 8);
+    }
+    actualFilename = baseName + ".SAV";
 #else
-  actualFilename = filename;
+    actualFilename = filename;
 #endif
 
-  std::ifstream file(actualFilename, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "Error: Could not open save state: " << actualFilename
-              << std::endl;
-    return false;
-  }
+    std::ifstream file(actualFilename, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open save state: " << actualFilename << std::endl;
+        return false;
+    }
 
-  EmulatorSaveState state;
-  file.read(reinterpret_cast<char *>(&state), sizeof(state));
-  file.close();
+    EmulatorSaveState state;
+    file.read(reinterpret_cast<char *>(&state), sizeof(state));
+    
+    if (!file.good()) {
+        std::cerr << "Error: Failed to read save state" << std::endl;
+        file.close();
+        return false;
+    }
 
-  // Validate header
-  if (strcmp(state.header, "NESSAVE") != 0) {
-    std::cerr << "Error: Invalid save state file" << std::endl;
-    return false;
-  }
+    // Validate header
+    if (strcmp(state.header, "NESSAVE") != 0) {
+        std::cerr << "Error: Invalid save state file" << std::endl;
+        file.close();
+        return false;
+    }
 
-  // Restore CPU state
-  regA = state.cpu_A;
-  regX = state.cpu_X;
-  regY = state.cpu_Y;
-  regSP = state.cpu_SP;
-  regP = state.cpu_P;
-  regPC = state.cpu_PC;
-  totalCycles = state.cpu_cycles;
+    // Restore CPU state
+    regA = state.cpu_A;
+    regX = state.cpu_X;
+    regY = state.cpu_Y;
+    regSP = state.cpu_SP;
+    regP = state.cpu_P;
+    regPC = state.cpu_PC;
+    totalCycles = state.cpu_cycles;
+    frameCycles = 0; // Reset frame cycles
 
-  // Restore RAM
-  memcpy(ram, state.ram, sizeof(ram));
+    // Restore RAM
+    memcpy(ram, state.ram, sizeof(ram));
 
-  // TODO: Restore PPU and APU state
+    // Restore PPU state
+    if (ppu) {
+        ppu->setControl(state.ppu_registers[0]);
+        ppu->setMask(state.ppu_registers[1]);
+        ppu->setStatus(state.ppu_registers[2]);
+        ppu->setOAMAddr(state.ppu_registers[3]);
+        ppu->setScrollX(state.ppu_registers[4]);
+        ppu->setScrollY(state.ppu_registers[5]);
+        
+        uint16_t vramAddr = (state.ppu_registers[6] << 8) | state.ppu_registers[7];
+        ppu->setVRAMAddress(vramAddr);
+        
+        // Restore PPU memory
+        ppu->setVRAM(state.ppu_nametable);
+        ppu->setOAM(state.ppu_oam);
+        ppu->setPaletteRAM(state.ppu_palette);
+        
+        // Reset PPU state variables
+        ppu->setWriteToggle(false);
+        ppu->setDataBuffer(0);
+        ppu->setSprite0Hit(false);
+    }
 
-  std::cout << "Emulator save state loaded from: " << actualFilename
-            << std::endl;
-  return true;
+    // Load extended PPU state
+    if (ppu) {
+        // Read additional PPU timing state
+        uint64_t ppuCycles;
+        int currentScanline;
+        int currentCycle;
+        bool inVBlank;
+        bool frameComplete;
+        
+        if (file.read(reinterpret_cast<char *>(&ppuCycles), sizeof(ppuCycles))) {
+            file.read(reinterpret_cast<char *>(&currentScanline), sizeof(currentScanline));
+            file.read(reinterpret_cast<char *>(&currentCycle), sizeof(currentCycle));
+            file.read(reinterpret_cast<char *>(&inVBlank), sizeof(inVBlank));
+            file.read(reinterpret_cast<char *>(&frameComplete), sizeof(frameComplete));
+            
+            ppu->setCycles(ppuCycles);
+            // Note: PPU doesn't have public setters for scanline/cycle state
+            // We'll reset PPU timing state below instead
+        }
+    }
+
+    // Load mapper-specific data
+    switch (nesHeader.mapper) {
+        case 1:
+            if (file.read(reinterpret_cast<char *>(&mmc1), sizeof(mmc1))) {
+                updateMMC1Banks();
+            } else {
+                std::cerr << "Warning: Could not read MMC1 state" << std::endl;
+            }
+            break;
+        case 2:
+            if (file.read(reinterpret_cast<char *>(&uxrom), sizeof(uxrom))) {
+                // UxROM banks are already set in uxrom state
+            } else {
+                std::cerr << "Warning: Could not read UxROM state" << std::endl;
+            }
+            break;
+        case 3:
+            if (file.read(reinterpret_cast<char *>(&cnrom), sizeof(cnrom))) {
+                // CNROM banks are already set in cnrom state
+            } else {
+                std::cerr << "Warning: Could not read CNROM state" << std::endl;
+            }
+            break;
+        case 4:
+            if (file.read(reinterpret_cast<char *>(&mmc3), sizeof(mmc3))) {
+                updateMMC3Banks();
+            } else {
+                std::cerr << "Warning: Could not read MMC3 state" << std::endl;
+            }
+            break;
+        case 9:
+            if (file.read(reinterpret_cast<char *>(&mmc2), sizeof(mmc2))) {
+                updateMMC2Banks();
+            } else {
+                std::cerr << "Warning: Could not read MMC2 state" << std::endl;
+            }
+            break;
+        case 66:
+            if (file.read(reinterpret_cast<char *>(&gxrom), sizeof(gxrom))) {
+                // GxROM banks are already set in gxrom state
+            } else {
+                std::cerr << "Warning: Could not read GxROM state" << std::endl;
+            }
+            break;
+    }
+
+    file.close();
+
+    // Reset interrupt state
+    nmiPending = false;
+    masterCycles = totalCycles;
+    ppuCycles = totalCycles * 3; // Rough PPU sync
+
+    // Reset PPU cycle state
+    ppuCycleState.scanline = 0;
+    ppuCycleState.cycle = 0;
+    ppuCycleState.inVBlank = false;
+    ppuCycleState.renderingEnabled = false;
+
+    std::cout << "Save state loaded from: " << actualFilename << std::endl;
+    return true;
 }
 
 // CHR ROM access for PPU
