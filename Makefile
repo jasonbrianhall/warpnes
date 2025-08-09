@@ -14,8 +14,8 @@ DEBUG_FLAGS = -g -DDEBUG
 SDL_CFLAGS_LINUX = $(shell pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/include/SDL2")
 SDL_LIBS_LINUX = $(shell pkg-config --libs sdl2 2>/dev/null || echo "-lSDL2")
 
-SDL_CFLAGS_WIN = -I/usr/x86_64-w64-mingw32/include/SDL2
-SDL_LIBS_WIN = -lmingw32 -lSDL2main -lSDL2 -static-libgcc -static-libstdc++
+SDL_CFLAGS_WIN = $(shell mingw64-pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/x86_64-w64-mingw32/include/SDL2")
+SDL_LIBS_WIN = $(shell mingw64-pkg-config --libs sdl2 2>/dev/null || echo "-lmingw32 -lSDL2main -lSDL2") -static-libgcc -static-libstdc++
 
 # Allegro flags for Linux and Windows
 ALLEGRO_CFLAGS_LINUX = -I/usr/include
@@ -28,8 +28,8 @@ ALLEGRO_LIBS_WIN = -lalleg -lwinmm -static-libgcc -static-libstdc++
 GTK3_CFLAGS_LINUX = $(shell pkg-config --cflags gtk+-3.0 2>/dev/null || echo "-I/usr/include/gtk-3.0") $(shell pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/include/SDL2")
 GTK3_LIBS_LINUX = $(shell pkg-config --libs gtk+-3.0 sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lSDL2")
 
-GTK3_CFLAGS_WIN = -I/usr/x86_64-w64-mingw32/include/gtk-3.0 -I/usr/x86_64-w64-mingw32/include/glib-2.0 -I/usr/x86_64-w64-mingw32/lib/glib-2.0/include -I/usr/x86_64-w64-mingw32/include/pango-1.0 -I/usr/x86_64-w64-mingw32/include/cairo -I/usr/x86_64-w64-mingw32/include/gdk-pixbuf-2.0 -I/usr/x86_64-w64-mingw32/include/atk-1.0 -I/usr/x86_64-w64-mingw32/include/SDL2
-GTK3_LIBS_WIN = -lgtk-3 -lgdk-3 -lgdi32 -limm32 -lshell32 -lole32 -Wl,-luuid -lwinmm -lglib-2.0 -lintl -lgobject-2.0 -lgmodule-2.0 -lcairo -lpango-1.0 -latk-1.0 -lcairo-gobject -lgdk_pixbuf-2.0 -lgio-2.0 -lpangocairo-1.0 -lpangowin32-1.0 -lmingw32 -lSDL2main -lSDL2 -static-libgcc -static-libstdc++
+GTK3_CFLAGS_WIN = $(shell mingw64-pkg-config --cflags gtk+-3.0 2>/dev/null || echo "-I/usr/x86_64-w64-mingw32/include/gtk-3.0") $(shell mingw64-pkg-config --cflags sdl2 2>/dev/null || echo "-I/usr/x86_64-w64-mingw32/include/SDL2")
+GTK3_LIBS_WIN = $(shell mingw64-pkg-config --libs gtk+-3.0 sdl2 2>/dev/null || echo "-lgtk-3 -lgdk-3 -lSDL2") -static-libgcc -static-libstdc++
 
 # SDL Platform-specific settings
 CXXFLAGS_LINUX_SDL = $(CXXFLAGS_COMMON) $(SDL_CFLAGS_LINUX) -DLINUX -DSDL_BUILD -std=c++17
