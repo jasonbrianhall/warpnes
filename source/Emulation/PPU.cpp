@@ -1007,7 +1007,7 @@ void PPU::renderScanline(int scanline, int mapper) {
     
     // Then render ALL sprites in one pass with proper priority
     if (ppuMask & 0x10) {
-        for (int spriteIndex = 0; spriteIndex <= 63; spriteIndex++) {
+        for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
             uint8_t attributes = oam[spriteIndex * 4 + 2];
             bool behindBackground = (attributes & 0x20) != 0;
             renderSingleSprite(scanline, spriteIndex, behindBackground);
