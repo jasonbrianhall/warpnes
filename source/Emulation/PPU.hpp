@@ -119,6 +119,8 @@ public:
 private:
     WarpNES& engine;
 
+    uint8_t spritePriorityMask[256 * 240];
+
     struct ScalingCache {
         uint16_t* scaledBuffer;
         int* sourceToDestX;

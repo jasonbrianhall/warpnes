@@ -985,7 +985,6 @@ void PPU::renderScanline(int scanline, int mapper) {
     }
     
     // Render background first
-    //printf("ppumask %x\n", ppuMask);
     if (ppuMask & 0x08) {
         switch (mapper) {
             case 1:
@@ -996,18 +995,20 @@ void PPU::renderScanline(int scanline, int mapper) {
                 break;
             case 66:
                 renderBackgroundScanlineMMC1(scanline);
-                //renderBackgroundScanlineGxROM(scanline);
                 break;             
-
             default:
                 renderBackgroundScanlineMMC1(scanline);
                 break;             
         }
     }
     
-    // Then render ALL sprites in one pass with proper priority
+    // Render sprites the correct way: in order 0-63, but only draw if no higher priority sprite already drew there
     if (ppuMask & 0x10) {
-        for (int spriteIndex = 63; spriteIndex >= 0; spriteIndex--) {
+        // Clear sprite priority mask for this scanline
+        memset(&spritePriorityMask[scanline * 256], 0, 256);
+        
+        // Render sprites in hardware order (0 to 63)
+        for (int spriteIndex = 0; spriteIndex < 64; spriteIndex++) {
             uint8_t attributes = oam[spriteIndex * 4 + 2];
             bool behindBackground = (attributes & 0x20) != 0;
             renderSingleSprite(scanline, spriteIndex, behindBackground);
@@ -1016,50 +1017,57 @@ void PPU::renderScanline(int scanline, int mapper) {
 }
 
 void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackground) {
-   uint8_t spriteY = oam[spriteIndex * 4];
-   uint8_t tileIndex = oam[spriteIndex * 4 + 1];
-   uint8_t attributes = oam[spriteIndex * 4 + 2];
-   uint8_t spriteX = oam[spriteIndex * 4 + 3];
-   
-   if (scanline < spriteY + 1 || scanline >= spriteY + 9) return;
-   if (spriteY >= 0xEF || spriteX >= 0xF9) return;
-   
-   int spriteRow = scanline - (spriteY + 1);
-   if (attributes & 0x80) spriteRow = 7 - spriteRow;
-   
-   uint16_t patternBase = tileIndex * 16;
-   if (ppuCtrl & 0x08) patternBase += 0x1000;
-   
-   uint8_t patternLo = readCHR(patternBase + spriteRow);
-   uint8_t patternHi = readCHR(patternBase + spriteRow + 8);
-   
-   for (int pixelX = 0; pixelX < 8; pixelX++) {
-       uint8_t paletteIndex = 0;
-       if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
-       if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;
-       
-       if (paletteIndex == 0) continue;
-       
-       int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
-       
-       if (xPixel < 0 || xPixel >= 256) continue;
-       
-       uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
-       uint32_t color32 = paletteRGB[colorIndex];
-       uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
-                             ((color32 & 0x00FC00) >> 5) | 
-                             ((color32 & 0x0000F8) >> 3);
-       
-       if (behindBackground) {
-           // For behind-background sprites, only draw if background pixel is palette index 0
-           int bufferIndex = scanline * 256 + xPixel;
-           if (bufferIndex >= 0 && bufferIndex < 256 * 240 && backgroundMask[bufferIndex] == 1) {
-               frameBuffer[bufferIndex] = spritePixel;
-           }
-       } else {
-           frameBuffer[scanline * 256 + xPixel] = spritePixel;
-       }
-   }
+    uint8_t spriteY = oam[spriteIndex * 4];
+    uint8_t tileIndex = oam[spriteIndex * 4 + 1];
+    uint8_t attributes = oam[spriteIndex * 4 + 2];
+    uint8_t spriteX = oam[spriteIndex * 4 + 3];
+    
+    if (scanline < spriteY + 1 || scanline >= spriteY + 9) return;
+    if (spriteY >= 0xEF || spriteX >= 0xF9) return;
+    
+    int spriteRow = scanline - (spriteY + 1);
+    if (attributes & 0x80) spriteRow = 7 - spriteRow;
+    
+    uint16_t patternBase = tileIndex * 16;
+    if (ppuCtrl & 0x08) patternBase += 0x1000;
+    
+    uint8_t patternLo = readCHR(patternBase + spriteRow);
+    uint8_t patternHi = readCHR(patternBase + spriteRow + 8);
+    
+    for (int pixelX = 0; pixelX < 8; pixelX++) {
+        uint8_t paletteIndex = 0;
+        if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
+        if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;
+        
+        if (paletteIndex == 0) continue; // Transparent
+        
+        int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
+        if (xPixel < 0 || xPixel >= 256) continue;
+        
+        int bufferIndex = scanline * 256 + xPixel;
+        
+        // Check if a higher priority sprite already drew here
+        if (spritePriorityMask[bufferIndex]) continue;
+        
+        // Mark this pixel as drawn by a sprite
+        spritePriorityMask[bufferIndex] = 1;
+        
+        uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
+        uint32_t color32 = paletteRGB[colorIndex];
+        uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
+                              ((color32 & 0x00FC00) >> 5) | 
+                              ((color32 & 0x0000F8) >> 3);
+        
+        if (behindBackground) {
+            // Only draw if background pixel is transparent
+            if (backgroundMask[bufferIndex] == 1) {
+                frameBuffer[bufferIndex] = spritePixel;
+            }
+        } else {
+            // Always draw (sprite in front)
+            frameBuffer[bufferIndex] = spritePixel;
+        }
+    }
 }
 
 /*void PPU::catchUp(uint64_t targetCycles)
