@@ -415,42 +415,43 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
         break;
         
     // PPUSCROLL
-case 0x2005:
-    if (!writeToggle) {
-        ppuScrollX = value;
+    case 0x2005:
+        if (!writeToggle) {
+            ppuScrollX = value;
         
-        // Only set future scanlines, not all scanlines
-        if (currentScanline >= 0 && currentScanline < 240) {
-            // Set scroll for remaining scanlines in this frame (this rounds up to the nearest 8 sprite); needed for Duck Tales and Super Mario Brothers
-            int tempScanline = (currentScanline + 8) & ~7; // rounds up to next multiple of 8
+            // Only set future scanlines, not all scanlines
+            if (currentScanline >= 0 && currentScanline < 240) {
+                // Set scroll for remaining scanlines in this frame (this rounds up to the nearest 8 sprite); needed for Duck Tales and Super Mario Brothers
+                int tempScanline = (currentScanline + 8) & ~7; // rounds up to next multiple of 8
 
-            for (int i = tempScanline; i < 240; i++) {
-                scanlineScrollX[i] = value;
+                for (int i = tempScanline; i < 240; i++) {
+                    scanlineScrollX[i] = value;
+                }
+            } else {
+                // Not mid-frame, set all scanlines
+                for (int i = 0; i < 240; i++) {
+                    scanlineScrollX[i] = value;
+                }
             }
+
+        
+            writeToggle = !writeToggle;
         } else {
-            // Not mid-frame, set all scanlines
-            for (int i = 0; i < 240; i++) {
-                scanlineScrollX[i] = value;
+            ppuScrollY = value;
+        
+            if (currentScanline >= 0 && currentScanline < 240) {
+                for (int i = currentScanline; i < 240; i++) {
+                    scanlineScrollY[i] = value;
+                }
+            } else {
+                for (int i = 0; i < 240; i++) {
+                    scanlineScrollY[i] = value;
+                }
             }
+        
+            writeToggle = !writeToggle;
         }
-        
-        writeToggle = !writeToggle;
-    } else {
-        ppuScrollY = value;
-        
-        if (currentScanline >= 0 && currentScanline < 240) {
-            for (int i = currentScanline; i < 240; i++) {
-                scanlineScrollY[i] = value;
-            }
-        } else {
-            for (int i = 0; i < 240; i++) {
-                scanlineScrollY[i] = value;
-            }
-        }
-        
-        writeToggle = !writeToggle;
-    }
-    break;
+        break;
     // PPUADDR
     case 0x2006:
         writeAddressRegister(value);
