@@ -418,7 +418,7 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
     case 0x2005:
         if (!writeToggle) {
             ppuScrollX = value;
-        
+            printf("CurrentScanLine %i\n", currentScanline);
             // Only set future scanlines, not all scanlines
             if (currentScanline >= 0 && currentScanline < 240) {
                 // Set scroll for remaining scanlines in this frame (this rounds up to the nearest 8 sprite); needed for Duck Tales and Super Mario Brothers
@@ -745,11 +745,11 @@ void PPU::captureFrameScroll() {
     frameCtrl = ppuCtrl;
     
     // Initialize scanline arrays with current values
-    for (int i = 0; i < 240; i++) {
+    /*for (int i = 0; i < 240; i++) {
         scanlineScrollX[i] = ppuScrollX;
         scanlineScrollY[i] = ppuScrollY;
         scanlineCtrl[i] = ppuCtrl;
-    }
+    }*/
 }
 
 void PPU::stepCycle(int scanline, int cycle, int mapper) {
