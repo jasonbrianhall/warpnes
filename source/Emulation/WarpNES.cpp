@@ -689,11 +689,6 @@ void WarpNES::updateCycleAccurate() {
         }
       }
 
-      // VBlank flag cleared on cycle 1 of pre-render scanline (261)
-      if (scanline == 261 && cycle == 1) {
-        ppu->setVBlankFlag(false);
-      }
-
       // Sprite 0 hit detection
       if (scanline >= 0 && scanline < VISIBLE_SCANLINES &&
           ppuCycleState.renderingEnabled) {
