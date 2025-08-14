@@ -843,6 +843,7 @@ void PPU::checkSprite0HitScanline(int scanline) {
     
     // Only check visible scanlines
     if (scanline < 0 || scanline >= 240) return;
+    
     // Get sprite 0 properties
     uint8_t sprite0Y = oam[0];
     uint8_t sprite0Tile = oam[1];
@@ -886,10 +887,10 @@ void PPU::checkSprite0HitScanline(int scanline) {
             spriteCol = 7 - col;
         }
         
-        // Extract sprite pixel value
+        // FIX: Use consistent bit extraction with sprite rendering
         uint8_t spritePixel = 0;
-        if (spriteLo & (1 << spriteCol)) spritePixel |= 1;
-        if (spriteHi & (1 << spriteCol)) spritePixel |= 2;
+        if (spriteLo & (0x80 >> spriteCol)) spritePixel |= 1;
+        if (spriteHi & (0x80 >> spriteCol)) spritePixel |= 2;
         
         // Skip if sprite pixel is transparent
         if (spritePixel == 0) continue;
