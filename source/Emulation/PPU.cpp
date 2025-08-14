@@ -799,14 +799,6 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
         return;
     }
     
-    // Overscan area (scanlines 240+ before VBlank)
-    // Some games/emulators render a few extra lines for overscan
-    if (scanline == 240) {
-        // Could potentially render overscan line here if needed
-        // renderOverscanLine(scanline);
-        return;
-    }
-    
     // VBlank scanlines (241-260)
     if (scanline == 241) {
         if (cycle == 1) {
