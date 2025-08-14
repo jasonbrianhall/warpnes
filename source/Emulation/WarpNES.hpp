@@ -488,6 +488,26 @@ private:
   void writeMMC2Register(uint16_t address, uint8_t value);
   void updateMMC2Banks();
   void checkMMC2CHRLatch(uint16_t address, uint8_t tileID);
+
+  // Mapper 44
+  struct Mapper40State {
+    uint16_t irqCounter;  // 13-bit counter (CD4020)
+    bool irqEnable;
+    bool irqPending;
+    uint8_t prgBank;
+    
+    Mapper40State() {
+        irqCounter = 0;
+        irqEnable = false;
+        irqPending = false;
+        prgBank = 0;
+    }
+  } mapper40;
+
+  void writeMapper40Register(uint16_t address, uint8_t value);
+  void stepMapper40IRQ();
+  void checkMapper40IRQ();
+
 };
 
 #endif // SMB_EMULATOR_HPP

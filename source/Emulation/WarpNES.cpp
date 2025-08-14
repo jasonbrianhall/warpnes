@@ -196,6 +196,20 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
     // GxROM with CHR-ROM: writes ignored
     break;
 
+  case 40: // Mapper 40
+    // Mapper 40 typically uses CHR-ROM (read-only)
+    if (nesHeader.chrROMPages == 0) {
+        if (address < chrSize) {
+            chrROM[address] = value;
+            
+            static int mapper40ChrWriteCount = 0;
+            if (mapper40ChrWriteCount < 5) {
+                printf("Mapper 40 CHR-RAM write: $%04X = $%02X\n", address, value);
+                mapper40ChrWriteCount++;
+            }
+        }
+    }
+
   case 7: // AxROM
     // AxROM typically uses CHR-RAM
     if (address < chrSize) {
@@ -454,6 +468,9 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
     break;
   case 4:
     std::cout << "Mapper: MMC3 (complex)" << std::endl;
+    break;
+  case 40:
+    std::cout << "Mapper: ROM Hack for SMB lost levels" << std::endl;
     break;
   case 66:
     std::cout << "Mapper: GxROM" << std::endl;
@@ -798,9 +815,11 @@ void WarpNES::reset() {
     mmc3.irqPending = false;
     mmc3.irqEnable = false;
     updateMMC3Banks();
-} else if (nesHeader.mapper == 9) {
+  } else if (nesHeader.mapper == 9) {
     mmc2 = MMC2State();
     updateMMC2Banks();
+  } else if (nesHeader.mapper == 40) {
+    mapper40 = Mapper40State();
   }
 
   // NOW read reset vector from correct location
@@ -1767,6 +1786,9 @@ void WarpNES::executeInstruction() {
   totalCycles += cycles;
   frameCycles += cycles;
   masterCycles += cycles;
+  if (nesHeader.mapper == 40) {
+    stepMapper40IRQ();
+  }
 }
 
 void WarpNES::catchUpPPU() {
@@ -1789,6 +1811,10 @@ void WarpNES::catchUpPPU() {
 
 void WarpNES::checkPendingInterrupts() {
   // Handle MMC3 IRQ
+  if (nesHeader.mapper == 40 && mapper40.irqPending) {
+    checkMapper40IRQ();
+  }
+
   if (nesHeader.mapper == 4 && mmc3.irqPending) {
     mmc3.irqPending = false;
 
@@ -1976,7 +2002,32 @@ uint8_t WarpNES::readByte(uint16_t address) {
         return prgROM[romAddr];
       }
     }
-  }
+  } else if (nesHeader.mapper == 40) {
+    // Mapper 40: 8KB switchable + 24KB fixed
+    uint32_t romAddr;
+    uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
+    
+    if (address < 0xA000) {
+        // $8000-$9FFF: Switchable 8KB bank
+        romAddr = (mapper40.prgBank * 0x2000) + (address - 0x8000);
+    } else if (address < 0xC000) {
+        // $A000-$BFFF: Fixed to bank 6
+        uint8_t bank = (totalBanks > 6) ? 6 : (totalBanks - 1);
+        romAddr = (bank * 0x2000) + (address - 0xA000);
+    } else if (address < 0xE000) {
+        // $C000-$DFFF: Fixed to bank 7  
+        uint8_t bank = (totalBanks > 7) ? 7 : (totalBanks - 1);
+        romAddr = (bank * 0x2000) + (address - 0xC000);
+    } else {
+        // $E000-$FFFF: Fixed to bank 8 (or last bank)
+        uint8_t bank = (totalBanks > 8) ? 8 : (totalBanks - 1);
+        romAddr = (bank * 0x2000) + (address - 0xE000);
+    }
+    
+    if (romAddr < prgSize) {
+        return prgROM[romAddr];
+    }
+}
 
   return 0; // Open bus
 }
@@ -2027,6 +2078,8 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
       writeUxROMRegister(address, value);
     } else if (nesHeader.mapper == 9) {
       writeMMC2Register(address, value);
+    } else if (nesHeader.mapper == 40) {
+      writeMapper40Register(address, value);
     }
   }
 }
@@ -2664,6 +2717,15 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     // Modern homebrew mappers - usually CHR-RAM
     if (address < chrSize) {
       return chrROM[address]; // Direct access
+    }
+    return 0;
+  }
+
+  case 40: // Mapper 40
+  {
+    // Mapper 40 uses fixed CHR-ROM (no banking)
+    if (address < chrSize) {
+        return chrROM[address];
     }
     return 0;
   }

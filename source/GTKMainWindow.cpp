@@ -849,8 +849,6 @@ void GTK3MainWindow::cleanup_sdl_backend() {
         sdl_window = nullptr;
     }
     
-    //unsetenv("SDL_WINDOWID");
-    
     if (!Configuration::getAudioEnabled()) {
         SDL_Quit();
     } else {

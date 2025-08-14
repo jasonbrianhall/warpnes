@@ -77,7 +77,9 @@ COMMON_SOURCE_FILES = \
     source/Emulation/UxROM.cpp \
     source/Emulation/MMC1.cpp \
     source/Emulation/MMC2.cpp \
-    source/Emulation/MMC3.cpp
+    source/Emulation/MMC3.cpp \
+    source/Emulation/Mapper40.cpp
+
 
 # Platform-specific source files
 SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
