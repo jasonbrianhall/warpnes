@@ -767,7 +767,7 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
             currentRenderScanline = 0;
         }
         
-        // Odd frame cycle skip (skip cycle 340 on odd frames when rendering enabled)
+/*        // Odd frame cycle skip (skip cycle 340 on odd frames when rendering enabled)
         if (cycle == 339 && frameOdd && (ppuMask & 0x18)) {
             // Skip to next frame early
             return;
@@ -776,7 +776,7 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
         if (cycle == 340) {
             frameOdd = !frameOdd;
         }
-        return;
+        return; */
     }
     
     // Visible scanlines (0-239) + potential overscan (240-260)
