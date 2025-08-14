@@ -115,7 +115,6 @@ PPU::PPU(WarpNES& engine) :
     sprite0Hit = false;
     // Set default background color (usually black)
     palette[0] = 0x0F;  // Black
-    for (int i=1; i<32; i++) { palette[i] = 0; } // Just make sure the memory is initialized
     cachedScrollX = 0;
     cachedScrollY = 0;
     cachedCtrl = 0;
@@ -418,7 +417,6 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
     case 0x2005:
         if (!writeToggle) {
             ppuScrollX = value;
-            printf("CurrentScanLine %i\n", currentScanline);
             // Only set future scanlines, not all scanlines
             if (currentScanline >= 0 && currentScanline < 240) {
                 // Set scroll for remaining scanlines in this frame (this rounds up to the nearest 8 sprite); needed for Duck Tales and Super Mario Brothers
