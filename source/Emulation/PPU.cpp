@@ -345,7 +345,7 @@ void PPU::writeByte(uint16_t address, uint8_t value)
     {
         uint8_t paletteIndex = address - 0x3f00;
         uint8_t oldPaletteValue = palette[paletteIndex];
-        
+        value &= 0x3f;
         if (oldPaletteValue != value) {
             palette[paletteIndex] = value;
 
