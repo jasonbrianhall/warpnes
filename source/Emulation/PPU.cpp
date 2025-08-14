@@ -115,6 +115,7 @@ PPU::PPU(WarpNES& engine) :
     sprite0Hit = false;
     // Set default background color (usually black)
     palette[0] = 0x0F;  // Black
+    for (int i=1; i<32; i++) { palette[i] = 0; } // Just make sure the memory is initialized
     cachedScrollX = 0;
     cachedScrollY = 0;
     cachedCtrl = 0;

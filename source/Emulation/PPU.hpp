@@ -118,6 +118,7 @@ public:
 
 private:
     WarpNES& engine;
+    uint8_t palette[32]; /**< Palette data. */
 
     uint8_t spritePriorityMask[256 * 240];
 
@@ -176,7 +177,6 @@ private:
     uint8_t ppuScrollX; /**< $2005 */
     uint8_t ppuScrollY; /**< $2005 */
 
-    uint8_t palette[32]; /**< Palette data. */
     uint8_t nametable[2048]; /**< Background table. */
     uint8_t oam[256]; /**< Sprite memory. */
     // PPU Address control
