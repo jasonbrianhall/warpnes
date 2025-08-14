@@ -209,7 +209,7 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
             }
         }
     }
-
+    break;
   case 7: // AxROM
     // AxROM typically uses CHR-RAM
     if (address < chrSize) {
@@ -279,6 +279,7 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
       }
     }
     break;
+
 
   default:
     // For unknown mappers, be safe and allow CHR-RAM writes if no CHR-ROM
