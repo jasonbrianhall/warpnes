@@ -71,8 +71,8 @@ void WarpNES::writeMapper40Register(uint16_t address, uint8_t value) {
 }
 
 void WarpNES::stepMapper40IRQ() {
-    if (!mapper40.irqEnable) return;
-    
+
+    printf("Mapper 40 irq counter %i\n", mapper40.irqCounter);
     // CD4020 is a 13-bit counter that decrements every CPU cycle
     if (mapper40.irqCounter > 0) {
         mapper40.irqCounter--;

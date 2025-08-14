@@ -942,6 +942,8 @@ void WarpNES::executeInstruction() {
   uint8_t opcode = fetchByte();
   uint8_t cycles = instructionCycles[opcode];
 
+  //printf("Opcode %i\n", opcode);
+
 #ifdef PRINTOPCODE
   if (opcode == 0x02 || opcode == 0x03 || opcode == 0x04 || opcode == 0x07 ||
       opcode == 0x0B || opcode == 0x0C || opcode == 0x0F || opcode == 0x12 ||
@@ -1793,9 +1795,6 @@ void WarpNES::executeInstruction() {
   totalCycles += cycles;
   frameCycles += cycles;
   masterCycles += cycles;
-  if (nesHeader.mapper == 40) {
-    stepMapper40IRQ();
-  }
 }
 
 void WarpNES::catchUpPPU() {
@@ -1819,6 +1818,7 @@ void WarpNES::catchUpPPU() {
 void WarpNES::checkPendingInterrupts() {
   // Handle MMC3 IRQ
   if (nesHeader.mapper == 40 && mapper40.irqPending) {
+    printf("Checking pending interrupts\n");
     checkMapper40IRQ();
   }
 
