@@ -1,10 +1,11 @@
-#include "../Emulation/PPU.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
+
 #include "WarpNES.hpp"
 #include "../Configuration.hpp"
 #include "../Emulation/APU.hpp"
+#include "../Emulation/PPU.hpp"
 
 #ifdef ALLEGRO_BUILD
 #include "../Emulation/Controller.hpp"
@@ -69,13 +70,13 @@ WarpNES::WarpNES()
   zapper = new Zapper();
   zapperEnabled = 0;
   if (nesHeader.battery) {
-      loadSRAM();
+    loadSRAM();
   }
 }
 
 WarpNES::~WarpNES() {
   if (nesHeader.battery) {
-      saveSRAM();
+    saveSRAM();
   }
   delete apu;
   delete ppu;
@@ -199,15 +200,15 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
   case 40: // Mapper 40
     // Mapper 40 typically uses CHR-ROM (read-only)
     if (nesHeader.chrROMPages == 0) {
-        if (address < chrSize) {
-            chrROM[address] = value;
-            
-            static int mapper40ChrWriteCount = 0;
-            if (mapper40ChrWriteCount < 5) {
-                printf("Mapper 40 CHR-RAM write: $%04X = $%02X\n", address, value);
-                mapper40ChrWriteCount++;
-            }
+      if (address < chrSize) {
+        chrROM[address] = value;
+
+        static int mapper40ChrWriteCount = 0;
+        if (mapper40ChrWriteCount < 5) {
+          printf("Mapper 40 CHR-RAM write: $%04X = $%02X\n", address, value);
+          mapper40ChrWriteCount++;
         }
+      }
     }
     break;
   case 7: // AxROM
@@ -279,7 +280,6 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
       }
     }
     break;
-
 
   default:
     // For unknown mappers, be safe and allow CHR-RAM writes if no CHR-ROM
@@ -447,8 +447,8 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
 
   // Check for unsupported features
   if (nesHeader.mapper != 0 && nesHeader.mapper != 1 && nesHeader.mapper != 2 &&
-      nesHeader.mapper != 3 && nesHeader.mapper != 4 &&
-      nesHeader.mapper != 66) {
+      nesHeader.mapper != 3 && nesHeader.mapper != 4 && nesHeader.mapper != 9 &&
+      nesHeader.mapper != 66 && nesHeader.mapper != 40) {
     std::cout << "WARNING: Mapper " << (int)nesHeader.mapper << " not supported"
               << std::endl;
   }
@@ -508,7 +508,7 @@ bool WarpNES::loadCHRROM(std::ifstream &file) {
     chrSize = 8192;
     chrROM = new uint8_t[chrSize];
     memset(chrROM, 0, chrSize);
-    
+
     // METROID FIX: Initialize tile 255 as a proper blank tile
     if (nesHeader.mapper == 1) {
       // Tile 255 starts at address 255 * 16 = 0x1FF0
@@ -519,30 +519,31 @@ bool WarpNES::loadCHRROM(std::ifstream &file) {
       }
       printf("Initialized CHR-RAM tile 255 as blank for Metroid\n");
     }
-    
+
     printf("Using CHR RAM (8KB) for mapper %d\n", nesHeader.mapper);
     return true;
   }
-  
+
   printf("LoadCHRROM2\n");
   chrROM = new uint8_t[chrSize];
   file.read(reinterpret_cast<char *>(chrROM), chrSize);
-  
+
   printf("Loaded CHR ROM: %d bytes for mapper %d\n", chrSize, nesHeader.mapper);
-  
+
   uint32_t totalCHRBanks = chrSize / 0x400;
   printf("=== CHR ROM DEBUG ===\n");
   printf("CHR ROM Size: %d bytes (%d KB)\n", chrSize, chrSize / 1024);
-  printf("Total 1KB CHR banks: %d (0x00 - 0x%02X)\n", totalCHRBanks, totalCHRBanks - 1);
+  printf("Total 1KB CHR banks: %d (0x00 - 0x%02X)\n", totalCHRBanks,
+         totalCHRBanks - 1);
   printf("CHR ROM Pages: %d\n", nesHeader.chrROMPages);
-  
+
   printf("Bank validity check:\n");
   for (int bank : {0x00, 0x08, 0x09, 0x0C, 0x10, 0x11, 0x18, 0x19}) {
     bool valid = (bank < totalCHRBanks);
     printf("  Bank 0x%02X: %s\n", bank, valid ? "VALID" : "OUT OF BOUNDS!");
   }
   printf("=== END CHR DEBUG ===\n");
-  
+
   return file.good();
 }
 
@@ -630,7 +631,8 @@ void WarpNES::updateFrameBased() {
 }
 
 void WarpNES::updateCycleAccurate() {
-  if (!romLoaded) return;
+  if (!romLoaded)
+    return;
 
   static int debugFrame = 0;
   frameCycles = 0;
@@ -647,12 +649,15 @@ void WarpNES::updateCycleAccurate() {
   const int CPU_DIVIDER = 3; // CPU runs every 3 PPU cycles
 
   // Frame timing state
-  bool frameEven = (totalCycles / (TOTAL_SCANLINES * CYCLES_PER_SCANLINE / CPU_DIVIDER)) % 2 == 0;
+  bool frameEven =
+      (totalCycles / (TOTAL_SCANLINES * CYCLES_PER_SCANLINE / CPU_DIVIDER)) %
+          2 ==
+      0;
   int cpuCycleDebt = 0;
 
   for (int scanline = 0; scanline < TOTAL_SCANLINES; scanline++) {
     ppuCycleState.scanline = scanline;
-    
+
     // Determine scanline state
     if (scanline < VISIBLE_SCANLINES) {
       ppuCycleState.inVBlank = false;
@@ -690,7 +695,8 @@ void WarpNES::updateCycleAccurate() {
       }
 
       // Sprite 0 hit detection
-      if (scanline >= 0 && scanline < VISIBLE_SCANLINES && ppuCycleState.renderingEnabled) {
+      if (scanline >= 0 && scanline < VISIBLE_SCANLINES &&
+          ppuCycleState.renderingEnabled) {
         checkSprite0Hit(scanline, cycle);
       }
 
@@ -810,8 +816,8 @@ void WarpNES::reset() {
     mmc3.bankData[3] = 5;
     mmc3.bankData[4] = 6;
     mmc3.bankData[5] = 7;
-    mmc3.bankData[6] = 0;  // First PRG bank
-    mmc3.bankData[7] = 1;  // Second PRG bank
+    mmc3.bankData[6] = 0; // First PRG bank
+    mmc3.bankData[7] = 1; // Second PRG bank
     mmc3.bankSelect = 0;
     mmc3.irqPending = false;
     mmc3.irqEnable = false;
@@ -1831,7 +1837,6 @@ void WarpNES::checkPendingInterrupts() {
 
       totalCycles += 7; // IRQ takes 7 cycles
       frameCycles += 7;
-
     }
   }
 
@@ -2002,33 +2007,33 @@ uint8_t WarpNES::readByte(uint16_t address) {
       if (romAddr < prgSize) {
         return prgROM[romAddr];
       }
-    }
-  } else if (nesHeader.mapper == 40) {
-    // Mapper 40: 8KB switchable + 24KB fixed
-    uint32_t romAddr;
-    uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
-    
-    if (address < 0xA000) {
+    } else if (nesHeader.mapper == 40) {
+      // Mapper 40: Different banking layout for SMB2j
+      uint32_t romAddr;
+      uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
+
+      if (address < 0xA000) {
         // $8000-$9FFF: Switchable 8KB bank
         romAddr = (mapper40.prgBank * 0x2000) + (address - 0x8000);
-    } else if (address < 0xC000) {
-        // $A000-$BFFF: Fixed to bank 6
-        uint8_t bank = (totalBanks > 6) ? 6 : (totalBanks - 1);
+      } else if (address < 0xC000) {
+        // $A000-$BFFF: Fixed to last bank - 2
+        uint8_t bank = totalBanks - 2;
         romAddr = (bank * 0x2000) + (address - 0xA000);
-    } else if (address < 0xE000) {
-        // $C000-$DFFF: Fixed to bank 7  
-        uint8_t bank = (totalBanks > 7) ? 7 : (totalBanks - 1);
+      } else if (address < 0xE000) {
+        // $C000-$DFFF: Fixed to last bank - 1
+        uint8_t bank = totalBanks - 1;
         romAddr = (bank * 0x2000) + (address - 0xC000);
-    } else {
-        // $E000-$FFFF: Fixed to bank 8 (or last bank)
-        uint8_t bank = (totalBanks > 8) ? 8 : (totalBanks - 1);
+      } else {
+        // $E000-$FFFF: Fixed to last bank (vectors here)
+        uint8_t bank = totalBanks - 1;
         romAddr = (bank * 0x2000) + (address - 0xE000);
-    }
-    
-    if (romAddr < prgSize) {
+      }
+
+      if (romAddr < prgSize) {
         return prgROM[romAddr];
+      }
     }
-}
+  }
 
   return 0; // Open bus
 }
@@ -2055,17 +2060,17 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
       apu->writeRegister(address, value);
       break;
     }
- } else if (address >= 0x6000 && address < 0x8000) {
-  // SRAM area ($6000-$7FFF)
-  if (sramEnabled && sram && nesHeader.battery) {
-    uint16_t sramAddr = address - 0x6000;
-    if (sramAddr < sramSize) {
-      sram[sramAddr] = value;
-      sramDirty = true;
-      //printf("SRAM: $%04X = $%02X\n", address, value);
+  } else if (address >= 0x6000 && address < 0x8000) {
+    // SRAM area ($6000-$7FFF)
+    if (sramEnabled && sram && nesHeader.battery) {
+      uint16_t sramAddr = address - 0x6000;
+      if (sramAddr < sramSize) {
+        sram[sramAddr] = value;
+        sramDirty = true;
+        // printf("SRAM: $%04X = $%02X\n", address, value);
+      }
     }
-  }
-} else if (address >= 0x8000) {
+  } else if (address >= 0x8000) {
     // Mapper registers
     if (nesHeader.mapper == 1) {
       writeMMC1Register(address, value);
@@ -2086,7 +2091,7 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
 }
 
 void WarpNES::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
-                                int screenWidth, int screenHeight) {
+                            int screenWidth, int screenHeight) {
   // Clear screen with black
   for (int i = 0; i < screenWidth * screenHeight; i++) {
     screenBuffer[i] = 0x0000;
@@ -2125,12 +2130,10 @@ void WarpNES::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,
   }
 }
 
-void WarpNES::render16(uint16_t *buffer) {
-  ppu->render16(buffer);
-}
+void WarpNES::render16(uint16_t *buffer) { ppu->render16(buffer); }
 
 void WarpNES::renderScaled16(uint16_t *buffer, int screenWidth,
-                                 int screenHeight) {
+                             int screenHeight) {
   // First render the game using PPU scaling
   static uint16_t nesBuffer[256 * 240];
   // ppu->getFrameBuffer(nesBuffer);
@@ -2232,286 +2235,293 @@ void WarpNES::writeMemory(uint16_t address, uint8_t value) {
 
 // Save states
 void WarpNES::saveState(const std::string &filename) {
-    if (!romLoaded) {
-        std::cerr << "Error: Cannot save state - no ROM loaded" << std::endl;
-        return;
-    }
+  if (!romLoaded) {
+    std::cerr << "Error: Cannot save state - no ROM loaded" << std::endl;
+    return;
+  }
 
-    // Use the existing EmulatorSaveState structure but add mapper data to reserved space
-    EmulatorSaveState state;
-    memset(&state, 0, sizeof(state));
+  // Use the existing EmulatorSaveState structure but add mapper data to
+  // reserved space
+  EmulatorSaveState state;
+  memset(&state, 0, sizeof(state));
 
-    // Header
-    strcpy(state.header, "NESSAVE");
-    state.version = 1; // Keep version 1 for compatibility
+  // Header
+  strcpy(state.header, "NESSAVE");
+  state.version = 1; // Keep version 1 for compatibility
 
-    // CPU state
-    state.cpu_A = regA;
-    state.cpu_X = regX;
-    state.cpu_Y = regY;
-    state.cpu_SP = regSP;
-    state.cpu_P = regP;
-    state.cpu_PC = regPC;
-    state.cpu_cycles = totalCycles;
+  // CPU state
+  state.cpu_A = regA;
+  state.cpu_X = regX;
+  state.cpu_Y = regY;
+  state.cpu_SP = regSP;
+  state.cpu_P = regP;
+  state.cpu_PC = regPC;
+  state.cpu_cycles = totalCycles;
 
-    // RAM
-    memcpy(state.ram, ram, sizeof(ram));
+  // RAM
+  memcpy(state.ram, ram, sizeof(ram));
 
-    // Save PPU state
-    if (ppu) {
-        state.ppu_registers[0] = ppu->getControl();
-        state.ppu_registers[1] = ppu->getMask();
-        state.ppu_registers[2] = ppu->getStatus();
-        state.ppu_registers[3] = ppu->getOAMAddr();
-        state.ppu_registers[4] = ppu->getScrollX();
-        state.ppu_registers[5] = ppu->getScrollY();
-        state.ppu_registers[6] = (ppu->getVRAMAddress() >> 8) & 0xFF;
-        state.ppu_registers[7] = ppu->getVRAMAddress() & 0xFF;
-        
-        // Save PPU memory
-        memcpy(state.ppu_nametable, ppu->getVRAM(), 2048);
-        memcpy(state.ppu_oam, ppu->getOAM(), 256);
-        memcpy(state.ppu_palette, ppu->getPaletteRAM(), 32);
-    }
+  // Save PPU state
+  if (ppu) {
+    state.ppu_registers[0] = ppu->getControl();
+    state.ppu_registers[1] = ppu->getMask();
+    state.ppu_registers[2] = ppu->getStatus();
+    state.ppu_registers[3] = ppu->getOAMAddr();
+    state.ppu_registers[4] = ppu->getScrollX();
+    state.ppu_registers[5] = ppu->getScrollY();
+    state.ppu_registers[6] = (ppu->getVRAMAddress() >> 8) & 0xFF;
+    state.ppu_registers[7] = ppu->getVRAMAddress() & 0xFF;
 
-    // Create appropriate filename
-    std::string actualFilename;
+    // Save PPU memory
+    memcpy(state.ppu_nametable, ppu->getVRAM(), 2048);
+    memcpy(state.ppu_oam, ppu->getOAM(), 256);
+    memcpy(state.ppu_palette, ppu->getPaletteRAM(), 32);
+  }
+
+  // Create appropriate filename
+  std::string actualFilename;
 #ifdef __DJGPP__
-    std::string baseName = filename;
-    size_t dotPos = baseName.find_last_of('.');
-    if (dotPos != std::string::npos) {
-        baseName = baseName.substr(0, dotPos);
-    }
-    if (baseName.length() > 8) {
-        baseName = baseName.substr(0, 8);
-    }
-    actualFilename = baseName + ".SAV";
+  std::string baseName = filename;
+  size_t dotPos = baseName.find_last_of('.');
+  if (dotPos != std::string::npos) {
+    baseName = baseName.substr(0, dotPos);
+  }
+  if (baseName.length() > 8) {
+    baseName = baseName.substr(0, 8);
+  }
+  actualFilename = baseName + ".SAV";
 #else
-    actualFilename = filename;
+  actualFilename = filename;
 #endif
 
-    std::ofstream file(actualFilename, std::ios::binary);
-    if (file.is_open()) {
-        file.write(reinterpret_cast<const char *>(&state), sizeof(state));
-        
-        // Write extended PPU state
-        if (ppu) {
-            // Write additional PPU timing state
-            uint64_t ppuCycles = ppu->getCurrentCycles();
-            int currentScanline = ppu->getCurrentScanline();
-            int currentCycle = ppu->getCurrentCycle();
-            bool inVBlank = ppu->isInVBlank();
-            bool frameComplete = ppu->isFrameComplete();
-            
-            file.write(reinterpret_cast<const char *>(&ppuCycles), sizeof(ppuCycles));
-            file.write(reinterpret_cast<const char *>(&currentScanline), sizeof(currentScanline));
-            file.write(reinterpret_cast<const char *>(&currentCycle), sizeof(currentCycle));
-            file.write(reinterpret_cast<const char *>(&inVBlank), sizeof(inVBlank));
-            file.write(reinterpret_cast<const char *>(&frameComplete), sizeof(frameComplete));
-        }
-        
-        // Write mapper-specific data separately
-        switch (nesHeader.mapper) {
-            case 1:
-                file.write(reinterpret_cast<const char *>(&mmc1), sizeof(mmc1));
-                break;
-            case 2:
-                file.write(reinterpret_cast<const char *>(&uxrom), sizeof(uxrom));
-                break;
-            case 3:
-                file.write(reinterpret_cast<const char *>(&cnrom), sizeof(cnrom));
-                break;
-            case 4:
-                file.write(reinterpret_cast<const char *>(&mmc3), sizeof(mmc3));
-                break;
-            case 9:
-                file.write(reinterpret_cast<const char *>(&mmc2), sizeof(mmc2));
-                break;
-            case 66:
-                file.write(reinterpret_cast<const char *>(&gxrom), sizeof(gxrom));
-                break;
-        }
-        
-        file.close();
-        std::cout << "Save state written to: " << actualFilename << std::endl;
-    } else {
-        std::cerr << "Error: Could not save state to: " << actualFilename << std::endl;
-    }
-}
+  std::ofstream file(actualFilename, std::ios::binary);
+  if (file.is_open()) {
+    file.write(reinterpret_cast<const char *>(&state), sizeof(state));
 
-
-bool WarpNES::loadState(const std::string &filename) {
-    if (!romLoaded) {
-        std::cerr << "Error: Cannot load state - no ROM loaded" << std::endl;
-        return false;
-    }
-
-    // Safety checks
-    if (!ppu) {
-        std::cerr << "Error: PPU not initialized" << std::endl;
-        return false;
-    }
-
-    if (!apu) {
-        std::cerr << "Error: APU not initialized" << std::endl;
-        return false;
-    }
-
-    std::string actualFilename;
-#ifdef __DJGPP__
-    std::string baseName = filename;
-    size_t dotPos = baseName.find_last_of('.');
-    if (dotPos != std::string::npos) {
-        baseName = baseName.substr(0, dotPos);
-    }
-    if (baseName.length() > 8) {
-        baseName = baseName.substr(0, 8);
-    }
-    actualFilename = baseName + ".SAV";
-#else
-    actualFilename = filename;
-#endif
-
-    std::ifstream file(actualFilename, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open save state: " << actualFilename << std::endl;
-        return false;
-    }
-
-    EmulatorSaveState state;
-    file.read(reinterpret_cast<char *>(&state), sizeof(state));
-    
-    if (!file.good()) {
-        std::cerr << "Error: Failed to read save state" << std::endl;
-        file.close();
-        return false;
-    }
-
-    // Validate header
-    if (strcmp(state.header, "NESSAVE") != 0) {
-        std::cerr << "Error: Invalid save state file" << std::endl;
-        file.close();
-        return false;
-    }
-
-    // Restore CPU state
-    regA = state.cpu_A;
-    regX = state.cpu_X;
-    regY = state.cpu_Y;
-    regSP = state.cpu_SP;
-    regP = state.cpu_P;
-    regPC = state.cpu_PC;
-    totalCycles = state.cpu_cycles;
-    frameCycles = 0; // Reset frame cycles
-
-    // Restore RAM
-    memcpy(ram, state.ram, sizeof(ram));
-
-    // Restore PPU state
+    // Write extended PPU state
     if (ppu) {
-        ppu->setControl(state.ppu_registers[0]);
-        ppu->setMask(state.ppu_registers[1]);
-        ppu->setStatus(state.ppu_registers[2]);
-        ppu->setOAMAddr(state.ppu_registers[3]);
-        ppu->setScrollX(state.ppu_registers[4]);
-        ppu->setScrollY(state.ppu_registers[5]);
-        
-        uint16_t vramAddr = (state.ppu_registers[6] << 8) | state.ppu_registers[7];
-        ppu->setVRAMAddress(vramAddr);
-        
-        // Restore PPU memory
-        ppu->setVRAM(state.ppu_nametable);
-        ppu->setOAM(state.ppu_oam);
-        ppu->setPaletteRAM(state.ppu_palette);
-        
-        // Reset PPU state variables
-        ppu->setWriteToggle(false);
-        ppu->setDataBuffer(0);
-        ppu->setSprite0Hit(false);
+      // Write additional PPU timing state
+      uint64_t ppuCycles = ppu->getCurrentCycles();
+      int currentScanline = ppu->getCurrentScanline();
+      int currentCycle = ppu->getCurrentCycle();
+      bool inVBlank = ppu->isInVBlank();
+      bool frameComplete = ppu->isFrameComplete();
+
+      file.write(reinterpret_cast<const char *>(&ppuCycles), sizeof(ppuCycles));
+      file.write(reinterpret_cast<const char *>(&currentScanline),
+                 sizeof(currentScanline));
+      file.write(reinterpret_cast<const char *>(&currentCycle),
+                 sizeof(currentCycle));
+      file.write(reinterpret_cast<const char *>(&inVBlank), sizeof(inVBlank));
+      file.write(reinterpret_cast<const char *>(&frameComplete),
+                 sizeof(frameComplete));
     }
 
-    // Load extended PPU state
-    if (ppu) {
-        // Read additional PPU timing state
-        uint64_t ppuCycles;
-        int currentScanline;
-        int currentCycle;
-        bool inVBlank;
-        bool frameComplete;
-        
-        if (file.read(reinterpret_cast<char *>(&ppuCycles), sizeof(ppuCycles))) {
-            file.read(reinterpret_cast<char *>(&currentScanline), sizeof(currentScanline));
-            file.read(reinterpret_cast<char *>(&currentCycle), sizeof(currentCycle));
-            file.read(reinterpret_cast<char *>(&inVBlank), sizeof(inVBlank));
-            file.read(reinterpret_cast<char *>(&frameComplete), sizeof(frameComplete));
-            
-            ppu->setCycles(ppuCycles);
-            // Note: PPU doesn't have public setters for scanline/cycle state
-            // We'll reset PPU timing state below instead
-        }
-    }
-
-    // Load mapper-specific data
+    // Write mapper-specific data separately
     switch (nesHeader.mapper) {
-        case 1:
-            if (file.read(reinterpret_cast<char *>(&mmc1), sizeof(mmc1))) {
-                updateMMC1Banks();
-            } else {
-                std::cerr << "Warning: Could not read MMC1 state" << std::endl;
-            }
-            break;
-        case 2:
-            if (file.read(reinterpret_cast<char *>(&uxrom), sizeof(uxrom))) {
-                // UxROM banks are already set in uxrom state
-            } else {
-                std::cerr << "Warning: Could not read UxROM state" << std::endl;
-            }
-            break;
-        case 3:
-            if (file.read(reinterpret_cast<char *>(&cnrom), sizeof(cnrom))) {
-                // CNROM banks are already set in cnrom state
-            } else {
-                std::cerr << "Warning: Could not read CNROM state" << std::endl;
-            }
-            break;
-        case 4:
-            if (file.read(reinterpret_cast<char *>(&mmc3), sizeof(mmc3))) {
-                updateMMC3Banks();
-            } else {
-                std::cerr << "Warning: Could not read MMC3 state" << std::endl;
-            }
-            break;
-        case 9:
-            if (file.read(reinterpret_cast<char *>(&mmc2), sizeof(mmc2))) {
-                updateMMC2Banks();
-            } else {
-                std::cerr << "Warning: Could not read MMC2 state" << std::endl;
-            }
-            break;
-        case 66:
-            if (file.read(reinterpret_cast<char *>(&gxrom), sizeof(gxrom))) {
-                // GxROM banks are already set in gxrom state
-            } else {
-                std::cerr << "Warning: Could not read GxROM state" << std::endl;
-            }
-            break;
+    case 1:
+      file.write(reinterpret_cast<const char *>(&mmc1), sizeof(mmc1));
+      break;
+    case 2:
+      file.write(reinterpret_cast<const char *>(&uxrom), sizeof(uxrom));
+      break;
+    case 3:
+      file.write(reinterpret_cast<const char *>(&cnrom), sizeof(cnrom));
+      break;
+    case 4:
+      file.write(reinterpret_cast<const char *>(&mmc3), sizeof(mmc3));
+      break;
+    case 9:
+      file.write(reinterpret_cast<const char *>(&mmc2), sizeof(mmc2));
+      break;
+    case 66:
+      file.write(reinterpret_cast<const char *>(&gxrom), sizeof(gxrom));
+      break;
     }
 
     file.close();
+    std::cout << "Save state written to: " << actualFilename << std::endl;
+  } else {
+    std::cerr << "Error: Could not save state to: " << actualFilename
+              << std::endl;
+  }
+}
 
-    // Reset interrupt state
-    nmiPending = false;
-    masterCycles = totalCycles;
-    ppuCycles = totalCycles * 3; // Rough PPU sync
+bool WarpNES::loadState(const std::string &filename) {
+  if (!romLoaded) {
+    std::cerr << "Error: Cannot load state - no ROM loaded" << std::endl;
+    return false;
+  }
 
-    // Reset PPU cycle state
-    ppuCycleState.scanline = 0;
-    ppuCycleState.cycle = 0;
-    ppuCycleState.inVBlank = false;
-    ppuCycleState.renderingEnabled = false;
+  // Safety checks
+  if (!ppu) {
+    std::cerr << "Error: PPU not initialized" << std::endl;
+    return false;
+  }
 
-    std::cout << "Save state loaded from: " << actualFilename << std::endl;
-    return true;
+  if (!apu) {
+    std::cerr << "Error: APU not initialized" << std::endl;
+    return false;
+  }
+
+  std::string actualFilename;
+#ifdef __DJGPP__
+  std::string baseName = filename;
+  size_t dotPos = baseName.find_last_of('.');
+  if (dotPos != std::string::npos) {
+    baseName = baseName.substr(0, dotPos);
+  }
+  if (baseName.length() > 8) {
+    baseName = baseName.substr(0, 8);
+  }
+  actualFilename = baseName + ".SAV";
+#else
+  actualFilename = filename;
+#endif
+
+  std::ifstream file(actualFilename, std::ios::binary);
+  if (!file.is_open()) {
+    std::cerr << "Error: Could not open save state: " << actualFilename
+              << std::endl;
+    return false;
+  }
+
+  EmulatorSaveState state;
+  file.read(reinterpret_cast<char *>(&state), sizeof(state));
+
+  if (!file.good()) {
+    std::cerr << "Error: Failed to read save state" << std::endl;
+    file.close();
+    return false;
+  }
+
+  // Validate header
+  if (strcmp(state.header, "NESSAVE") != 0) {
+    std::cerr << "Error: Invalid save state file" << std::endl;
+    file.close();
+    return false;
+  }
+
+  // Restore CPU state
+  regA = state.cpu_A;
+  regX = state.cpu_X;
+  regY = state.cpu_Y;
+  regSP = state.cpu_SP;
+  regP = state.cpu_P;
+  regPC = state.cpu_PC;
+  totalCycles = state.cpu_cycles;
+  frameCycles = 0; // Reset frame cycles
+
+  // Restore RAM
+  memcpy(ram, state.ram, sizeof(ram));
+
+  // Restore PPU state
+  if (ppu) {
+    ppu->setControl(state.ppu_registers[0]);
+    ppu->setMask(state.ppu_registers[1]);
+    ppu->setStatus(state.ppu_registers[2]);
+    ppu->setOAMAddr(state.ppu_registers[3]);
+    ppu->setScrollX(state.ppu_registers[4]);
+    ppu->setScrollY(state.ppu_registers[5]);
+
+    uint16_t vramAddr = (state.ppu_registers[6] << 8) | state.ppu_registers[7];
+    ppu->setVRAMAddress(vramAddr);
+
+    // Restore PPU memory
+    ppu->setVRAM(state.ppu_nametable);
+    ppu->setOAM(state.ppu_oam);
+    ppu->setPaletteRAM(state.ppu_palette);
+
+    // Reset PPU state variables
+    ppu->setWriteToggle(false);
+    ppu->setDataBuffer(0);
+    ppu->setSprite0Hit(false);
+  }
+
+  // Load extended PPU state
+  if (ppu) {
+    // Read additional PPU timing state
+    uint64_t ppuCycles;
+    int currentScanline;
+    int currentCycle;
+    bool inVBlank;
+    bool frameComplete;
+
+    if (file.read(reinterpret_cast<char *>(&ppuCycles), sizeof(ppuCycles))) {
+      file.read(reinterpret_cast<char *>(&currentScanline),
+                sizeof(currentScanline));
+      file.read(reinterpret_cast<char *>(&currentCycle), sizeof(currentCycle));
+      file.read(reinterpret_cast<char *>(&inVBlank), sizeof(inVBlank));
+      file.read(reinterpret_cast<char *>(&frameComplete),
+                sizeof(frameComplete));
+
+      ppu->setCycles(ppuCycles);
+      // Note: PPU doesn't have public setters for scanline/cycle state
+      // We'll reset PPU timing state below instead
+    }
+  }
+
+  // Load mapper-specific data
+  switch (nesHeader.mapper) {
+  case 1:
+    if (file.read(reinterpret_cast<char *>(&mmc1), sizeof(mmc1))) {
+      updateMMC1Banks();
+    } else {
+      std::cerr << "Warning: Could not read MMC1 state" << std::endl;
+    }
+    break;
+  case 2:
+    if (file.read(reinterpret_cast<char *>(&uxrom), sizeof(uxrom))) {
+      // UxROM banks are already set in uxrom state
+    } else {
+      std::cerr << "Warning: Could not read UxROM state" << std::endl;
+    }
+    break;
+  case 3:
+    if (file.read(reinterpret_cast<char *>(&cnrom), sizeof(cnrom))) {
+      // CNROM banks are already set in cnrom state
+    } else {
+      std::cerr << "Warning: Could not read CNROM state" << std::endl;
+    }
+    break;
+  case 4:
+    if (file.read(reinterpret_cast<char *>(&mmc3), sizeof(mmc3))) {
+      updateMMC3Banks();
+    } else {
+      std::cerr << "Warning: Could not read MMC3 state" << std::endl;
+    }
+    break;
+  case 9:
+    if (file.read(reinterpret_cast<char *>(&mmc2), sizeof(mmc2))) {
+      updateMMC2Banks();
+    } else {
+      std::cerr << "Warning: Could not read MMC2 state" << std::endl;
+    }
+    break;
+  case 66:
+    if (file.read(reinterpret_cast<char *>(&gxrom), sizeof(gxrom))) {
+      // GxROM banks are already set in gxrom state
+    } else {
+      std::cerr << "Warning: Could not read GxROM state" << std::endl;
+    }
+    break;
+  }
+
+  file.close();
+
+  // Reset interrupt state
+  nmiPending = false;
+  masterCycles = totalCycles;
+  ppuCycles = totalCycles * 3; // Rough PPU sync
+
+  // Reset PPU cycle state
+  ppuCycleState.scanline = 0;
+  ppuCycleState.cycle = 0;
+  ppuCycleState.inVBlank = false;
+  ppuCycleState.renderingEnabled = false;
+
+  std::cout << "Save state loaded from: " << actualFilename << std::endl;
+  return true;
 }
 
 // CHR ROM access for PPU
@@ -2545,29 +2555,29 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return 0;
   }
 
-        case 1: // MMC1
-        {
-            if (nesHeader.chrROMPages == 0) {
-                if (address < chrSize) {
-                    return chrROM[address];
-                }
-            } else {
-                // CHR-ROM - use banking
-                uint32_t chrAddr;
-                if (address < 0x1000) {
-                    // $0000-$0FFF: Use currentCHRBank0
-                    chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
-                } else {
-                    // $1000-$1FFF: Use currentCHRBank1  
-                    chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
-                }
-                
-                if (chrAddr < chrSize) {
-                    return chrROM[chrAddr];
-                }
-            }
-            return 0;
-        }
+  case 1: // MMC1
+  {
+    if (nesHeader.chrROMPages == 0) {
+      if (address < chrSize) {
+        return chrROM[address];
+      }
+    } else {
+      // CHR-ROM - use banking
+      uint32_t chrAddr;
+      if (address < 0x1000) {
+        // $0000-$0FFF: Use currentCHRBank0
+        chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
+      } else {
+        // $1000-$1FFF: Use currentCHRBank1
+        chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
+      }
+
+      if (chrAddr < chrSize) {
+        return chrROM[chrAddr];
+      }
+    }
+    return 0;
+  }
   case 2: // UxROM
   {
     // UxROM always uses CHR-RAM - direct access, no banking
@@ -2611,8 +2621,8 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
         uint32_t chrAddr = (physicalBank * 0x400) + bankOffset;
 
         if (chrAddr >= chrSize) {
-          
-           chrAddr = chrAddr % chrSize;
+
+          chrAddr = chrAddr % chrSize;
         }
 
         return chrROM[chrAddr];
@@ -2726,7 +2736,7 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
   {
     // Mapper 40 uses fixed CHR-ROM (no banking)
     if (address < chrSize) {
-        return chrROM[address];
+      return chrROM[address];
     }
     return 0;
   }
