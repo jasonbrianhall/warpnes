@@ -827,8 +827,13 @@ void WarpNES::reset() {
     updateMMC2Banks();
   } else if (nesHeader.mapper == 40) {
     mapper40 = Mapper40State();
+    mapper40.prgBank = 0;          // Start with bank 0 at $8000
+    mapper40.irqCounter = 0;       // Counter starts at 0
+    mapper40.irqEnable = false;    // IRQ disabled at startup
+    mapper40.irqPending = false;   // No pending IRQ
+        
+    printf("Mapper 40: Reset - PRG bank 0, IRQ disabled\n");
   }
-
   // NOW read reset vector from correct location
   uint8_t lowByte = readByte(0xFFFC);
   uint8_t highByte = readByte(0xFFFD);
