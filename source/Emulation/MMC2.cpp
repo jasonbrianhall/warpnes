@@ -60,24 +60,24 @@ void WarpNES::writeMMC2Register(uint16_t address, uint8_t value) {
   case 0xF000:
     // Mirroring ($F000-$FFFF)
     mmc2.mirroring = value & 0x01; // 0=vertical, 1=horizontal
-    // Update PPU mirroring if you have that implemented
     break;
   }
 }
 
 void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
-  static int latchSwitchCount = 0;
+  // Only respond to CHR fetches in $0000–$1FFF
+  if (address > 0x1FFF)
+    return;
 
-  // From FCEUX: Check if address corresponds to tiles $FD or $FE
-  uint8_t h = address >> 8;
-  uint8_t l = address & 0xF0;
+  uint8_t h = address >> 8;     // High byte
+  uint8_t l = address & 0xF0;   // Align to tile boundary
 
   // Must be in pattern table area and accessing tile data
-  if (h >= 0x20 || ((h & 0xF) != 0xF))
+  if ((h & 0xF) != 0xF)
     return;
 
   if (h < 0x10) {
-    // Pattern table 0 ($0000-$0FFF)
+    // Pattern table 0 ($0000–$0FFF)
     if (l == 0xD0) {
       // Accessing tile $FD
       if (mmc2.latch0 != false) {
@@ -92,22 +92,25 @@ void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
       }
     }
   } else {
-    // Pattern table 1 ($1000-$1FFF)
+    // Pattern table 1 ($1000–$1FFF)
     if (l == 0xD0) {
       // Accessing tile $FD
-      if (mmc2.latch1 != false) {
+      if (mmc2.latch1 == true) {
         mmc2.latch1 = false;
         updateMMC2Banks();
       }
     } else if (l == 0xE0) {
       // Accessing tile $FE
-      if (mmc2.latch1 != true) {
+      if (mmc2.latch1 == false) {
         mmc2.latch1 = true;
         updateMMC2Banks();
       }
     }
   }
 }
+
+
+
 
 void PPU::renderBackgroundScanlineMMC2(int scanline) {
     if (scanline < 0 || scanline >= 240) return;

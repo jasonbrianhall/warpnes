@@ -166,10 +166,9 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     address = (address - 0x2000) % 0x1000;
     int table = address / 0x400;
     int offset = address % 0x400;
-    
     // Use the actual mirroring from the ROM header
     int mode = engine.nesHeader.mirroring;  // 0=horizontal, 1=vertical
-    
+
     return (nametableMirrorLookup[mode][table] * 0x400 + offset) % 2048;
 }
 

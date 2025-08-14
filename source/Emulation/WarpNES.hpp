@@ -24,6 +24,8 @@ class WarpNES {
 public:
   WarpNES();
   ~WarpNES();
+  uint8_t getMMC2Mirroring() const { return mmc2.mirroring; }
+
   void checkCHRLatch(uint16_t address, uint8_t tileID);
   void checkSprite0Hit(int scanline, int cycle);
   uint8_t *getCHR();
