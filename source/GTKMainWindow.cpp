@@ -34,13 +34,13 @@ GTK3MainWindow::GTK3MainWindow()
       cairo_surface(nullptr), cairo_context(nullptr), cairo_buffer(nullptr), cairo_initialized(false),
       // Shared framebuffer
       nes_framebuffer(nullptr), rgba_framebuffer(nullptr), framebuffer_width(256), framebuffer_height(240),
-      // Rendering backend
-      current_backend(RenderBackend::AUTO), preferred_backend(RenderBackend::AUTO), backend_switching_enabled(true),
-      // Resolution settings
+      // Rendering backend - CHANGED: Make Cairo the default
+      current_backend(RenderBackend::CAIRO_SOFTWARE), preferred_backend(RenderBackend::CAIRO_SOFTWARE), backend_switching_enabled(true),
+      // Resolution settings - CHANGED: Enable integer scaling (pixel perfect) by default
       current_resolution_index(0), custom_width(800), custom_height(600),
-      use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(false),
+      use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(true),
       force_texture_recreation(false),
-      // Filter settings - ADD THESE LINES
+      // Filter settings
       current_filter(FilterType::NONE), filtered_texture(nullptr), filter_buffer(nullptr), filter_scale(1)
 {
     strcpy(status_message, "Ready");
@@ -69,7 +69,6 @@ GTK3MainWindow::GTK3MainWindow()
     player2_keys.start = GDK_KEY_i;
     player2_keys.select = GDK_KEY_u;
 }
-
 GTK3MainWindow::~GTK3MainWindow() {
     shutdown();
     delete[] nes_framebuffer;
@@ -85,13 +84,23 @@ bool GTK3MainWindow::initialize() {
     load_key_mappings();
     load_video_settings();
     
-    // Detect and initialize the best rendering backend
-    if (current_backend == RenderBackend::AUTO) {
-        if (!detect_best_backend()) {
-            printf("ERROR: Could not initialize any rendering backend\n");
-            return false;
+    // CHANGED: Always start with Cairo backend as default
+    // Initialize Cairo backend first instead of auto-detecting
+    if (current_backend == RenderBackend::AUTO || current_backend == RenderBackend::CAIRO_SOFTWARE) {
+        if (!init_cairo_backend()) {
+            printf("ERROR: Could not initialize Cairo backend, trying SDL fallback\n");
+            if (!init_sdl_backend()) {
+                printf("ERROR: Could not initialize any rendering backend\n");
+                return false;
+            } else {
+                current_backend = RenderBackend::SDL_HARDWARE;
+            }
+        } else {
+            current_backend = RenderBackend::CAIRO_SOFTWARE;
+            printf("SUCCESS: Using Cairo software rendering (default)\n");
         }
-    } else {
+    } else if (current_backend == RenderBackend::SDL_HARDWARE) {
+        // Only initialize SDL if explicitly requested
         if (!switchRenderBackend(preferred_backend)) {
             printf("ERROR: Could not initialize preferred rendering backend\n");
             return false;
@@ -130,7 +139,7 @@ bool GTK3MainWindow::initialize() {
     gtk_widget_grab_focus(window);
     
     char status_msg[256];
-    snprintf(status_msg, sizeof(status_msg), "WarpNES GTK3 (%s) - Load a ROM to begin", 
+    snprintf(status_msg, sizeof(status_msg), "WarpNES GTK3 (%s) - Pixel Perfect Mode - Load a ROM to begin", 
              backend_to_string(current_backend));
     set_status_message(status_msg);
     
@@ -243,11 +252,8 @@ void GTK3MainWindow::create_widgets() {
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
     
-    // Get screen dimensions and set window to full screen size
-    GdkScreen* screen = gdk_screen_get_default();
-    int screen_width = gdk_screen_get_width(screen);
-    int screen_height = gdk_screen_get_height(screen);
-    gtk_window_set_default_size(GTK_WINDOW(window), screen_width, screen_height);
+    // CHANGED: Maximize the window by default instead of setting specific size
+    gtk_window_maximize(GTK_WINDOW(window));
     
     // Set focus and connect key events
     gtk_widget_set_can_focus(window, TRUE);
@@ -1112,22 +1118,21 @@ void GTK3MainWindow::run(const char* rom_filename) {
         game_running = true;
         game_paused = false;
         
-        // NOW that we have a ROM loaded, try to switch to SDL if we're using Cairo
-        // or if the preferred backend is SDL/AUTO
-        if (current_backend == RenderBackend::CAIRO_SOFTWARE || 
-            preferred_backend == RenderBackend::SDL_HARDWARE ||
-            preferred_backend == RenderBackend::AUTO) {
+        // CHANGED: Only switch to SDL if user explicitly prefers it
+        // Keep Cairo as default even when ROM is loaded
+        if (preferred_backend == RenderBackend::SDL_HARDWARE && 
+            current_backend == RenderBackend::CAIRO_SOFTWARE) {
             
-            printf("ROM loaded via command line - attempting to switch to SDL backend\n");
+            printf("ROM loaded - user prefers SDL, attempting switch\n");
             if (switchRenderBackend(RenderBackend::SDL_HARDWARE)) {
                 printf("Successfully switched to SDL backend after ROM load\n");
             } else {
-                printf("SDL backend failed, staying with Cairo\n");
+                printf("SDL backend failed, staying with Cairo (default)\n");
             }
         }
         
         char status_msg[512];
-        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", rom_filename);
+        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s - Pixel Perfect Mode", rom_filename);
         set_status_message(status_msg);
         
         if (!frame_timer_id) {
@@ -1673,7 +1678,13 @@ void GTK3MainWindow::save_key_mappings() {
 
 void GTK3MainWindow::load_video_settings() {
     FILE* file = fopen("video_settings.cfg", "r");
-    if (!file) return;
+    if (!file) {
+        // CHANGED: Set pixel perfect defaults when no config file exists
+        integer_scaling = true;
+        maintain_aspect_ratio = true;
+        preferred_backend = RenderBackend::CAIRO_SOFTWARE;
+        return;
+    }
     
     char line[256];
     while (fgets(line, sizeof(line), file)) {
@@ -1699,6 +1710,10 @@ void GTK3MainWindow::load_video_settings() {
                 integer_scaling = (strcmp(value, "true") == 0);
             } else if (strcmp(key, "preferred_backend") == 0) {
                 preferred_backend = string_to_backend(value);
+                // CHANGED: If AUTO is loaded, convert it to Cairo
+                if (preferred_backend == RenderBackend::AUTO) {
+                    preferred_backend = RenderBackend::CAIRO_SOFTWARE;
+                }
             } else if (strcmp(key, "backend_switching_enabled") == 0) {
                 backend_switching_enabled = (strcmp(value, "true") == 0);
             }
@@ -1718,20 +1733,20 @@ void GTK3MainWindow::save_video_settings() {
     fprintf(file, "custom_height=%d\n", custom_height);
     fprintf(file, "use_custom_resolution=%s\n", use_custom_resolution ? "true" : "false");
     fprintf(file, "maintain_aspect_ratio=%s\n", maintain_aspect_ratio ? "true" : "false");
+    // CHANGED: Default to true for pixel perfect mode
     fprintf(file, "integer_scaling=%s\n", integer_scaling ? "true" : "false");
     
-    const char* backend_str = "AUTO";
+    const char* backend_str = "CAIRO_SOFTWARE";  // CHANGED: Default to Cairo
     switch (preferred_backend) {
         case RenderBackend::SDL_HARDWARE: backend_str = "SDL_HARDWARE"; break;
         case RenderBackend::CAIRO_SOFTWARE: backend_str = "CAIRO_SOFTWARE"; break;
-        case RenderBackend::AUTO: backend_str = "AUTO"; break;
+        case RenderBackend::AUTO: backend_str = "CAIRO_SOFTWARE"; break;  // CHANGED: Auto now defaults to Cairo
     }
     fprintf(file, "preferred_backend=%s\n", backend_str);
     fprintf(file, "backend_switching_enabled=%s\n", backend_switching_enabled ? "true" : "false");
     
     fclose(file);
 }
-
 void GTK3MainWindow::set_status_message(const char* message) {
     if (status_message_id) {
         gtk_statusbar_remove(GTK_STATUSBAR(status_bar), 0, status_message_id);
