@@ -133,9 +133,10 @@ bool GameGenie::isValidCode(const std::string& code) const {
     }
 
     // Check if all characters are valid Game Genie characters
-    const std::string validChars = "APZLGITYEOXUKSYN";
+    // Use the decode table instead of hardcoded string to ensure consistency
     for (char c : cleanCode) {
-        if (validChars.find(std::toupper(c)) == std::string::npos) {
+        char upperC = std::toupper(c);
+        if (decodeTable.find(upperC) == decodeTable.end()) {
             return false;
         }
     }
@@ -176,35 +177,39 @@ bool GameGenie::decode6LetterCode(const std::string& code, GameGenieCode& ggCode
         decoded[i] = it->second;
     }
 
-    // Decode the address and value using Game Genie bit manipulation
-    // This follows the standard Game Genie decoding algorithm
-    uint16_t tempAddr = 0;
-    uint8_t tempValue = 0;
+    // Standard Game Genie 6-letter decoding algorithm
+    // Based on the official Game Genie documentation
+    
+    uint16_t address = 0;
+    uint8_t value = 0;
 
-    // Extract bits according to Game Genie format
-    tempAddr |= (decoded[3] & 0x7) << 12;  // Bits 14-12
-    tempAddr |= (decoded[5] & 0x7) << 8;   // Bits 11-8
-    tempAddr |= (decoded[4] & 0x8) << 8;   // Bit 15
-    tempAddr |= (decoded[2] & 0x7) << 4;   // Bits 7-4
-    tempAddr |= (decoded[1] & 0x8) << 4;   // Bit 11
-    tempAddr |= (decoded[4] & 0x7);        // Bits 3-0
-    tempAddr |= (decoded[3] & 0x8);        // Bit 7
+    // Address bits extraction (corrected algorithm)
+    address |= ((decoded[3] & 0x7) << 12);   // Address bits 14-12
+    address |= ((decoded[3] & 0x8) << 8);    // Address bit 15 
+    address |= ((decoded[4] & 0x7) << 8);    // Address bits 11-9
+    address |= ((decoded[5] & 0x7) << 5);    // Address bits 8-6
+    address |= ((decoded[1] & 0x8) << 4);    // Address bit 7
+    address |= ((decoded[2] & 0x7) << 1);    // Address bits 5-3
+    address |= ((decoded[4] & 0x8) >> 3);    // Address bit 2
+    address |= ((decoded[5] & 0x8) >> 3);    // Address bit 1
+    address |= ((decoded[1] & 0x7) >> 2);    // Address bit 0
 
-    tempValue |= (decoded[1] & 0x7) << 4;  // Bits 7-4
-    tempValue |= (decoded[0] & 0x8) << 4;  // Bit 7
-    tempValue |= (decoded[0] & 0x7);       // Bits 3-0
-    tempValue |= (decoded[5] & 0x8);       // Bit 3
+    // Value bits extraction  
+    value |= ((decoded[0] & 0x7) << 4);      // Value bits 7-5
+    value |= ((decoded[0] & 0x8) >> 1);      // Value bit 4
+    value |= ((decoded[1] & 0x7));           // Value bits 3-1
+    value |= ((decoded[2] & 0x8) >> 7);      // Value bit 0
 
-    // Game Genie addresses need to be converted from CPU address space
-    // to ROM file offset for PRG ROM area ($8000-$FFFF)
-    if (tempAddr >= 0x8000) {
-        ggCode.address = tempAddr;
-        ggCode.value = tempValue;
+    // Validate address is in PRG ROM range
+    if (address >= 0x8000) {
+        ggCode.address = address;
+        ggCode.value = value;
         return true;
     }
 
     return false;
 }
+
 
 bool GameGenie::decode8LetterCode(const std::string& code, GameGenieCode& ggCode) const {
     // 8-letter codes: include compare value
@@ -217,36 +222,40 @@ bool GameGenie::decode8LetterCode(const std::string& code, GameGenieCode& ggCode
         decoded[i] = it->second;
     }
 
-    // Similar decoding but with compare value extraction
-    uint16_t tempAddr = 0;
-    uint8_t tempValue = 0;
-    uint8_t tempCompare = 0;
+    // Standard Game Genie 8-letter decoding algorithm
+    
+    uint16_t address = 0;
+    uint8_t value = 0;
+    uint8_t compare = 0;
 
-    // Address decoding (similar to 6-letter but with different bit positions)
-    tempAddr |= (decoded[3] & 0x7) << 12;
-    tempAddr |= (decoded[5] & 0x7) << 8;
-    tempAddr |= (decoded[4] & 0x8) << 8;
-    tempAddr |= (decoded[2] & 0x7) << 4;
-    tempAddr |= (decoded[1] & 0x8) << 4;
-    tempAddr |= (decoded[4] & 0x7);
-    tempAddr |= (decoded[3] & 0x8);
+    // Address bits (8-letter format)
+    address |= ((decoded[3] & 0x7) << 12);   // Address bits 14-12
+    address |= ((decoded[3] & 0x8) << 8);    // Address bit 15
+    address |= ((decoded[4] & 0x7) << 8);    // Address bits 11-9  
+    address |= ((decoded[5] & 0x7) << 5);    // Address bits 8-6
+    address |= ((decoded[1] & 0x8) << 4);    // Address bit 7
+    address |= ((decoded[2] & 0x7) << 1);    // Address bits 5-3
+    address |= ((decoded[4] & 0x8) >> 3);    // Address bit 2
+    address |= ((decoded[5] & 0x8) >> 3);    // Address bit 1
+    address |= ((decoded[1] & 0x7) >> 2);    // Address bit 0
 
-    // Value decoding
-    tempValue |= (decoded[1] & 0x7) << 4;
-    tempValue |= (decoded[0] & 0x8) << 4;
-    tempValue |= (decoded[0] & 0x7);
-    tempValue |= (decoded[5] & 0x8);
+    // Value bits (8-letter format)
+    value |= ((decoded[0] & 0x7) << 4);      // Value bits 7-5
+    value |= ((decoded[0] & 0x8) >> 1);      // Value bit 4
+    value |= ((decoded[1] & 0x7));           // Value bits 3-1
+    value |= ((decoded[2] & 0x8) >> 7);      // Value bit 0
 
-    // Compare value decoding
-    tempCompare |= (decoded[7] & 0x7) << 4;
-    tempCompare |= (decoded[6] & 0x8) << 4;
-    tempCompare |= (decoded[6] & 0x7);
-    tempCompare |= (decoded[7] & 0x8);
+    // Compare value bits
+    compare |= ((decoded[6] & 0x7) << 4);    // Compare bits 7-5
+    compare |= ((decoded[6] & 0x8) >> 1);    // Compare bit 4
+    compare |= ((decoded[7] & 0x7));         // Compare bits 3-1
+    compare |= ((decoded[2] & 0x8) >> 7);    // Compare bit 0
 
-    if (tempAddr >= 0x8000) {
-        ggCode.address = tempAddr;
-        ggCode.value = tempValue;
-        ggCode.compareValue = tempCompare;
+    // Validate address is in PRG ROM range
+    if (address >= 0x8000) {
+        ggCode.address = address;
+        ggCode.value = value;
+        ggCode.compareValue = compare;
         return true;
     }
 
