@@ -70,6 +70,7 @@ COMMON_SOURCE_FILES = \
     source/Zapper.cpp \
     source/helper.cpp \
     source/Emulation/WarpNES.cpp \
+    source/Emulation/GameGenie.cpp \
     source/Emulation/AllegroMidi.cpp \
     source/Emulation/Battery.cpp \
     source/Emulation/Instructions.cpp \
