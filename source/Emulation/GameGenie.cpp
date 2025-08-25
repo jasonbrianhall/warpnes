@@ -435,3 +435,48 @@ bool GameGenie::saveCodesToFile(const std::string& filename) const {
     std::cout << "Saved " << codes.size() << " Game Genie codes to " << filename << std::endl;
     return true;
 }
+
+GameGenie::CodeInfo GameGenie::getCodeInfo(size_t index) const {
+    CodeInfo info;
+    if (index < codes.size()) {
+        const auto& code = codes[index];
+        info.code = code.originalCode;
+        info.description = code.description;
+        info.enabled = code.enabled;
+        info.address = code.address;
+        info.value = code.value;
+        info.hasCompare = code.hasCompare;
+        info.compareValue = code.compareValue;
+    }
+    return info;
+}
+
+bool GameGenie::toggleCode(size_t index) {
+    if (index >= codes.size()) return false;
+    
+    codes[index].enabled = !codes[index].enabled;
+    
+    if (codes[index].enabled) {
+        applyCode(codes[index]);
+    } else {
+        restoreCode(codes[index]);
+    }
+    
+    return true;
+}
+
+bool GameGenie::removeCodeByIndex(size_t index) {
+    if (index >= codes.size()) return false;
+    
+    if (codes[index].enabled) {
+        restoreCode(codes[index]);
+    }
+    
+    codes.erase(codes.begin() + index);
+    return true;
+}
+
+bool GameGenie::isCodeEnabled(size_t index) const {
+    if (index >= codes.size()) return false;
+    return codes[index].enabled;
+}

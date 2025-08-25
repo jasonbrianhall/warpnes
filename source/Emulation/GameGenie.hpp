@@ -92,6 +92,22 @@ public:
      */
     size_t getEnabledCodeCount() const;
 
+    struct CodeInfo {
+        std::string code;
+        std::string description;
+        bool enabled;
+        uint16_t address;
+        uint8_t value;
+        bool hasCompare;
+        uint8_t compareValue;
+    };
+    CodeInfo getCodeInfo(size_t index) const;
+    bool removeCodeByIndex(size_t index);
+    bool toggleCode(size_t index);
+    bool isCodeEnabled(size_t index) const;
+
+
+
 private:
     /**
      * Structure representing a decoded Game Genie code
@@ -111,6 +127,8 @@ private:
                          hasCompare(false), enabled(false), 
                          originalValue(0), romOffset(0) {}
     };
+
+
 
     WarpNES* nesEmulator;           // Pointer to NES emulator
     std::vector<GameGenieCode> codes; // List of loaded Game Genie codes

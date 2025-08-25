@@ -13,6 +13,8 @@
 #include <vector>
 #include "Emulation/ControllerSDL.hpp"
 #include "Emulation/PPU.hpp"
+#include "Emulation/GameGenie.hpp"
+
 
 // Forward declarations
 class WarpNES;
@@ -61,6 +63,8 @@ private:
     RenderBackend current_backend;
     RenderBackend preferred_backend;
     bool backend_switching_enabled;
+
+    GameGenie* gameGenie;
     
     // GTK widgets
     GtkWidget* window;
@@ -245,6 +249,33 @@ private:
     uint32_t interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4);
     uint32_t mix_colors(uint32_t c1, uint32_t c2, float ratio);
     bool colors_equal(uint32_t c1, uint32_t c2);
+
+    static void on_game_genie_codes(GtkMenuItem* item, gpointer user_data);
+    void show_game_genie_dialog();
+    void load_game_genie_codes_file();
+    void save_game_genie_codes_file();
+
+static void on_add_game_genie_code(GtkWidget* widget, gpointer user_data);
+static void on_load_game_genie_file(GtkWidget* widget, gpointer user_data);
+static void on_save_game_genie_file(GtkWidget* widget, gpointer user_data);
+static void on_clear_game_genie_codes(GtkWidget* widget, gpointer user_data);
+static void on_remove_game_genie_code(GtkWidget* widget, gpointer user_data);
+static void on_toggle_game_genie_code(GtkCellRendererToggle* renderer, gchar* path_str, gpointer user_data);
+static void on_game_genie_dialog_destroy(GtkWidget* widget, gpointer user_data);
+static void refresh_codes_list(GtkListStore* store, GameGenie* gg, GtkWidget* info_label);
+
+// Game Genie dialog data structure
+struct GameGenieDialogData {
+    GTK3MainWindow* window;
+    GtkWidget* code_entry;
+    GtkWidget* desc_entry;
+    GtkWidget* tree_view;
+    GtkListStore* list_store;
+    GtkWidget* info_label;
+    GameGenie* game_genie;
+};
+
+
 
 };
 

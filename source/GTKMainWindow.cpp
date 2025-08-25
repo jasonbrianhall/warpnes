@@ -3,6 +3,7 @@
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
+#include "Emulation/GameGenie.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
 
@@ -40,6 +41,7 @@ GTK3MainWindow::GTK3MainWindow()
       current_resolution_index(0), custom_width(800), custom_height(600),
       use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(true),
       force_texture_recreation(false),
+      gameGenie(nullptr),
       // Filter settings
       current_filter(FilterType::NONE), filtered_texture(nullptr), filter_buffer(nullptr), filter_scale(1)
 {
@@ -74,6 +76,7 @@ GTK3MainWindow::~GTK3MainWindow() {
     delete[] nes_framebuffer;
     delete[] rgba_framebuffer;
     delete[] filter_buffer;
+    delete gameGenie;
 }
 
 bool GTK3MainWindow::initialize() {
@@ -342,6 +345,12 @@ void GTK3MainWindow::create_menubar() {
     g_signal_connect(pause_item, "activate", G_CALLBACK(on_game_pause), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), pause_item);
     
+    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), gtk_separator_menu_item_new());
+    
+    GtkWidget* game_genie_item = gtk_menu_item_new_with_label("Game Genie Codes");
+    g_signal_connect(game_genie_item, "activate", G_CALLBACK(on_game_genie_codes), this);
+    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), game_genie_item);
+    
     // Options menu
     GtkWidget* options_menu = gtk_menu_new();
     GtkWidget* options_item = gtk_menu_item_new_with_label("Options");
@@ -364,7 +373,6 @@ void GTK3MainWindow::create_menubar() {
     g_signal_connect(rendering_item, "activate", G_CALLBACK(on_options_rendering), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), rendering_item);
     
-    // ADD THIS NEW MENU ITEM:
     GtkWidget* filters_item = gtk_menu_item_new_with_label("Filters");
     g_signal_connect(filters_item, "activate", G_CALLBACK(on_options_filters), this);
     gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), filters_item);
@@ -1118,8 +1126,6 @@ void GTK3MainWindow::run(const char* rom_filename) {
         game_running = true;
         game_paused = false;
         
-        // CHANGED: Only switch to SDL if user explicitly prefers it
-        // Keep Cairo as default even when ROM is loaded
         if (preferred_backend == RenderBackend::SDL_HARDWARE && 
             current_backend == RenderBackend::CAIRO_SOFTWARE) {
             
@@ -1131,8 +1137,22 @@ void GTK3MainWindow::run(const char* rom_filename) {
             }
         }
         
+        gameGenie = new GameGenie(engine);
+        
+        std::string codesFile = engine->getROMBaseName() + ".gg";
+        size_t codesLoaded = 0;
+        if (gameGenie->loadCodesFromFile(codesFile)) {
+            codesLoaded = gameGenie->getEnabledCodeCount();
+        }
+        
         char status_msg[512];
-        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s - Pixel Perfect Mode", rom_filename);
+        if (codesLoaded > 0) {
+            snprintf(status_msg, sizeof(status_msg), 
+                     "ROM loaded: %s - Auto-loaded %zu Game Genie codes - Pixel Perfect Mode", 
+                     rom_filename, codesLoaded);
+        } else {
+            snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s - Pixel Perfect Mode", rom_filename);
+        }
         set_status_message(status_msg);
         
         if (!frame_timer_id) {
@@ -2344,6 +2364,444 @@ bool GTK3MainWindow::colors_equal(uint32_t c1, uint32_t c2) {
     
     return (abs(r1 - r2) < 8) && (abs(g1 - g2) < 8) && (abs(b1 - b2) < 8);
 }
+
+void GTK3MainWindow::on_game_genie_codes(GtkMenuItem* item, gpointer user_data) {
+    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
+    window->show_game_genie_dialog();
+}
+
+void GTK3MainWindow::show_game_genie_dialog() {
+    if (!engine || !engine->isROMLoaded()) {
+        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                        GTK_DIALOG_MODAL,
+                                                        GTK_MESSAGE_ERROR,
+                                                        GTK_BUTTONS_OK,
+                                                        "No ROM loaded. Please load a ROM first.");
+        gtk_dialog_run(GTK_DIALOG(error_dialog));
+        gtk_widget_destroy(error_dialog);
+        return;
+    }
+
+    if (!gameGenie) {
+        gameGenie = new GameGenie(engine);
+        std::string codesFile = engine->getROMBaseName() + ".gg";
+        gameGenie->loadCodesFromFile(codesFile);
+    }
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("Game Genie Codes",
+                                                   GTK_WINDOW(window),
+                                                   GTK_DIALOG_MODAL,
+                                                   "_Close", GTK_RESPONSE_CLOSE,
+                                                   nullptr);
+    
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 650, 450);
+    
+    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* main_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(content_area), main_vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(main_vbox), 10);
+    
+    char title_text[256];
+    snprintf(title_text, sizeof(title_text), "Game Genie Codes for: %s", engine->getROMBaseName().c_str());
+    GtkWidget* title_label = gtk_label_new(title_text);
+    gtk_box_pack_start(GTK_BOX(main_vbox), title_label, FALSE, FALSE, 0);
+    
+    char info_text[128];
+    snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
+             gameGenie->getCodeCount(), gameGenie->getEnabledCodeCount());
+    GtkWidget* info_label = gtk_label_new(info_text);
+    gtk_box_pack_start(GTK_BOX(main_vbox), info_label, FALSE, FALSE, 0);
+    
+    GtkWidget* entry_frame = gtk_frame_new("Add New Code");
+    gtk_box_pack_start(GTK_BOX(main_vbox), entry_frame, FALSE, FALSE, 0);
+    
+    GtkWidget* entry_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(entry_frame), entry_vbox);
+    gtk_container_set_border_width(GTK_CONTAINER(entry_vbox), 10);
+    
+    GtkWidget* code_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(entry_vbox), code_hbox, FALSE, FALSE, 0);
+    
+    gtk_box_pack_start(GTK_BOX(code_hbox), gtk_label_new("Code:"), FALSE, FALSE, 0);
+    GtkWidget* code_entry = gtk_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(code_entry), 8);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(code_entry), "SXIOPO (6 or 8 letters)");
+    gtk_box_pack_start(GTK_BOX(code_hbox), code_entry, TRUE, TRUE, 0);
+    
+    GtkWidget* desc_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(entry_vbox), desc_hbox, FALSE, FALSE, 0);
+    
+    gtk_box_pack_start(GTK_BOX(desc_hbox), gtk_label_new("Description:"), FALSE, FALSE, 0);
+    GtkWidget* desc_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(desc_entry), "What does this code do?");
+    gtk_box_pack_start(GTK_BOX(desc_hbox), desc_entry, TRUE, TRUE, 0);
+    
+    GtkWidget* add_button = gtk_button_new_with_label("Add Code");
+    gtk_box_pack_start(GTK_BOX(entry_vbox), add_button, FALSE, FALSE, 0);
+    
+    GtkWidget* list_frame = gtk_frame_new("Active Codes");
+    gtk_box_pack_start(GTK_BOX(main_vbox), list_frame, TRUE, TRUE, 0);
+    
+    GtkWidget* scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(list_frame), scrolled_window);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    
+    GtkListStore* list_store = gtk_list_store_new(5, G_TYPE_BOOLEAN, G_TYPE_STRING, 
+                                                  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INT);
+    GtkWidget* tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(list_store));
+    gtk_container_add(GTK_CONTAINER(scrolled_window), tree_view);
+    
+    GtkCellRenderer* toggle_renderer = gtk_cell_renderer_toggle_new();
+    GtkTreeViewColumn* toggle_column = gtk_tree_view_column_new_with_attributes(
+        "Enabled", toggle_renderer, "active", 0, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), toggle_column);
+    gtk_tree_view_column_set_min_width(toggle_column, 70);
+    
+    GtkCellRenderer* text_renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn* code_column = gtk_tree_view_column_new_with_attributes(
+        "Code", text_renderer, "text", 1, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), code_column);
+    gtk_tree_view_column_set_min_width(code_column, 80);
+    
+    GtkTreeViewColumn* desc_column = gtk_tree_view_column_new_with_attributes(
+        "Description", text_renderer, "text", 2, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), desc_column);
+    gtk_tree_view_column_set_min_width(desc_column, 200);
+    
+    GtkTreeViewColumn* addr_column = gtk_tree_view_column_new_with_attributes(
+        "Address", text_renderer, "text", 3, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), addr_column);
+    gtk_tree_view_column_set_min_width(addr_column, 80);
+    
+    // Create and populate dialog data structure
+    GameGenieDialogData* dialog_data = new GameGenieDialogData;
+    dialog_data->window = this;
+    dialog_data->code_entry = code_entry;
+    dialog_data->desc_entry = desc_entry;
+    dialog_data->tree_view = tree_view;
+    dialog_data->list_store = list_store;
+    dialog_data->info_label = info_label;
+    dialog_data->game_genie = gameGenie;
+    
+    // Populate initial list
+    refresh_codes_list(list_store, gameGenie, info_label);
+    
+    // Connect toggle renderer callback
+    g_signal_connect(toggle_renderer, "toggled", G_CALLBACK(on_toggle_game_genie_code), dialog_data);
+    
+    GtkWidget* button_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_box_pack_start(GTK_BOX(main_vbox), button_hbox, FALSE, FALSE, 0);
+    
+    GtkWidget* load_button = gtk_button_new_with_label("Load from File");
+    gtk_box_pack_start(GTK_BOX(button_hbox), load_button, FALSE, FALSE, 0);
+    
+    GtkWidget* save_button = gtk_button_new_with_label("Save to File");
+    gtk_box_pack_start(GTK_BOX(button_hbox), save_button, FALSE, FALSE, 0);
+    
+    GtkWidget* remove_button = gtk_button_new_with_label("Remove Selected");
+    gtk_box_pack_start(GTK_BOX(button_hbox), remove_button, FALSE, FALSE, 0);
+    
+    GtkWidget* clear_button = gtk_button_new_with_label("Clear All");
+    gtk_box_pack_start(GTK_BOX(button_hbox), clear_button, FALSE, FALSE, 0);
+    
+    // Connect button callbacks using proper static functions
+    g_signal_connect(add_button, "clicked", G_CALLBACK(on_add_game_genie_code), dialog_data);
+    g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_game_genie_file), dialog_data);
+    g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_game_genie_file), dialog_data);
+    g_signal_connect(remove_button, "clicked", G_CALLBACK(on_remove_game_genie_code), dialog_data);
+    g_signal_connect(clear_button, "clicked", G_CALLBACK(on_clear_game_genie_codes), dialog_data);
+    
+    // Cleanup callback when dialog is destroyed
+    g_signal_connect(dialog, "destroy", G_CALLBACK(on_game_genie_dialog_destroy), dialog_data);
+    
+    gtk_widget_show_all(dialog);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+void GTK3MainWindow::on_add_game_genie_code(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    
+    const char* code_text = gtk_entry_get_text(GTK_ENTRY(data->code_entry));
+    const char* desc_text = gtk_entry_get_text(GTK_ENTRY(data->desc_entry));
+    
+    if (strlen(code_text) == 0) {
+        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                       GTK_DIALOG_MODAL,
+                                                       GTK_MESSAGE_ERROR,
+                                                       GTK_BUTTONS_OK,
+                                                       "Please enter a Game Genie code.");
+        gtk_dialog_run(GTK_DIALOG(error_dialog));
+        gtk_widget_destroy(error_dialog);
+        return;
+    }
+    
+    std::string code(code_text);
+    std::string description(strlen(desc_text) > 0 ? desc_text : "User entered code");
+    
+    if (data->game_genie->addCode(code, description)) {
+        gtk_entry_set_text(GTK_ENTRY(data->code_entry), "");
+        gtk_entry_set_text(GTK_ENTRY(data->desc_entry), "");
+        
+        refresh_codes_list(data->list_store, data->game_genie, data->info_label);
+        
+        char status_msg[256];
+        snprintf(status_msg, sizeof(status_msg), "Added Game Genie code: %s", code.c_str());
+        data->window->set_status_message(status_msg);
+    } else {
+        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                       GTK_DIALOG_MODAL,
+                                                       GTK_MESSAGE_ERROR,
+                                                       GTK_BUTTONS_OK,
+                                                       "Invalid Game Genie code format.\n\n"
+                                                       "Codes must be 6 or 8 letters using only: "
+                                                       "A P Z L G I T Y E O X U K S V N");
+        gtk_dialog_run(GTK_DIALOG(error_dialog));
+        gtk_widget_destroy(error_dialog);
+    }
+}
+
+void GTK3MainWindow::on_game_genie_dialog_destroy(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    delete data;
+}
+
+void GTK3MainWindow::on_load_game_genie_file(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    data->window->load_game_genie_codes_file();
+    refresh_codes_list(data->list_store, data->game_genie, data->info_label);
+}
+
+void GTK3MainWindow::on_save_game_genie_file(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    data->window->save_game_genie_codes_file();
+}
+
+void GTK3MainWindow::on_remove_game_genie_code(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(data->tree_view));
+    GtkTreeModel* model;
+    GtkTreeIter iter;
+    
+    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        gint index;
+        gtk_tree_model_get(model, &iter, 4, &index, -1);
+        
+        GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
+        
+        char confirm_msg[256];
+        snprintf(confirm_msg, sizeof(confirm_msg), 
+                 "Remove Game Genie code:\n%s - %s?", 
+                 info.code.c_str(), info.description.c_str());
+        
+        GtkWidget* confirm_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                         GTK_DIALOG_MODAL,
+                                                         GTK_MESSAGE_QUESTION,
+                                                         GTK_BUTTONS_YES_NO,
+                                                         "%s", confirm_msg);
+        
+        int response = gtk_dialog_run(GTK_DIALOG(confirm_dialog));
+        gtk_widget_destroy(confirm_dialog);
+        
+        if (response == GTK_RESPONSE_YES) {
+            data->game_genie->removeCodeByIndex(index);
+            refresh_codes_list(data->list_store, data->game_genie, data->info_label);
+            data->window->set_status_message("Game Genie code removed");
+        }
+    } else {
+        GtkWidget* info_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                      GTK_DIALOG_MODAL,
+                                                      GTK_MESSAGE_INFO,
+                                                      GTK_BUTTONS_OK,
+                                                      "Please select a code to remove.");
+        gtk_dialog_run(GTK_DIALOG(info_dialog));
+        gtk_widget_destroy(info_dialog);
+    }
+}
+
+void GTK3MainWindow::on_clear_game_genie_codes(GtkWidget* widget, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    
+    if (data->game_genie->getCodeCount() == 0) {
+        GtkWidget* info_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                      GTK_DIALOG_MODAL,
+                                                      GTK_MESSAGE_INFO,
+                                                      GTK_BUTTONS_OK,
+                                                      "No codes to clear.");
+        gtk_dialog_run(GTK_DIALOG(info_dialog));
+        gtk_widget_destroy(info_dialog);
+        return;
+    }
+    
+    char confirm_msg[128];
+    snprintf(confirm_msg, sizeof(confirm_msg), 
+             "Clear all %zu Game Genie codes?\nThis cannot be undone.", 
+             data->game_genie->getCodeCount());
+    
+    GtkWidget* confirm_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                     GTK_DIALOG_MODAL,
+                                                     GTK_MESSAGE_QUESTION,
+                                                     GTK_BUTTONS_YES_NO,
+                                                     "%s", confirm_msg);
+    
+    int response = gtk_dialog_run(GTK_DIALOG(confirm_dialog));
+    gtk_widget_destroy(confirm_dialog);
+    
+    if (response == GTK_RESPONSE_YES) {
+        data->game_genie->clearAllCodes();
+        refresh_codes_list(data->list_store, data->game_genie, data->info_label);
+        data->window->set_status_message("All Game Genie codes cleared");
+    }
+}
+
+void GTK3MainWindow::on_toggle_game_genie_code(GtkCellRendererToggle* renderer, 
+                                               gchar* path_str, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    GtkTreeModel* model = GTK_TREE_MODEL(data->list_store);
+    GtkTreePath* path = gtk_tree_path_new_from_string(path_str);
+    GtkTreeIter iter;
+    
+    if (gtk_tree_model_get_iter(model, &iter, path)) {
+        gint index;
+        gtk_tree_model_get(model, &iter, 4, &index, -1);
+        
+        data->game_genie->toggleCode(index);
+        
+        gboolean enabled = data->game_genie->isCodeEnabled(index);
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, 0, enabled, -1);
+        
+        // Update info label
+        char info_text[128];
+        snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
+                 data->game_genie->getCodeCount(), 
+                 data->game_genie->getEnabledCodeCount());
+        gtk_label_set_text(GTK_LABEL(data->info_label), info_text);
+        
+        char status_msg[128];
+        GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
+        snprintf(status_msg, sizeof(status_msg), "Code %s %s", 
+                 info.code.c_str(), enabled ? "enabled" : "disabled");
+        data->window->set_status_message(status_msg);
+    }
+    
+    gtk_tree_path_free(path);
+}
+
+// Add this helper function:
+void GTK3MainWindow::refresh_codes_list(GtkListStore* store, GameGenie* gg, GtkWidget* info_label) {
+    gtk_list_store_clear(store);
+    
+    for (size_t i = 0; i < gg->getCodeCount(); i++) {
+        GameGenie::CodeInfo info = gg->getCodeInfo(i);
+        
+        char addr_str[16];
+        snprintf(addr_str, sizeof(addr_str), "$%04X", info.address);
+        
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter,
+                         0, info.enabled,
+                         1, info.code.c_str(),
+                         2, info.description.c_str(),
+                         3, addr_str,
+                         4, (int)i,
+                         -1);
+    }
+    
+    if (info_label) {
+        char info_text[128];
+        snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
+                 gg->getCodeCount(), gg->getEnabledCodeCount());
+        gtk_label_set_text(GTK_LABEL(info_label), info_text);
+    }
+}
+
+void GTK3MainWindow::load_game_genie_codes_file() {
+    if (!gameGenie) return;
+    
+    GtkWidget* dialog = gtk_file_chooser_dialog_new("Load Game Genie Codes",
+                                                   GTK_WINDOW(window),
+                                                   GTK_FILE_CHOOSER_ACTION_OPEN,
+                                                   "_Cancel", GTK_RESPONSE_CANCEL,
+                                                   "_Open", GTK_RESPONSE_ACCEPT,
+                                                   nullptr);
+    
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "Game Genie Files (*.gg)");
+    gtk_file_filter_add_pattern(filter, "*.gg");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+    
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        
+        if (gameGenie->loadCodesFromFile(filename)) {
+            char status_msg[256];
+            snprintf(status_msg, sizeof(status_msg), "Loaded Game Genie codes from %s", filename);
+            set_status_message(status_msg);
+        } else {
+            GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                           GTK_DIALOG_MODAL,
+                                                           GTK_MESSAGE_ERROR,
+                                                           GTK_BUTTONS_OK,
+                                                           "Failed to load Game Genie codes file.");
+            gtk_dialog_run(GTK_DIALOG(error_dialog));
+            gtk_widget_destroy(error_dialog);
+        }
+        
+        g_free(filename);
+    }
+    
+    gtk_widget_destroy(dialog);
+}
+
+void GTK3MainWindow::save_game_genie_codes_file() {
+    if (!gameGenie) return;
+    
+    GtkWidget* dialog = gtk_file_chooser_dialog_new("Save Game Genie Codes",
+                                                   GTK_WINDOW(window),
+                                                   GTK_FILE_CHOOSER_ACTION_SAVE,
+                                                   "_Cancel", GTK_RESPONSE_CANCEL,
+                                                   "_Save", GTK_RESPONSE_ACCEPT,
+                                                   nullptr);
+    
+    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
+    
+    // Suggest default filename
+    if (engine && engine->isROMLoaded()) {
+        std::string defaultName = engine->getROMBaseName() + ".gg";
+        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog), defaultName.c_str());
+    }
+    
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "Game Genie Files (*.gg)");
+    gtk_file_filter_add_pattern(filter, "*.gg");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+    
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        
+        if (gameGenie->saveCodesToFile(filename)) {
+            char status_msg[256];
+            snprintf(status_msg, sizeof(status_msg), "Saved Game Genie codes to %s", filename);
+            set_status_message(status_msg);
+        } else {
+            GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                           GTK_DIALOG_MODAL,
+                                                           GTK_MESSAGE_ERROR,
+                                                           GTK_BUTTONS_OK,
+                                                           "Failed to save Game Genie codes file.");
+            gtk_dialog_run(GTK_DIALOG(error_dialog));
+            gtk_widget_destroy(error_dialog);
+        }
+        
+        g_free(filename);
+    }
+    
+    gtk_widget_destroy(dialog);
+}
+
 
 // Main function
 int main(int argc, char* argv[]) {
