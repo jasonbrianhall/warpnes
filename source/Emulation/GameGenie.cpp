@@ -167,48 +167,64 @@ bool GameGenie::decodeCode(const std::string& code, GameGenieCode& ggCode) const
 }
 
 bool GameGenie::decode6LetterCode(const std::string& code, GameGenieCode& ggCode) const {
-    // 6-letter codes: no compare value
-    ggCode.hasCompare = false;
-    
-    uint8_t decoded[6];
-    for (int i = 0; i < 6; i++) {
-        auto it = decodeTable.find(code[i]);
-        if (it == decodeTable.end()) return false;
-        decoded[i] = it->second;
+    if (code.length() != 6) {
+        std::cerr << "Error: Code length is not 6\n";
+        return false;
     }
 
-    // Standard Game Genie 6-letter decoding algorithm
-    // Based on the official Game Genie documentation
-    
-    uint16_t address = 0;
-    uint8_t value = 0;
+    ggCode.hasCompare = false;
 
-    // Address bits extraction (corrected algorithm)
-    address |= ((decoded[3] & 0x7) << 12);   // Address bits 14-12
-    address |= ((decoded[3] & 0x8) << 8);    // Address bit 15 
-    address |= ((decoded[4] & 0x7) << 8);    // Address bits 11-9
-    address |= ((decoded[5] & 0x7) << 5);    // Address bits 8-6
-    address |= ((decoded[1] & 0x8) << 4);    // Address bit 7
-    address |= ((decoded[2] & 0x7) << 1);    // Address bits 5-3
-    address |= ((decoded[4] & 0x8) >> 3);    // Address bit 2
-    address |= ((decoded[5] & 0x8) >> 3);    // Address bit 1
-    address |= ((decoded[1] & 0x7) >> 2);    // Address bit 0
+    // Official Game Genie character table
+    static const std::string table = "APZLGITYEOXUKSVN";
 
-    // Value bits extraction  
-    value |= ((decoded[0] & 0x7) << 4);      // Value bits 7-5
-    value |= ((decoded[0] & 0x8) >> 1);      // Value bit 4
-    value |= ((decoded[1] & 0x7));           // Value bits 3-1
-    value |= ((decoded[2] & 0x8) >> 7);      // Value bit 0
+    int n[6];
+    std::cout << "Decoding Game Genie code: " << code << "\n";
 
-    // Validate address is in PRG ROM range
-    if (address >= 0x8000) {
-        ggCode.address = address;
-        ggCode.value = value;
+    // Translate each character to its nibble value (index in table)
+    for (int i = 0; i < 6; ++i) {
+        char c = std::toupper(code[i]);
+        size_t pos = table.find(c);
+        if (pos == std::string::npos) {
+            std::cerr << "Error: Invalid character '" << c << "' at position " << i << "\n";
+            return false;
+        }
+        n[i] = static_cast<int>(pos);  // This is the actual nibble value
+        std::cout << "  Char '" << c << "' → nibble value " << std::hex << n[i] << "\n";
+    }
+
+    // Decode address (from your original C logic)
+    int address_int = 0x8000 +
+        (((n[3] & 7) << 12) |
+         ((n[5] & 7) << 8)  |
+         ((n[4] & 8) << 8)  |
+         ((n[2] & 7) << 4)  |
+         ((n[1] & 8) << 4)  |
+         (n[4] & 7)         |
+         (n[3] & 8));
+
+    std::cout << "Decoded address = 0x" << std::hex << address_int << " (" << std::dec << address_int << ")\n";
+
+    // Decode value (from your original C logic)
+    int data_int =
+        ((n[1] & 7) << 4) |
+        ((n[0] & 8) << 4) |
+        (n[0] & 7)       |
+        (n[5] & 8);
+
+    std::cout << "Decoded value = 0x" << std::hex << data_int << "\n";
+
+    // Validate and assign
+    if (address_int >= 0x8000) {
+        ggCode.address = static_cast<uint16_t>(address_int);
+        ggCode.value = static_cast<uint8_t>(data_int);
+        std::cout << "Game Genie code decoded successfully\n";
         return true;
     }
 
+    std::cerr << "Error: Decoded address is below 0x8000, invalid for PRG ROM patch\n";
     return false;
 }
+
 
 
 bool GameGenie::decode8LetterCode(const std::string& code, GameGenieCode& ggCode) const {
