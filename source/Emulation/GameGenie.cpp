@@ -228,53 +228,71 @@ bool GameGenie::decode6LetterCode(const std::string& code, GameGenieCode& ggCode
 
 
 bool GameGenie::decode8LetterCode(const std::string& code, GameGenieCode& ggCode) const {
-    // 8-letter codes: include compare value
-    ggCode.hasCompare = true;
-    
-    uint8_t decoded[8];
-    for (int i = 0; i < 8; i++) {
-        auto it = decodeTable.find(code[i]);
-        if (it == decodeTable.end()) return false;
-        decoded[i] = it->second;
+    if (code.length() != 8) {
+        std::cerr << "Error: Code length is not 8\n";
+        return false;
     }
 
-    // Standard Game Genie 8-letter decoding algorithm
-    
-    uint16_t address = 0;
-    uint8_t value = 0;
-    uint8_t compare = 0;
+    ggCode.hasCompare = true;
 
-    // Address bits (8-letter format)
-    address |= ((decoded[3] & 0x7) << 12);   // Address bits 14-12
-    address |= ((decoded[3] & 0x8) << 8);    // Address bit 15
-    address |= ((decoded[4] & 0x7) << 8);    // Address bits 11-9  
-    address |= ((decoded[5] & 0x7) << 5);    // Address bits 8-6
-    address |= ((decoded[1] & 0x8) << 4);    // Address bit 7
-    address |= ((decoded[2] & 0x7) << 1);    // Address bits 5-3
-    address |= ((decoded[4] & 0x8) >> 3);    // Address bit 2
-    address |= ((decoded[5] & 0x8) >> 3);    // Address bit 1
-    address |= ((decoded[1] & 0x7) >> 2);    // Address bit 0
+    // Official Game Genie character table (same as 6-letter)
+    static const std::string table = "APZLGITYEOXUKSVN";
 
-    // Value bits (8-letter format)
-    value |= ((decoded[0] & 0x7) << 4);      // Value bits 7-5
-    value |= ((decoded[0] & 0x8) >> 1);      // Value bit 4
-    value |= ((decoded[1] & 0x7));           // Value bits 3-1
-    value |= ((decoded[2] & 0x8) >> 7);      // Value bit 0
+    int n[8];
+    std::cout << "Decoding 8-letter Game Genie code: " << code << "\n";
 
-    // Compare value bits
-    compare |= ((decoded[6] & 0x7) << 4);    // Compare bits 7-5
-    compare |= ((decoded[6] & 0x8) >> 1);    // Compare bit 4
-    compare |= ((decoded[7] & 0x7));         // Compare bits 3-1
-    compare |= ((decoded[2] & 0x8) >> 7);    // Compare bit 0
+    // Translate each character to its nibble value (index in table)
+    for (int i = 0; i < 8; ++i) {
+        char c = std::toupper(code[i]);
+        size_t pos = table.find(c);
+        if (pos == std::string::npos) {
+            std::cerr << "Error: Invalid character '" << c << "' at position " << i << "\n";
+            return false;
+        }
+        n[i] = static_cast<int>(pos);  // This is the actual nibble value
+        std::cout << "  Char '" << c << "' → nibble value " << std::hex << n[i] << "\n";
+    }
 
-    // Validate address is in PRG ROM range
-    if (address >= 0x8000) {
-        ggCode.address = address;
-        ggCode.value = value;
-        ggCode.compareValue = compare;
+    // Decode address (8-letter format)
+    int address_int = 0x8000 +
+        (((n[3] & 7) << 12) |
+         ((n[5] & 7) << 8)  |
+         ((n[4] & 8) << 8)  |
+         ((n[2] & 7) << 4)  |
+         ((n[1] & 8) << 4)  |
+         (n[4] & 7)         |
+         (n[3] & 8));
+
+    std::cout << "Decoded address = 0x" << std::hex << address_int << " (" << std::dec << address_int << ")\n";
+
+    // Decode value (8-letter format)
+    int data_int =
+        ((n[1] & 7) << 4) |
+        ((n[0] & 8) << 4) |
+        (n[0] & 7)       |
+        (n[5] & 8);
+
+    std::cout << "Decoded value = 0x" << std::hex << data_int << "\n";
+
+    // Decode compare value (8-letter format)
+    int compare_int =
+        ((n[7] & 7) << 4) |
+        ((n[6] & 8) << 4) |
+        (n[6] & 7)       |
+        (n[5] & 8);
+
+    std::cout << "Decoded compare = 0x" << std::hex << compare_int << "\n";
+
+    // Validate and assign
+    if (address_int >= 0x8000) {
+        ggCode.address = static_cast<uint16_t>(address_int);
+        ggCode.value = static_cast<uint8_t>(data_int);
+        ggCode.compareValue = static_cast<uint8_t>(compare_int);
+        std::cout << "8-letter Game Genie code decoded successfully\n";
         return true;
     }
 
+    std::cerr << "Error: Decoded address is below 0x8000, invalid for PRG ROM patch\n";
     return false;
 }
 
