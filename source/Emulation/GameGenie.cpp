@@ -362,43 +362,90 @@ bool GameGenie::cpuAddressToROMOffset(uint16_t cpuAddress, uint32_t& romOffset) 
         return false; // Not in ROM area
     }
 
-    // This is a simplified mapping - you may need to enhance this based on
-    // the specific mapper being used
     uint8_t mapper = nesEmulator->getMapper();
+    uint32_t prgSize = nesEmulator->getPRGSize();
     
     switch (mapper) {
     case 0: // NROM
         romOffset = cpuAddress - 0x8000;
         // Handle 16KB ROM mirroring
-        if (nesEmulator->getPRGSize() == 0x4000) { // 16KB
+        if (prgSize == 0x4000) { // 16KB
             romOffset &= 0x3FFF;
         }
-        return romOffset < nesEmulator->getPRGSize();
+        return romOffset < prgSize;
         
     case 1: // MMC1
-    case 2: // UxROM  
-    case 3: // CNROM
-    case 4: // MMC3
-        // For banked mappers, we patch the ROM data directly
-        // The banking will handle the runtime mapping
+        // For Game Genie patching, we patch the ROM data directly
+        // The banking system will handle runtime mapping
         romOffset = cpuAddress - 0x8000;
-        return romOffset < nesEmulator->getPRGSize();
+        // Ensure we're within ROM bounds
+        if (prgSize == 0x4000) { // 16KB ROM
+            romOffset &= 0x3FFF;
+        } else if (prgSize == 0x8000) { // 32KB ROM
+            romOffset &= 0x7FFF;
+        }
+        return romOffset < prgSize;
+        
+    case 2: // UxROM  
+        // UxROM: $8000-$BFFF switchable, $C000-$FFFF fixed to last bank
+        if (cpuAddress < 0xC000) {
+            // Switchable area - patch at offset 0
+            romOffset = cpuAddress - 0x8000;
+        } else {
+            // Fixed area - patch at the last 16KB of ROM
+            romOffset = (prgSize - 0x4000) + (cpuAddress - 0xC000);
+        }
+        return romOffset < prgSize;
+        
+    case 3: // CNROM
+        // CNROM has no PRG banking, just direct mapping
+        romOffset = cpuAddress - 0x8000;
+        return romOffset < prgSize;
+        
+    case 4: // MMC3
+        // MMC3: Complex 8KB banking, but for Game Genie we patch ROM directly
+        romOffset = cpuAddress - 0x8000;
+        return romOffset < prgSize;
+        
+    case 66: // GxROM
+        // GxROM: 32KB PRG banking, but patch ROM directly
+        romOffset = cpuAddress - 0x8000;
+        return romOffset < prgSize;
+        
+    case 40: // Mapper 40 (SMB2j hack)
+        // Mapper 40: $8000-$9FFF switchable, rest fixed
+        if (cpuAddress < 0xA000) {
+            // Switchable 8KB bank - patch at ROM start
+            romOffset = cpuAddress - 0x8000;
+        } else {
+            // Fixed banks - calculate offset from end of ROM
+            uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
+            if (cpuAddress < 0xC000) {
+                // $A000-$BFFF: second-to-last bank
+                romOffset = ((totalBanks - 2) * 0x2000) + (cpuAddress - 0xA000);
+            } else {
+                // $C000-$FFFF: last bank
+                romOffset = ((totalBanks - 1) * 0x2000) + (cpuAddress - 0xC000);
+            }
+        }
+        return romOffset < prgSize;
         
     default:
-        // For unknown mappers, try direct mapping
+        // For unknown mappers, try simple direct mapping
         romOffset = cpuAddress - 0x8000;
-        return romOffset < nesEmulator->getPRGSize();
+        // Apply mirroring for small ROMs
+        if (prgSize == 0x4000) {
+            romOffset &= 0x3FFF;
+        }
+        return romOffset < prgSize;
     }
 }
 
 uint8_t* GameGenie::getPRGROMPointer() {
-    // This requires adding a public method to WarpNES to access PRG ROM
-    // For now, we'll need to add this to WarpNES.hpp:
-    // uint8_t* getPRGROM() { return prgROM; }
-    // uint32_t getPRGSize() const { return prgSize; }
-    
-    // Return nullptr for now - you'll need to implement the getter in WarpNES
-    return nullptr;
+    if (!nesEmulator) {
+        return nullptr;
+    }
+    return nesEmulator->getPRGROM();
 }
 
 void GameGenie::reapplyAllCodes() {
