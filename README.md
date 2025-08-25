@@ -20,9 +20,9 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 - **Basic MMC1, MM2, MMC3, UxROM support** - Limited but functional
 - **Audio output** - Excellent APU emulation (~95% accurate)
 - **Controllers** - Keyboard and joystick input
-- **Save states** - F5-F8 for save/load (Some reload issues on certain games); needs implemented per game 
+- **Save states** - F5-F8 for save/load (Some reload issues on certain games); needs implemented per game
 - **Smooth scrolling** - VSync implementation provides fluid gameplay
-
+- **GameGenie Codes** - GTK version only; Game genie codes work AFAIK
 
 ## What's Broken
 
