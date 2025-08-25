@@ -310,17 +310,20 @@ bool GameGenie::applyCode(const GameGenieCode& code) {
         return false;
     }
 
-    // Get direct access to PRG ROM (we'll need to add this method to WarpNES)
+    // Get direct access to PRG ROM
     uint8_t* prgROM = getPRGROMPointer();
     if (!prgROM) {
         std::cerr << "Error: Cannot access PRG ROM data" << std::endl;
         return false;
     }
 
-    // Store original value before patching
+    // Store original value before patching (only if not already stored)
     GameGenieCode& mutableCode = const_cast<GameGenieCode&>(code);
-    mutableCode.originalValue = prgROM[romOffset];
-    mutableCode.romOffset = romOffset;
+    if (!mutableCode.originalValueStored) {
+        mutableCode.originalValue = prgROM[romOffset];
+        mutableCode.romOffset = romOffset;
+        mutableCode.originalValueStored = true;
+    }
 
     // Apply the patch if compare value matches (or no compare value)
     if (!code.hasCompare || prgROM[romOffset] == code.compareValue) {
@@ -339,8 +342,17 @@ bool GameGenie::applyCode(const GameGenieCode& code) {
     }
 }
 
+
+
 void GameGenie::restoreCode(const GameGenieCode& code) {
     if (!nesEmulator || !nesEmulator->isROMLoaded()) {
+        return;
+    }
+
+    // Only restore if we have a stored original value
+    if (!code.originalValueStored) {
+        std::cerr << "Warning: Cannot restore code " << code.originalCode 
+                  << " - original value not stored" << std::endl;
         return;
     }
 

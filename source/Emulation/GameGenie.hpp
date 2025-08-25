@@ -122,10 +122,10 @@ private:
         bool enabled;               // Whether this code is currently active
         uint8_t originalValue;      // Original ROM value (for restoration)
         uint32_t romOffset;         // ROM file offset where patch is applied
-
+        bool originalValueStored;   // Whether originalValue has been stored
         GameGenieCode() : address(0), value(0), compareValue(0), 
-                         hasCompare(false), enabled(false), 
-                         originalValue(0), romOffset(0) {}
+                     hasCompare(false), enabled(false), 
+                     originalValue(0), romOffset(0), originalValueStored(false) {}
     };
 
 
@@ -200,6 +200,28 @@ private:
      * @return Pointer to PRG ROM, or nullptr if not available
      */
     uint8_t* getPRGROMPointer();
+
+
+    /**
+     * Get platform-appropriate directory for save/load operations
+     * @return Directory path (with trailing separator)
+     */
+    std::string getPlatformDirectory() const;
+
+    /**
+     * Resolve full path for a filename, handling platform-specific directories
+     * @param filename Input filename
+     * @return Full path to use for file operations
+     */
+    std::string resolvePath(const std::string& filename) const;
+
+    /**
+     * Check if a path is absolute
+     * @param path Path to check
+     * @return true if path is absolute
+     */
+    bool isAbsolutePath(const std::string& path) const;
+
 };
 
 // Inline implementation for simple methods
