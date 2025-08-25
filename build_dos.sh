@@ -110,6 +110,8 @@ case "${1:-dos}" in
             g++ -c /src/source/Emulation/MMC1.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC1.o && \
             g++ -c /src/source/Emulation/MMC2.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC2.o && \
             g++ -c /src/source/Emulation/MMC3.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC3.o && \
+            g++ -c /src/source/Emulation/Mapper40.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Mapper40.o && \
+            g++ -c /src/source/Emulation/GameGenie.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/GameGenie.o && \
             g++ -c /src/source/Zapper.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Zapper.o && \
             g++ -c /src/source/dos_main.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Main.o && \
             g++ /src/$BUILD_DIR/obj/*.o -L/src/$BUILD_DIR/source-install/lib -lalleg -lm -O3 -march=i586 -s -o /src/$BUILD_DIR/warpnese.exe &&
@@ -183,6 +185,8 @@ case "${1:-dos}" in
             g++ -c /src/source/Emulation/MMC1.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC1.o && \
             g++ -c /src/source/Emulation/MMC2.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC2.o && \
             g++ -c /src/source/Emulation/MMC3.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/MMC3.o && \
+            g++ -c /src/source/Emulation/Mapper40.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Mapper40.o && \
+            g++ -c /src/source/Emulation/GameGenie.cpp -I/src/$BUILD_DIR/source-install/include -O3 -DALLEGRO_BUILD -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/GameGenie.o && \
             g++ -c /src/source/Zapper.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Zapper.o && \
             g++ -c /src/source/dos_main.cpp -I/src/$BUILD_DIR/source-install/include -O3 -march=i586 -fomit-frame-pointer -ffast-math -funroll-loops -fpermissive -w -o /src/$BUILD_DIR/obj/Main.o && \
             g++ /src/$BUILD_DIR/obj/*.o -L/src/$BUILD_DIR/source-install/lib -lalleg -lm -O3 -march=i586 -s -o /src/$BUILD_DIR/warpnese.exe &&
