@@ -4,11 +4,38 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <cstdint>
 #include "APU.h"
-#include "Instructions.h"
 
 class WarpNES {
+private:
+    // CPU Registers
+    uint8_t regA;       // Accumulator
+    uint8_t regX;       // X register
+    uint8_t regY;       // Y register
+    uint8_t regSP;      // Stack pointer
+    uint16_t regPC;     // Program counter
+    uint8_t regP;       // Status register
+
+    // Cycle counters
+    uint64_t totalCycles;
+    uint32_t frameCycles;
+
+    // Status flag constants
+    static const uint8_t FLAG_CARRY     = 0x01;
+    static const uint8_t FLAG_ZERO      = 0x02;
+    static const uint8_t FLAG_INTERRUPT = 0x04;
+    static const uint8_t FLAG_DECIMAL   = 0x08;
+    static const uint8_t FLAG_BREAK     = 0x10;
+    static const uint8_t FLAG_UNUSED    = 0x20;
+    static const uint8_t FLAG_OVERFLOW  = 0x40;
+    static const uint8_t FLAG_NEGATIVE  = 0x80;
+
 public:
+    // Memory access (these need to be implemented elsewhere)
+    uint8_t readByte(uint16_t address);
+    void writeByte(uint16_t address, uint8_t value);
+
     // Memory access helpers
     uint16_t readWord(uint16_t address);
     void writeWord(uint16_t address, uint16_t value);

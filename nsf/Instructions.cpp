@@ -1,7 +1,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include "APU.hpp"
+#include "APU.h"
+#include "Instructions.h"
+
 
 uint16_t WarpNES::readWord(uint16_t address) {
   return readByte(address) | (readByte(address + 1) << 8);
