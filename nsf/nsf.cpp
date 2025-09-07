@@ -3,9 +3,8 @@
 #include <string>
 #include <cstring>
 #include <vector>
-#include <thread>
-#include <chrono>
 #include <cstdint>
+#include <SDL2/SDL.h>
 #include "APU.hpp"
 
 // NSF Header structure
@@ -76,13 +75,10 @@ public:
     // Memory access
     uint8_t readByte(uint16_t addr) {
         if (addr < 0x2000) {
-            // Internal RAM (mirrored)
             return ram[addr & 0x7FF];
         } else if (addr >= 0x4000 && addr <= 0x4017) {
-            // APU registers - return 0 for reads
             return 0;
         } else if (addr >= loadAddr && addr < 0x10000) {
-            // PRG ROM
             uint16_t offset = addr - loadAddr;
             if (offset < prgSize) {
                 return prgRom[offset];
@@ -93,21 +89,20 @@ public:
     
     void writeByte(uint16_t addr, uint8_t value) {
         if (addr < 0x2000) {
-            // Internal RAM (mirrored)
             ram[addr & 0x7FF] = value;
         } else if (addr >= 0x4000 && addr <= 0x4017) {
-            // APU registers
+            // Debug APU writes
+            static int writeCount = 0;
+            if (writeCount < 20) {
+                printf("APU Write: 0x%04X = 0x%02X\n", addr, value);
+                writeCount++;
+            }
             apu->writeRegister(addr, value);
         }
     }
     
     uint16_t readWord(uint16_t addr) {
         return readByte(addr) | (readByte(addr + 1) << 8);
-    }
-    
-    void writeWord(uint16_t addr, uint16_t value) {
-        writeByte(addr, value & 0xFF);
-        writeByte(addr + 1, value >> 8);
     }
     
     // Stack operations
@@ -403,7 +398,6 @@ public:
             case 0x40: RTI(); return 6;
             
             default:
-                // Unknown opcode - treat as NOP
                 NOP();
                 return 2;
         }
@@ -417,9 +411,54 @@ private:
     std::vector<uint8_t> nsfData;
     bool isPlaying;
     int currentSong;
+    SDL_AudioDeviceID audioDevice;
+    
+    // Audio callback - runs in separate thread
+    static void audioCallback(void* userdata, Uint8* stream, int len) {
+        NSFPlayer* player = static_cast<NSFPlayer*>(userdata);
+        player->generateAudio(stream, len);
+    }
+    
+    void generateAudio(Uint8* stream, int len) {
+        if (!isPlaying) {
+            memset(stream, 128, len); // Silence
+            return;
+        }
+        
+        static int sampleCount = 0;
+        const int samplesPerFrame = 48000 / 60; // 800 samples per frame at 48kHz, 60fps
+        
+        for (int i = 0; i < len; i++) {
+            // Time to call play routine?
+            if (sampleCount % samplesPerFrame == 0) {
+                cpu.regPC = header.playAddr;
+                for (int j = 0; j < 1000; j++) {
+                    cpu.executeInstruction();
+                }
+                cpu.apu->stepFrame();
+            }
+            
+            // Get one audio sample from APU
+            uint8_t sample;
+            cpu.apu->output(&sample, 1);
+            stream[i] = sample;
+            sampleCount++;
+        }
+    }
     
 public:
-    NSFPlayer() : isPlaying(false), currentSong(1) {}
+    NSFPlayer() : isPlaying(false), currentSong(1), audioDevice(0) {
+        if (SDL_Init(SDL_INIT_AUDIO) < 0) {
+            std::cerr << "SDL Init failed: " << SDL_GetError() << std::endl;
+        }
+    }
+    
+    ~NSFPlayer() {
+        if (audioDevice) {
+            SDL_CloseAudioDevice(audioDevice);
+        }
+        SDL_Quit();
+    }
     
     bool loadNSF(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary);
@@ -451,6 +490,21 @@ public:
         cpu.prgSize = dataSize;
         cpu.loadAddr = header.loadAddr;
         
+        // Setup SDL Audio
+        SDL_AudioSpec wanted, obtained;
+        wanted.freq = 48000;
+        wanted.format = AUDIO_U8;
+        wanted.channels = 1;
+        wanted.samples = 1024;
+        wanted.callback = audioCallback;
+        wanted.userdata = this;
+        
+        audioDevice = SDL_OpenAudioDevice(NULL, 0, &wanted, &obtained, 0);
+        if (audioDevice == 0) {
+            std::cerr << "Failed to open audio device: " << SDL_GetError() << std::endl;
+            return false;
+        }
+        
         std::cout << "Loaded NSF: " << header.songName << std::endl;
         std::cout << "Artist: " << header.artist << std::endl;
         std::cout << "Copyright: " << header.copyright << std::endl;
@@ -477,7 +531,7 @@ public:
         
         std::cout << "Initialized song " << songNum << std::endl;
         
-        // Run init routine for a bit
+        // Run init routine
         for (int i = 0; i < 10000; i++) {
             cpu.executeInstruction();
         }
@@ -489,58 +543,46 @@ public:
             return;
         }
         
+        if (!audioDevice) {
+            std::cerr << "No audio device available" << std::endl;
+            return;
+        }
+        
         initSong(currentSong);
         isPlaying = true;
         
-        std::cout << "Playing song " << currentSong << " - Press 'q' to quit, 'n' for next song, 'p' for previous" << std::endl;
+        // Start audio playback
+        SDL_PauseAudioDevice(audioDevice, 0);
         
-        const int frameRate = 60; // NTSC
-        auto frameTime = std::chrono::microseconds(1000000 / frameRate);
+        std::cout << "Playing song " << currentSong << " - Press Enter to stop" << std::endl;
         
-        while (isPlaying) {
-            auto startTime = std::chrono::high_resolution_clock::now();
-            
-            // Call play routine
-            cpu.regPC = header.playAddr;
-            for (int i = 0; i < 1000; i++) {
-                cpu.executeInstruction();
-            }
-            
-            // Step APU
-            cpu.apu->stepFrame();
-            
-            // Simple audio output (just print APU status occasionally)
-            static int frameCount = 0;
-            if (frameCount++ % 60 == 0) {
-                // Print some status every second
-                std::cout << ".";
-                std::cout.flush();
-            }
-            
-            // Frame timing
-            auto endTime = std::chrono::high_resolution_clock::now();
-            auto elapsed = endTime - startTime;
-            if (elapsed < frameTime) {
-                std::this_thread::sleep_for(frameTime - elapsed);
-            }
-        }
+        // Wait for user input
+        std::string input;
+        std::getline(std::cin, input);
+        
+        // Stop audio
+        SDL_PauseAudioDevice(audioDevice, 1);
+        isPlaying = false;
     }
     
     void stop() {
         isPlaying = false;
+        if (audioDevice) {
+            SDL_PauseAudioDevice(audioDevice, 1);
+        }
     }
     
     void nextSong() {
         if (currentSong < header.totalSongs) {
             currentSong++;
-            initSong(currentSong);
+            std::cout << "Next song: " << currentSong << std::endl;
         }
     }
     
     void prevSong() {
         if (currentSong > 1) {
             currentSong--;
-            initSong(currentSong);
+            std::cout << "Previous song: " << currentSong << std::endl;
         }
     }
     
@@ -562,24 +604,27 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "NSF Player Commands:" << std::endl;
-    std::cout << "  Enter: Start playing" << std::endl;
-    std::cout << "  q: Quit" << std::endl;
+    std::cout << "  p: Play current song" << std::endl;
+    std::cout << "  s: Stop playing" << std::endl;
     std::cout << "  n: Next song" << std::endl;
-    std::cout << "  p: Previous song" << std::endl;
+    std::cout << "  b: Previous song" << std::endl;
     std::cout << "  t: Toggle audio mode" << std::endl;
+    std::cout << "  q: Quit" << std::endl;
     
     std::string input;
     while (true) {
         std::cout << "> ";
         std::getline(std::cin, input);
         
-        if (input.empty()) {
+        if (input == "p") {
             player.play();
+        } else if (input == "s") {
+            player.stop();
         } else if (input == "q") {
             break;
         } else if (input == "n") {
             player.nextSong();
-        } else if (input == "p") {
+        } else if (input == "b") {
             player.prevSong();
         } else if (input == "t") {
             player.toggleAudioMode();
