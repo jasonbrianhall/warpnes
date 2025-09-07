@@ -8,7 +8,6 @@
 class Pulse;
 class Triangle;
 class Noise;
-class AllegroMIDIAudioSystem; // Forward declaration
 
 /**
  * Audio processing unit emulator.
@@ -65,8 +64,6 @@ private:
     Pulse* pulse2;
     Triangle* triangle;
     Noise* noise;
-
-    AllegroMIDIAudioSystem* gameAudio;  /**< Enhanced audio system */
 
     /**
      * Get the current mixed audio output sample.

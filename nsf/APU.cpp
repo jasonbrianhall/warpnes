@@ -10,7 +10,7 @@
 #include <pthread.h>
 #endif
 
-#include "APU.hpp"
+#include "APU.h"
 
     APU::MixCache APU::outputCache[256];
     int APU::cacheIndex = 0;
@@ -502,7 +502,6 @@ APU::APU()
     pulse2 = nullptr;
     triangle = nullptr;
     noise = nullptr;
-    gameAudio = nullptr;
 
     // Clear audio buffer
     memset(audioBuffer, 0, AUDIO_BUFFER_LENGTH);
@@ -525,17 +524,11 @@ APU::APU()
         if (pulse2) { delete pulse2; pulse2 = nullptr; }
         if (triangle) { delete triangle; triangle = nullptr; }
         if (noise) { delete noise; noise = nullptr; }
-        if (gameAudio) { delete gameAudio; gameAudio = nullptr; }
     }
 }
 
 APU::~APU()
 {
-    if (gameAudio) {
-        delete gameAudio;
-        gameAudio = nullptr;
-    }
-    
     if (pulse1) {
         delete pulse1;
         pulse1 = nullptr;
