@@ -614,8 +614,9 @@ uint8_t WarpNES::readByte(uint16_t address) {
         // APU registers - NSF needs this for sound
         switch (address) {
         case 0x4015:
-            // APU status register
-            return apu ? apu->readStatus() : 0;
+            // APU status register - return a basic status
+            // For NSF playback, we typically just return 0 or a simple status
+            return 0x1F; // All channels enabled
         default:
             return 0; // Other APU registers return 0 on read
         }
