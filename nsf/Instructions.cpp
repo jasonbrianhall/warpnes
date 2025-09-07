@@ -604,3 +604,170 @@ void WarpNES::AXS(uint16_t addr) {
   regX = result;
   updateZN(regX);
 }
+
+// Memory access implementation for NSF player
+uint8_t WarpNES::readByte(uint16_t address) {
+    if (address < 0x2000) {
+        // RAM (mirrored every 2KB)
+        return ram[address & 0x7FF];
+    } else if (address >= 0x4000 && address < 0x4020) {
+        // APU registers - NSF needs this for sound
+        switch (address) {
+        case 0x4015:
+            // APU status register
+            return apu ? apu->readStatus() : 0;
+        default:
+            return 0; // Other APU registers return 0 on read
+        }
+    } else if (address >= 0x6000 && address < 0x8000) {
+        // SRAM area ($6000-$7FFF) - NSF might use this for work RAM
+        if (sramEnabled && sram) {
+            uint16_t sramAddr = address - 0x6000;
+            if (sramAddr < sramSize) {
+                return sram[sramAddr];
+            }
+        }
+        return 0; // Open bus if SRAM not available
+    } else if (address >= 0x8000) {
+        // PRG ROM with mapper handling - NSF code lives here
+        return readPRGByte(address);
+    }
+    
+    return 0; // Open bus
+}
+
+void WarpNES::writeByte(uint16_t address, uint8_t value) {
+    if (address < 0x2000) {
+        ram[address & 0x7FF] = value;
+    } else if (address >= 0x4000 && address < 0x4020) {
+        // APU registers - NSF writes to these for sound
+        if (apu) {
+            apu->writeRegister(address, value);
+        }
+    } else if (address >= 0x6000 && address < 0x8000) {
+        // SRAM area ($6000-$7FFF) - NSF work RAM
+        if (sramEnabled && sram) {
+            uint16_t sramAddr = address - 0x6000;
+            if (sramAddr < sramSize) {
+                sram[sramAddr] = value;
+                sramDirty = true;
+            }
+        }
+    } else if (address >= 0x8000) {
+        // Mapper registers - NSF may use banking
+        writeMapperRegister(address, value);
+    }
+}
+
+uint8_t WarpNES::readPRGByte(uint16_t address) {
+    // For NSF, we typically use simple linear ROM mapping
+    // Most NSF files don't use complex mappers
+    uint32_t romAddr = address - 0x8000;
+    
+    if (romAddr < prgSize) {
+        return prgROM[romAddr];
+    }
+    
+    return 0; // Open bus
+}
+
+void WarpNES::writeMapperRegister(uint16_t address, uint8_t value) {
+    // NSF files typically use simple mappers or no mapping
+    // For now, just ignore mapper writes since NSF doesn't usually need them
+    // In the future, could add support for NSF banking if needed
+}
+
+// Stub implementations for mapper functions (not typically needed for NSF)
+void WarpNES::writeMMC1Register(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeUxROMRegister(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeMMC3Register(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeMMC2Register(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeMapper40Register(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeGxROMRegister(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+void WarpNES::writeCNROMRegister(uint16_t address, uint8_t value) {
+    // Not typically used in NSF
+}
+
+// Stub implementations for bank update functions
+void WarpNES::updateMMC1Banks() {
+    // Not needed for NSF
+}
+
+void WarpNES::updateMMC3Banks() {
+    // Not needed for NSF
+}
+
+void WarpNES::updateMMC2Banks() {
+    // Not needed for NSF
+}
+
+// Stub implementations for IRQ functions
+void WarpNES::checkMMC3IRQ(int scanline, int cycle) {
+    // Not needed for NSF
+}
+
+void WarpNES::checkMapper40IRQ() {
+    // Not needed for NSF
+}
+
+void WarpNES::stepMMC3A12Transition(bool a12High) {
+    // Not needed for NSF
+}
+
+void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
+    // Not needed for NSF
+}
+
+// SRAM functions for NSF work RAM
+void WarpNES::initializeSRAM() {
+    if (!sram && sramSize > 0) {
+        sram = new uint8_t[sramSize];
+        memset(sram, 0, sramSize);
+        sramEnabled = true;
+        sramDirty = false;
+    }
+}
+
+void WarpNES::cleanupSRAM() {
+    if (sram) {
+        delete[] sram;
+        sram = nullptr;
+        sramSize = 0;
+        sramEnabled = false;
+        sramDirty = false;
+    }
+}
+
+void WarpNES::loadSRAM() {
+    // NSF doesn't typically load/save SRAM
+}
+
+void WarpNES::saveSRAM() {
+    // NSF doesn't typically load/save SRAM
+}
+
+// Stub main function as requested
+int main(int argc, char* argv[]) {
+    // TODO: Implement main function for NSF player
+    // This should handle command line arguments, load NSF files,
+    // initialize the CPU and APU, and start the audio playback loop
+    return 0;
+}
