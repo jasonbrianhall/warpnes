@@ -1,19 +1,7 @@
-#include "../Emulation/PPU.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
-#include "WarpNES.hpp"
-#include "../Configuration.hpp"
-#include "../Emulation/APU.hpp"
-
-#ifdef ALLEGRO_BUILD
-#include "../Emulation/Controller.hpp"
-#else
-#include "../Emulation/ControllerSDL.hpp"
-#endif
-
-#include "../Zapper.hpp"
-
+#include "APU.hpp"
 
 uint16_t WarpNES::readWord(uint16_t address) {
   return readByte(address) | (readByte(address + 1) << 8);
