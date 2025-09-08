@@ -575,19 +575,23 @@ void WarpNES::update() {
     if (!romLoaded) return;
     
     if (isNSF) {
-        // NSF mode - call play routine at 60Hz
-        nsf_frame_counter++;
-        if (nsf_frame_counter >= 60) {
-            nsf_frame_counter = 0;
-            callNSFPlayRoutine();
+        // Execute one frame of CPU
+        for (int i = 0; i < 29780; i++) { // NTSC frame cycles
+            executeInstruction();
         }
         
-        // Always step the APU frame for NSF
+        // Trigger IRQ for play routine (60Hz)
+        if (!getFlag(FLAG_INTERRUPT)) {
+            pushWord(regPC);
+            pushByte(regP & ~FLAG_BREAK);
+            setFlag(FLAG_INTERRUPT, true);
+            regPC = readWord(0xFFFE); // IRQ vector (play routine)
+        }
+        
         if (Configuration::getAudioEnabled()) {
             apu->stepFrame();
         }
     } else {
-        // Regular NES game mode
         updateCycleAccurate();
     }
 }
@@ -603,26 +607,35 @@ void WarpNES::callNSFPlayRoutine() {
     uint16_t saved_PC = regPC;
     uint8_t saved_SP = regSP;
     
-    // Set up for play routine call
-    regPC = nsf_play_addr;
+    // Set up for play routine call - use JSR simulation
     regSP = 0xFF;  // Reset stack
+    regPC = nsf_play_addr;
     
-    // Push return address
-    pushWord(0xFFFF);  // Special return address
+    // Simulate JSR by pushing return address
+    regSP--;
+    prgROM[0x0100 + regSP] = 0xFF;  // High byte of return address
+    regSP--;
+    prgROM[0x0100 + regSP] = 0xFF;  // Low byte of return address
     
-    // Execute play routine until we hit our return address
-    int max_cycles = 50000;  // Generous cycle limit
-    int apu_cycle_counter = 0;
-    
-    while (regPC != 0xFFFF && max_cycles-- > 0) {
-        executeInstruction();
+    // Execute play routine until RTS
+    int max_cycles = 10000;
+    while (max_cycles-- > 0) {
+        uint8_t opcode = readByte(regPC);
         
-        // Step APU periodically during execution
-        apu_cycle_counter++;
-        if (apu_cycle_counter >= 3) {  // APU runs at roughly 1/3 CPU speed
-            apu_cycle_counter = 0;
-            // Note: You may need to add a stepCycle method to your APU class
-            // For now, we'll just rely on the frame stepping
+        if (opcode == 0x60) {  // RTS instruction
+            // Pull return address from stack
+            regSP++;
+            uint8_t pcl = prgROM[0x0100 + regSP];
+            regSP++;
+            uint8_t pch = prgROM[0x0100 + regSP];
+            uint16_t return_addr = pcl | (pch << 8);
+            
+            if (return_addr == 0xFFFF) {
+                break;  // Our special return address
+            }
+            regPC = return_addr + 1;  // RTS adds 1
+        } else {
+            executeInstruction();
         }
     }
     
@@ -666,73 +679,85 @@ bool WarpNES::loadNSF(const char* filename) {
         return false;
     }
     
-    // Verify NSF magic
     if (strncmp(header.magic, "NESM\x1A", 5) != 0) {
         fclose(file);
         return false;
     }
     
-    // Clear all memory
+    // Clear memory
     memset(ram, 0, sizeof(ram));
     
-    // Allocate temporary NSF ROM space if needed
+    // Allocate standard NES ROM space
     if (prgROM) {
         delete[] prgROM;
     }
-    prgSize = 0x8000; // 32KB for NSF
+    prgSize = 0x8000; // 32KB
     prgROM = new uint8_t[prgSize];
     memset(prgROM, 0, prgSize);
     
-    // Read ROM data and determine where to load it
+    // Read NSF data
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     long rom_size = file_size - sizeof(header);
     
     if (rom_size > 0) {
         fseek(file, sizeof(header), SEEK_SET);
-        uint16_t load_addr = header.load_addr;
-        
-        // Read all ROM data into a buffer first
         uint8_t* rom_data = new uint8_t[rom_size];
         fread(rom_data, 1, rom_size, file);
         
-        // Load into appropriate memory areas
+        // Load NSF data into ROM starting from load_addr
+        uint16_t load_addr = header.load_addr;
         for (long i = 0; i < rom_size; i++) {
             uint16_t addr = load_addr + i;
-            
-            if (addr < 0x2000) {
-                // RAM area
-                ram[addr & 0x7FF] = rom_data[i];
-            } else if (addr >= 0x8000) {
-                // ROM area - store in prgROM
+            if (addr >= 0x8000 && addr < 0x10000) {
                 uint32_t rom_offset = addr - 0x8000;
                 if (rom_offset < prgSize) {
                     prgROM[rom_offset] = rom_data[i];
                 }
+            } else if (addr < 0x2000) {
+                ram[addr & 0x7FF] = rom_data[i];
             }
-            // Ignore writes to other areas for now
         }
+        
+        // Create interrupt vectors pointing to NSF routines
+        // Reset vector points to init routine
+        prgROM[0x7FFC] = header.init_addr & 0xFF;
+        prgROM[0x7FFD] = (header.init_addr >> 8) & 0xFF;
+        
+        // IRQ vector points to play routine  
+        prgROM[0x7FFE] = header.play_addr & 0xFF;
+        prgROM[0x7FFF] = (header.play_addr >> 8) & 0xFF;
         
         delete[] rom_data;
     }
     
     fclose(file);
     
-    // Set up NSF-specific state
+    // Set up as regular NES ROM
     isNSF = true;
     nsf_init_addr = header.init_addr;
     nsf_play_addr = header.play_addr;
     nsf_total_songs = header.total_songs;
     nsf_current_song = header.starting_song;
-    nsf_frame_counter = 0;
+    
+    // Standard NES header setup
+    nesHeader.mapper = 0;
+    nesHeader.chrROMPages = 0;
+    nesHeader.prgROMPages = 2; // 32KB
+    nesHeader.battery = false;
+    nesHeader.trainer = false;
+    nesHeader.mirroring = 0;
     
     romLoaded = true;
     
-    // Reset CPU
+    // Use normal reset
     reset();
     
-    // Initialize the starting song
-    initNSFSong(nsf_current_song);
+    // Initialize song using standard CPU execution
+    regA = nsf_current_song - 1;
+    regX = 0; // NTSC
+    regY = 0;
+    regPC = nsf_init_addr;
     
     return true;
 }
@@ -2248,55 +2273,55 @@ uint8_t WarpNES::readByte(uint16_t address) {
 }
 
 void WarpNES::writeByte(uint16_t address, uint8_t value) {
-  if (address < 0x2000) {
-    ram[address & 0x7FF] = value;
-  } else if (address < 0x4000) {
-    // PPU registers
-    ppu->writeRegister(0x2000 + (address & 0x7), value);
-  } else if (address < 0x4020) {
-    switch (address) {
-    case 0x4014:
-      ppu->writeDMA(value);
-      masterCycles += 513; // DMA cycles
-      break;
+    if (address < 0x2000) {
+        ram[address & 0x7FF] = value;
+    } else if (address < 0x4000) {
+        // PPU registers
+        ppu->writeRegister(0x2000 + (address & 0x7), value);
+    } else if (address < 0x4020) {
+        switch (address) {
+        case 0x4014:
+            ppu->writeDMA(value);
+            masterCycles += 513; // DMA cycles
+            break;
 
-    case 0x4016:
-      controller1->writeByte(value);
-      controller2->writeByte(value);
-      break;
+        case 0x4016:
+            controller1->writeByte(value);
+            controller2->writeByte(value);
+            break;
 
-    default:
-      apu->writeRegister(address, value);
-      break;
+        default:
+            apu->writeRegister(address, value);
+            break;
+        }
+    } else if (address >= 0x6000 && address < 0x8000) {
+        // SRAM area - not used in NSF
+        if (sramEnabled && sram && nesHeader.battery) {
+            uint16_t sramAddr = address - 0x6000;
+            if (sramAddr < sramSize) {
+                sram[sramAddr] = value;
+                sramDirty = true;
+            }
+        }
+    } else if (address >= 0x8000) {
+        // Mapper registers - NSF files typically don't use mappers
+        // but some might, so keep the existing mapper code
+        if (nesHeader.mapper == 1) {
+            writeMMC1Register(address, value);
+        } else if (nesHeader.mapper == 66) {
+            writeGxROMRegister(address, value);
+        } else if (nesHeader.mapper == 3) {
+            writeCNROMRegister(address, value);
+        } else if (nesHeader.mapper == 4) {
+            writeMMC3Register(address, value);
+        } else if (nesHeader.mapper == 2) {
+            writeUxROMRegister(address, value);
+        } else if (nesHeader.mapper == 9) {
+            writeMMC2Register(address, value);
+        } else if (nesHeader.mapper == 40) {
+            writeMapper40Register(address, value);
+        }
     }
-  } else if (address >= 0x6000 && address < 0x8000) {
-    // SRAM area ($6000-$7FFF)
-    if (sramEnabled && sram && nesHeader.battery) {
-      uint16_t sramAddr = address - 0x6000;
-      if (sramAddr < sramSize) {
-        sram[sramAddr] = value;
-        sramDirty = true;
-        // printf("SRAM: $%04X = $%02X\n", address, value);
-      }
-    }
-  } else if (address >= 0x8000) {
-    // Mapper registers
-    if (nesHeader.mapper == 1) {
-      writeMMC1Register(address, value);
-    } else if (nesHeader.mapper == 66) {
-      writeGxROMRegister(address, value);
-    } else if (nesHeader.mapper == 3) {
-      writeCNROMRegister(address, value);
-    } else if (nesHeader.mapper == 4) {
-      writeMMC3Register(address, value);
-    } else if (nesHeader.mapper == 2) {
-      writeUxROMRegister(address, value);
-    } else if (nesHeader.mapper == 9) {
-      writeMMC2Register(address, value);
-    } else if (nesHeader.mapper == 40) {
-      writeMapper40Register(address, value);
-    }
-  }
 }
 
 void WarpNES::scaleBuffer16(uint16_t *nesBuffer, uint16_t *screenBuffer,

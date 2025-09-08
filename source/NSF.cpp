@@ -125,7 +125,7 @@ public:
         }
         
         SDL_AudioSpec desiredSpec;
-        desiredSpec.freq = 44100;
+        desiredSpec.freq = 48000;
         desiredSpec.format = AUDIO_S8;
         desiredSpec.channels = 1;
         desiredSpec.samples = 2048;
