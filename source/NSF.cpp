@@ -125,7 +125,7 @@ public:
         }
         
         SDL_AudioSpec desiredSpec;
-        desiredSpec.freq = 48000;
+        desiredSpec.freq = 44800;
         desiredSpec.format = AUDIO_S8;
         desiredSpec.channels = 1;
         desiredSpec.samples = 2048;
@@ -156,23 +156,41 @@ public:
         startEmulationLoop();
     }
     
-    void startEmulationLoop() {
-        if (emulation_running) {
-            return; // Already running
+void startEmulationLoop() {
+    if (emulation_running) {
+        return;
+    }
+    
+    emulation_running = true;
+    emulation_thread = std::thread([this]() {
+        // Calculate NSF timing
+        double nsf_period_ms = header.ntsc_speed / 1000.0;
+        if (nsf_period_ms <= 0) {
+            nsf_period_ms = 16.667;
         }
         
-        emulation_running = true;
-        emulation_thread = std::thread([this]() {
-            while (emulation_running && is_playing) {
-                if (engine && !is_paused) {
-                    engine->update();
-                }
-                
-                // Sleep for about 1/60th of a second (16.67ms)
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        int progStartTime = SDL_GetTicks();
+        int frame = 0;
+        
+        while (emulation_running && is_playing) {
+            if (engine && !is_paused) {
+                // Call update() once per frame, just like SDL version
+                engine->update();
             }
-        });
-    }
+            
+            // Frame timing (same pattern as SDL)
+            int now = SDL_GetTicks();
+            int delay = progStartTime + int(double(frame) * nsf_period_ms) - now;
+            if (delay > 0) {
+                SDL_Delay(delay);
+            } else {
+                frame = 0;
+                progStartTime = now;
+            }
+            frame++;
+        }
+    });
+}
     
     void pause() {
         is_paused = !is_paused;

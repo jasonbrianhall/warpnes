@@ -574,26 +574,7 @@ void WarpNES::handleNMI() {
 void WarpNES::update() {
     if (!romLoaded) return;
     
-    if (isNSF) {
-        // Execute one frame of CPU
-        for (int i = 0; i < 29780; i++) { // NTSC frame cycles
-            executeInstruction();
-        }
-        
-        // Trigger IRQ for play routine (60Hz)
-        if (!getFlag(FLAG_INTERRUPT)) {
-            pushWord(regPC);
-            pushByte(regP & ~FLAG_BREAK);
-            setFlag(FLAG_INTERRUPT, true);
-            regPC = readWord(0xFFFE); // IRQ vector (play routine)
-        }
-        
-        if (Configuration::getAudioEnabled()) {
-            apu->stepFrame();
-        }
-    } else {
-        updateCycleAccurate();
-    }
+    updateCycleAccurate();
 }
 
 void WarpNES::callNSFPlayRoutine() {
