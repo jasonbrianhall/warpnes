@@ -56,46 +56,6 @@ private:
             memset(buffer, 0, len);
         }
     }
-    
-    bool createTempNESROM(const std::string& temp_filename) {
-        // Create a minimal iNES ROM header + NSF data
-        FILE* temp_file = fopen(temp_filename.c_str(), "wb");
-        if (!temp_file) {
-            return false;
-        }
-        
-        // Create minimal iNES header (16 bytes)
-        uint8_t ines_header[16] = {
-            'N', 'E', 'S', 0x1A,  // iNES signature
-            0x02,                  // 2 * 16KB PRG ROM pages
-            0x00,                  // 0 * 8KB CHR ROM pages  
-            0x00,                  // Mapper 0, no mirroring
-            0x00,                  // Mapper 0 upper nibble
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Padding
-        };
-        
-        // Write iNES header
-        fwrite(ines_header, 1, 16, temp_file);
-        
-        // Write NSF ROM data (skip NSF header, start from ROM data)
-        size_t rom_data_offset = sizeof(NSFHeader);
-        if (nsf_data.size() > rom_data_offset) {
-            fwrite(nsf_data.data() + rom_data_offset, 1, nsf_data.size() - rom_data_offset, temp_file);
-        }
-        
-        // Pad to minimum 32KB if needed
-        long current_size = ftell(temp_file) - 16; // Subtract header size
-        if (current_size < 32768) {
-            size_t padding_needed = 32768 - current_size;
-            uint8_t* padding = new uint8_t[padding_needed];
-            memset(padding, 0, padding_needed);
-            fwrite(padding, 1, padding_needed, temp_file);
-            delete[] padding;
-        }
-        
-        fclose(temp_file);
-        return true;
-    }
 
 public:
     NSFPlayer() : engine(nullptr), is_loaded(false), is_playing(false), 
@@ -108,18 +68,42 @@ public:
     }
     
     bool loadNSF(const std::string& filename) {
-        // Initialize WarpNES engine first
+        // Read NSF file first to get header info
+        FILE* file = fopen(filename.c_str(), "rb");
+        if (!file) {
+            std::cerr << "Error: Could not open NSF file" << std::endl;
+            return false;
+        }
+        
+        // Read and validate NSF header
+        if (fread(&header, sizeof(header), 1, file) != 1) {
+            std::cerr << "Error: Could not read NSF header" << std::endl;
+            fclose(file);
+            return false;
+        }
+        
+        // Verify NSF magic
+        if (strncmp(header.magic, "NESM\x1A", 5) != 0) {
+            std::cerr << "Error: Invalid NSF file format" << std::endl;
+            fclose(file);
+            return false;
+        }
+        
+        fclose(file);
+        
+        // Now initialize WarpNES engine
         engine = new WarpNES();
         
-        // Load NSF file directly using WarpNES NSF support
+        // Load NSF file using WarpNES NSF support
         if (!engine->loadNSF(filename.c_str())) {
-            std::cerr << "Error: Could not load NSF file" << std::endl;
+            std::cerr << "Error: Could not load NSF file into engine" << std::endl;
             delete engine;
             engine = nullptr;
             return false;
         }
         
-        current_song = 1; // Will be set by WarpNES
+        current_song = header.starting_song;
+        if (current_song == 0) current_song = 1; // Ensure valid song number
         is_loaded = true;
         
         std::cout << "NSF file loaded successfully" << std::endl;
@@ -127,9 +111,10 @@ public:
     }
     
     void initializeSong(int song_number) {
-        if (!engine) return;
+        if (!engine || song_number < 1 || song_number > header.total_songs) return;
         
         engine->initNSFSong(song_number);
+        current_song = song_number;
         std::cout << "Initialized song " << song_number << std::endl;
     }
     
