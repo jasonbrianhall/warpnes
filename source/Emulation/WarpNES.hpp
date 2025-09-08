@@ -142,7 +142,7 @@ public:
 
   bool loadNSF(const char* filename);
   void initNSFSong(uint8_t song_number);
-
+  void callNSFPlayRoutine();
 
 private:
   // 6502 CPU state

@@ -572,38 +572,67 @@ void WarpNES::handleNMI() {
 }
 
 void WarpNES::update() {
-  if (!romLoaded) return;
-  
-  if (isNSF) {
-    // NSF mode - call play routine at 60Hz
-    nsf_frame_counter++;
-    if (nsf_frame_counter >= 60) {  // Assuming 60Hz frame rate
-      nsf_frame_counter = 0;
-      
-      // Save current CPU state
-      uint16_t saved_pc = regPC;
-      uint8_t saved_sp = regSP;
-      
-      // Set up for play routine call
-      regPC = nsf_play_addr;
-      
-      // Execute play routine (simplified)
-      int max_cycles = 10000;
-      while (max_cycles-- > 0) {
-        uint8_t opcode = readByte(regPC);
-        if (opcode == 0x60) {  // RTS
-          break;
+    if (!romLoaded) return;
+    
+    if (isNSF) {
+        // NSF mode - call play routine at 60Hz
+        nsf_frame_counter++;
+        if (nsf_frame_counter >= 60) {
+            nsf_frame_counter = 0;
+            callNSFPlayRoutine();
         }
-        executeInstruction();
-      }
-      
-      // Update APU
-      apu->stepFrame();
+        
+        // Always step the APU frame for NSF
+        if (Configuration::getAudioEnabled()) {
+            apu->stepFrame();
+        }
+    } else {
+        // Regular NES game mode
+        updateCycleAccurate();
     }
-  } else {
-    // Regular NES game mode
-    updateCycleAccurate();
-  }
+}
+
+void WarpNES::callNSFPlayRoutine() {
+    if (!isNSF) return;
+    
+    // Save current CPU state
+    uint8_t saved_A = regA;
+    uint8_t saved_X = regX;
+    uint8_t saved_Y = regY;
+    uint8_t saved_P = regP;
+    uint16_t saved_PC = regPC;
+    uint8_t saved_SP = regSP;
+    
+    // Set up for play routine call
+    regPC = nsf_play_addr;
+    regSP = 0xFF;  // Reset stack
+    
+    // Push return address
+    pushWord(0xFFFF);  // Special return address
+    
+    // Execute play routine until we hit our return address
+    int max_cycles = 50000;  // Generous cycle limit
+    int apu_cycle_counter = 0;
+    
+    while (regPC != 0xFFFF && max_cycles-- > 0) {
+        executeInstruction();
+        
+        // Step APU periodically during execution
+        apu_cycle_counter++;
+        if (apu_cycle_counter >= 3) {  // APU runs at roughly 1/3 CPU speed
+            apu_cycle_counter = 0;
+            // Note: You may need to add a stepCycle method to your APU class
+            // For now, we'll just rely on the frame stepping
+        }
+    }
+    
+    // Restore CPU state
+    regA = saved_A;
+    regX = saved_X;
+    regY = saved_Y;
+    regP = saved_P;
+    regPC = saved_PC;
+    regSP = saved_SP;
 }
 
 bool WarpNES::loadNSF(const char* filename) {
@@ -643,10 +672,18 @@ bool WarpNES::loadNSF(const char* filename) {
         return false;
     }
     
-    // Clear memory - FIXED: use ram instead of memory
+    // Clear all memory
     memset(ram, 0, sizeof(ram));
     
-    // Read ROM data and load it at the specified address
+    // Allocate temporary NSF ROM space if needed
+    if (prgROM) {
+        delete[] prgROM;
+    }
+    prgSize = 0x8000; // 32KB for NSF
+    prgROM = new uint8_t[prgSize];
+    memset(prgROM, 0, prgSize);
+    
+    // Read ROM data and determine where to load it
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     long rom_size = file_size - sizeof(header);
@@ -655,16 +692,28 @@ bool WarpNES::loadNSF(const char* filename) {
         fseek(file, sizeof(header), SEEK_SET);
         uint16_t load_addr = header.load_addr;
         
-        // Load ROM data into RAM - FIXED: use ram and bounds check properly
-        for (long i = 0; i < rom_size && (load_addr + i) < 0x10000; i++) {
-            int byte = fgetc(file);
-            if (byte == EOF) break;
+        // Read all ROM data into a buffer first
+        uint8_t* rom_data = new uint8_t[rom_size];
+        fread(rom_data, 1, rom_size, file);
+        
+        // Load into appropriate memory areas
+        for (long i = 0; i < rom_size; i++) {
+            uint16_t addr = load_addr + i;
             
-            // Only load into RAM area, not ROM area
-            if ((load_addr + i) < 0x2000) {
-                ram[(load_addr + i) & 0x7FF] = (uint8_t)byte;
+            if (addr < 0x2000) {
+                // RAM area
+                ram[addr & 0x7FF] = rom_data[i];
+            } else if (addr >= 0x8000) {
+                // ROM area - store in prgROM
+                uint32_t rom_offset = addr - 0x8000;
+                if (rom_offset < prgSize) {
+                    prgROM[rom_offset] = rom_data[i];
+                }
             }
+            // Ignore writes to other areas for now
         }
+        
+        delete[] rom_data;
     }
     
     fclose(file);
@@ -677,7 +726,7 @@ bool WarpNES::loadNSF(const char* filename) {
     nsf_current_song = header.starting_song;
     nsf_frame_counter = 0;
     
-    romLoaded = true; // Mark as loaded so reset() works
+    romLoaded = true;
     
     // Reset CPU
     reset();
@@ -694,26 +743,40 @@ void WarpNES::initNSFSong(uint8_t song_number) {
     nsf_current_song = song_number;
     nsf_frame_counter = 0;
     
-    // Set up CPU state for NSF init call - FIXED: use regA, regX, etc.
+    // Save current CPU state
+    uint8_t saved_A = regA;
+    uint8_t saved_X = regX;
+    uint8_t saved_Y = regY;
+    uint8_t saved_P = regP;
+    uint16_t saved_PC = regPC;
+    uint8_t saved_SP = regSP;
+    
+    // Set up CPU state for NSF init call
     regA = song_number - 1;  // 0-based song number
     regX = 0;                // NTSC flag
     regY = 0;
     regSP = 0xFF;
+    regP = 0x24;             // Standard processor status
     regPC = nsf_init_addr;
     
-    // Execute init routine (simplified - run until RTS)
-    int max_cycles = 100000;  // Prevent infinite loops
-    while (max_cycles-- > 0) {
-        uint8_t opcode = readByte(regPC); // FIXED: use readByte instead of memory[]
-        
-        // If we hit RTS (0x60), init is done
-        if (opcode == 0x60) {
-            break;
-        }
-        
-        // Execute one instruction
+    // Push a return address onto the stack
+    pushWord(0xFFFF);  // Special return address
+    
+    // Execute init routine until we hit our return address
+    int max_cycles = 100000;
+    while (regPC != 0xFFFF && max_cycles-- > 0) {
         executeInstruction();
     }
+    
+    // Restore CPU state
+    regA = saved_A;
+    regX = saved_X;
+    regY = saved_Y;
+    regP = saved_P;
+    regPC = saved_PC;
+    regSP = saved_SP;
+    
+    printf("NSF: Initialized song %d\n", song_number);
 }
 
 void WarpNES::updateFrameBased() {
