@@ -72,6 +72,13 @@ WarpNES::WarpNES()
   if (nesHeader.battery) {
     loadSRAM();
   }
+    isNSF = false;
+    nsf_init_addr = 0;
+    nsf_play_addr = 0;
+    nsf_total_songs = 0;
+    nsf_current_song = 0;
+    nsf_frame_counter = 0;
+  
 }
 
 WarpNES::~WarpNES() {
@@ -565,9 +572,148 @@ void WarpNES::handleNMI() {
 }
 
 void WarpNES::update() {
-  if (!romLoaded)
-    return;
-  updateCycleAccurate();
+  if (!romLoaded) return;
+  
+  if (isNSF) {
+    // NSF mode - call play routine at 60Hz
+    nsf_frame_counter++;
+    if (nsf_frame_counter >= 60) {  // Assuming 60Hz frame rate
+      nsf_frame_counter = 0;
+      
+      // Save current CPU state
+      uint16_t saved_pc = regPC;
+      uint8_t saved_sp = regSP;
+      
+      // Set up for play routine call
+      regPC = nsf_play_addr;
+      
+      // Execute play routine (simplified)
+      int max_cycles = 10000;
+      while (max_cycles-- > 0) {
+        uint8_t opcode = readByte(regPC);
+        if (opcode == 0x60) {  // RTS
+          break;
+        }
+        executeInstruction();
+      }
+      
+      // Update APU
+      apu->stepFrame();
+    }
+  } else {
+    // Regular NES game mode
+    updateCycleAccurate();
+  }
+}
+
+bool WarpNES::loadNSF(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        return false;
+    }
+    
+    // Read NSF header
+    struct NSFHeader {
+        char magic[5];
+        uint8_t version;
+        uint8_t total_songs;
+        uint8_t starting_song;
+        uint16_t load_addr;
+        uint16_t init_addr;
+        uint16_t play_addr;
+        char title[32];
+        char artist[32];
+        char copyright[32];
+        uint16_t ntsc_speed;
+        uint8_t bankswitch[8];
+        uint16_t pal_speed;
+        uint8_t pal_ntsc_bits;
+        uint8_t extra_sound;
+        uint8_t expansion[4];
+    } header;
+    
+    if (fread(&header, sizeof(header), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+    
+    // Verify NSF magic
+    if (strncmp(header.magic, "NESM\x1A", 5) != 0) {
+        fclose(file);
+        return false;
+    }
+    
+    // Clear memory - FIXED: use ram instead of memory
+    memset(ram, 0, sizeof(ram));
+    
+    // Read ROM data and load it at the specified address
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    long rom_size = file_size - sizeof(header);
+    
+    if (rom_size > 0) {
+        fseek(file, sizeof(header), SEEK_SET);
+        uint16_t load_addr = header.load_addr;
+        
+        // Load ROM data into RAM - FIXED: use ram and bounds check properly
+        for (long i = 0; i < rom_size && (load_addr + i) < 0x10000; i++) {
+            int byte = fgetc(file);
+            if (byte == EOF) break;
+            
+            // Only load into RAM area, not ROM area
+            if ((load_addr + i) < 0x2000) {
+                ram[(load_addr + i) & 0x7FF] = (uint8_t)byte;
+            }
+        }
+    }
+    
+    fclose(file);
+    
+    // Set up NSF-specific state
+    isNSF = true;
+    nsf_init_addr = header.init_addr;
+    nsf_play_addr = header.play_addr;
+    nsf_total_songs = header.total_songs;
+    nsf_current_song = header.starting_song;
+    nsf_frame_counter = 0;
+    
+    romLoaded = true; // Mark as loaded so reset() works
+    
+    // Reset CPU
+    reset();
+    
+    // Initialize the starting song
+    initNSFSong(nsf_current_song);
+    
+    return true;
+}
+
+void WarpNES::initNSFSong(uint8_t song_number) {
+    if (!isNSF) return;
+    
+    nsf_current_song = song_number;
+    nsf_frame_counter = 0;
+    
+    // Set up CPU state for NSF init call - FIXED: use regA, regX, etc.
+    regA = song_number - 1;  // 0-based song number
+    regX = 0;                // NTSC flag
+    regY = 0;
+    regSP = 0xFF;
+    regPC = nsf_init_addr;
+    
+    // Execute init routine (simplified - run until RTS)
+    int max_cycles = 100000;  // Prevent infinite loops
+    while (max_cycles-- > 0) {
+        uint8_t opcode = readByte(regPC); // FIXED: use readByte instead of memory[]
+        
+        // If we hit RTS (0x60), init is done
+        if (opcode == 0x60) {
+            break;
+        }
+        
+        // Execute one instruction
+        executeInstruction();
+    }
 }
 
 void WarpNES::updateFrameBased() {

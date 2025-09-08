@@ -108,79 +108,28 @@ public:
     }
     
     bool loadNSF(const std::string& filename) {
-        FILE* file = fopen(filename.c_str(), "rb");
-        if (!file) {
-            std::cerr << "Error: Could not open file " << filename << std::endl;
-            return false;
-        }
-        
-        // Read header
-        if (fread(&header, sizeof(NSFHeader), 1, file) != 1) {
-            std::cerr << "Error: Could not read NSF header" << std::endl;
-            fclose(file);
-            return false;
-        }
-        
-        // Verify magic number
-        if (strncmp(header.magic, "NESM\x1A", 5) != 0) {
-            std::cerr << "Error: Invalid NSF file format" << std::endl;
-            fclose(file);
-            return false;
-        }
-        
-        // Read entire file
-        fseek(file, 0, SEEK_END);
-        long file_size = ftell(file);
-        fseek(file, 0, SEEK_SET);
-        
-        nsf_data.resize(file_size);
-        fread(nsf_data.data(), 1, file_size, file);
-        fclose(file);
-        
-        // Create a temporary NES ROM file that WarpNES can load
-        std::string temp_rom_file = "/tmp/nsf_temp_" + std::to_string(getpid()) + ".nes";
-        if (!createTempNESROM(temp_rom_file)) {
-            std::cerr << "Error: Could not create temporary NES ROM from NSF" << std::endl;
-            return false;
-        }
-        
-        // Initialize WarpNES engine
+        // Initialize WarpNES engine first
         engine = new WarpNES();
         
-        // Load the temporary ROM file using loadROM method
-        if (!engine->loadROM(temp_rom_file.c_str())) {
-            std::cerr << "Error: Could not load NSF into emulator" << std::endl;
+        // Load NSF file directly using WarpNES NSF support
+        if (!engine->loadNSF(filename.c_str())) {
+            std::cerr << "Error: Could not load NSF file" << std::endl;
             delete engine;
             engine = nullptr;
-            // Clean up temp file
-            unlink(temp_rom_file.c_str());
             return false;
         }
         
-        // Clean up temp file
-        unlink(temp_rom_file.c_str());
-        
-        current_song = header.starting_song;
+        current_song = 1; // Will be set by WarpNES
         is_loaded = true;
         
-        // Initialize the song
-        initializeSong(current_song);
-        
+        std::cout << "NSF file loaded successfully" << std::endl;
         return true;
     }
     
     void initializeSong(int song_number) {
         if (!engine) return;
         
-        // Reset the engine
-        engine->reset();
-        
-        // TODO: Set up NSF-specific initialization
-        // This would involve:
-        // 1. Setting A register to song number (0-based)
-        // 2. Setting X register to PAL/NTSC flag
-        // 3. Calling the init routine at header.init_addr
-        
+        engine->initNSFSong(song_number);
         std::cout << "Initialized song " << song_number << std::endl;
     }
     

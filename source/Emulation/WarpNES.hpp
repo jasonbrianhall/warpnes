@@ -140,6 +140,9 @@ public:
   PPU* getPPU() { return ppu; }
   const std::string& getROMBaseName() const { return romBaseName; }
 
+  bool loadNSF(const char* filename);
+  void initNSFSong(uint8_t song_number);
+
 
 private:
   // 6502 CPU state
@@ -513,6 +516,13 @@ private:
   void writeMapper40Register(uint16_t address, uint8_t value);
   void stepMapper40IRQ();
   void checkMapper40IRQ();
+
+  bool isNSF;
+  uint16_t nsf_init_addr;
+  uint16_t nsf_play_addr;
+  uint8_t nsf_total_songs;
+  uint8_t nsf_current_song;
+  int nsf_frame_counter;
 
 };
 
