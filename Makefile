@@ -1,5 +1,6 @@
 # Makefile for warpnes with SDL, Allegro, and GTK3 Support for Linux and Windows
 # Supports triple builds: SDL (modern), Allegro (retro), and GTK3 (desktop) versions
+# Added NSF Player CLI support
 # Last modification: $(shell date +%m/%d/%Y)
 
 # Compiler settings
@@ -81,7 +82,6 @@ COMMON_SOURCE_FILES = \
     source/Emulation/MMC3.cpp \
     source/Emulation/Mapper40.cpp
 
-
 # Platform-specific source files
 SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/SDLMainWindow.cpp \
@@ -94,6 +94,11 @@ ALLEGRO_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
 
 GTK3_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/GTKMainWindow.cpp \
+    source/Emulation/ControllerSDL.cpp
+
+# NSF Player source files (uses SDL for audio only)
+NSF_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
+    source/NSF.cpp \
     source/Emulation/ControllerSDL.cpp
 
 # Object files for SDL versions
@@ -114,6 +119,12 @@ OBJS_WIN_GTK3 = $(patsubst %.cpp,%.win.gtk3.o,$(GTK3_SOURCE_FILES))
 OBJS_LINUX_GTK3_DEBUG = $(patsubst %.cpp,%.gtk3.debug.o,$(GTK3_SOURCE_FILES))
 OBJS_WIN_GTK3_DEBUG = $(patsubst %.cpp,%.win.gtk3.debug.o,$(GTK3_SOURCE_FILES))
 
+# Object files for NSF Player versions
+OBJS_LINUX_NSF = $(patsubst %.cpp,%.nsf.o,$(NSF_SOURCE_FILES))
+OBJS_WIN_NSF = $(patsubst %.cpp,%.win.nsf.o,$(NSF_SOURCE_FILES))
+OBJS_LINUX_NSF_DEBUG = $(patsubst %.cpp,%.nsf.debug.o,$(NSF_SOURCE_FILES))
+OBJS_WIN_NSF_DEBUG = $(patsubst %.cpp,%.win.nsf.debug.o,$(NSF_SOURCE_FILES))
+
 # Target executables - SDL versions
 TARGET_LINUX_SDL = warpnes-sdl
 TARGET_WIN_SDL = warpnes-sdl.exe
@@ -132,6 +143,12 @@ TARGET_WIN_GTK3 = warpnes-gtk3.exe
 TARGET_LINUX_GTK3_DEBUG = warpnes-gtk3_debug
 TARGET_WIN_GTK3_DEBUG = warpnes-gtk3_debug.exe
 
+# Target executables - NSF Player versions
+TARGET_LINUX_NSF = warpnes-nsf
+TARGET_WIN_NSF = warpnes-nsf.exe
+TARGET_LINUX_NSF_DEBUG = warpnes-nsf_debug
+TARGET_WIN_NSF_DEBUG = warpnes-nsf_debug.exe
+
 # Build directories
 BUILD_DIR = build
 BUILD_DIR_LINUX_SDL = $(BUILD_DIR)/linux-sdl
@@ -146,6 +163,10 @@ BUILD_DIR_LINUX_GTK3 = $(BUILD_DIR)/linux-gtk3
 BUILD_DIR_WIN_GTK3 = $(BUILD_DIR)/windows-gtk3
 BUILD_DIR_LINUX_GTK3_DEBUG = $(BUILD_DIR)/linux-gtk3-debug
 BUILD_DIR_WIN_GTK3_DEBUG = $(BUILD_DIR)/windows-gtk3-debug
+BUILD_DIR_LINUX_NSF = $(BUILD_DIR)/linux-nsf
+BUILD_DIR_WIN_NSF = $(BUILD_DIR)/windows-nsf
+BUILD_DIR_LINUX_NSF_DEBUG = $(BUILD_DIR)/linux-nsf-debug
+BUILD_DIR_WIN_NSF_DEBUG = $(BUILD_DIR)/windows-nsf-debug
 
 # Create necessary directories
 $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/source/SMB \
@@ -159,18 +180,22 @@ $(shell mkdir -p $(BUILD_DIR_LINUX_SDL)/source/Emulation $(BUILD_DIR_LINUX_SDL)/
 	$(BUILD_DIR_LINUX_GTK3)/source/Emulation $(BUILD_DIR_LINUX_GTK3)/source/SMB \
 	$(BUILD_DIR_WIN_GTK3)/source/Emulation $(BUILD_DIR_WIN_GTK3)/source/SMB \
 	$(BUILD_DIR_LINUX_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_GTK3_DEBUG)/source/SMB \
-	$(BUILD_DIR_WIN_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_WIN_GTK3_DEBUG)/source/SMB)
+	$(BUILD_DIR_WIN_GTK3_DEBUG)/source/Emulation $(BUILD_DIR_WIN_GTK3_DEBUG)/source/SMB \
+	$(BUILD_DIR_LINUX_NSF)/source/Emulation $(BUILD_DIR_LINUX_NSF)/source/SMB \
+	$(BUILD_DIR_WIN_NSF)/source/Emulation $(BUILD_DIR_WIN_NSF)/source/SMB \
+	$(BUILD_DIR_LINUX_NSF_DEBUG)/source/Emulation $(BUILD_DIR_LINUX_NSF_DEBUG)/source/SMB \
+	$(BUILD_DIR_WIN_NSF_DEBUG)/source/Emulation $(BUILD_DIR_WIN_NSF_DEBUG)/source/SMB)
 
 # Default target - build Allegro versions for Linux (unchanged for compatibility)
 .PHONY: all
-all: linux-sdl linux-allegro linux-gtk3
+all: linux-sdl linux-allegro linux-gtk3 linux-nsf
 
 # Main build targets
 .PHONY: linux
-linux: linux-sdl linux-allegro linux-gtk3
+linux: linux-sdl linux-allegro linux-gtk3 linux-nsf
 
 .PHONY: windows  
-windows: windows-sdl windows-gtk3
+windows: windows-sdl windows-gtk3 windows-nsf
 
 # SDL-specific targets
 .PHONY: linux-sdl
@@ -193,9 +218,16 @@ linux-gtk3: $(BUILD_DIR_LINUX_GTK3)/$(TARGET_LINUX_GTK3)
 .PHONY: windows-gtk3
 windows-gtk3: $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3) collect-dlls-win-gtk3
 
+# NSF Player targets
+.PHONY: linux-nsf
+linux-nsf: $(BUILD_DIR_LINUX_NSF)/$(TARGET_LINUX_NSF)
+
+.PHONY: windows-nsf
+windows-nsf: $(BUILD_DIR_WIN_NSF)/$(TARGET_WIN_NSF) collect-dlls-win-nsf
+
 # Debug targets
 .PHONY: debug
-debug: linux-sdl-debug windows-sdl-debug linux-allegro-debug windows-allegro-debug linux-gtk3-debug windows-gtk3-debug
+debug: linux-sdl-debug windows-sdl-debug linux-allegro-debug windows-allegro-debug linux-gtk3-debug windows-gtk3-debug linux-nsf-debug windows-nsf-debug
 
 .PHONY: linux-sdl-debug
 linux-sdl-debug: $(BUILD_DIR_LINUX_SDL_DEBUG)/$(TARGET_LINUX_SDL_DEBUG)
@@ -214,6 +246,12 @@ linux-gtk3-debug: $(BUILD_DIR_LINUX_GTK3_DEBUG)/$(TARGET_LINUX_GTK3_DEBUG)
 
 .PHONY: windows-gtk3-debug
 windows-gtk3-debug: $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG) collect-dlls-win-gtk3-debug
+
+.PHONY: linux-nsf-debug
+linux-nsf-debug: $(BUILD_DIR_LINUX_NSF_DEBUG)/$(TARGET_LINUX_NSF_DEBUG)
+
+.PHONY: windows-nsf-debug
+windows-nsf-debug: $(BUILD_DIR_WIN_NSF_DEBUG)/$(TARGET_WIN_NSF_DEBUG) collect-dlls-win-nsf-debug
 
 #
 # DLL collection targets for Windows builds
@@ -272,9 +310,27 @@ collect-dlls-win-gtk3-debug: $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG
 		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
 	fi
 
+.PHONY: collect-dlls-win-nsf
+collect-dlls-win-nsf: $(BUILD_DIR_WIN_NSF)/$(TARGET_WIN_NSF)
+	@echo "Collecting DLLs for Windows NSF build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_NSF)/$(TARGET_WIN_NSF) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_NSF); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
+.PHONY: collect-dlls-win-nsf-debug
+collect-dlls-win-nsf-debug: $(BUILD_DIR_WIN_NSF_DEBUG)/$(TARGET_WIN_NSF_DEBUG)
+	@echo "Collecting DLLs for Windows NSF debug build..."
+	@if [ -f build/windows-sdl/collect_dlls.sh ]; then \
+		build/windows-sdl/collect_dlls.sh $(BUILD_DIR_WIN_NSF_DEBUG)/$(TARGET_WIN_NSF_DEBUG) $(DLL_SOURCE_DIR) $(BUILD_DIR_WIN_NSF_DEBUG); \
+	else \
+		echo "Warning: collect_dlls.sh not found. Please ensure it exists in build/windows-sdl/"; \
+	fi
+
 # Convenience target to collect all DLLs
 .PHONY: collect-dlls-all
-collect-dlls-all: collect-dlls-win-sdl collect-dlls-win-allegro collect-dlls-win-gtk3 collect-dlls-win-sdl-debug collect-dlls-win-allegro-debug collect-dlls-win-gtk3-debug
+collect-dlls-all: collect-dlls-win-sdl collect-dlls-win-allegro collect-dlls-win-gtk3 collect-dlls-win-nsf collect-dlls-win-sdl-debug collect-dlls-win-allegro-debug collect-dlls-win-gtk3-debug collect-dlls-win-nsf-debug
 
 #
 # Linux SDL build targets
@@ -420,6 +476,54 @@ $(BUILD_DIR_WIN_GTK3_DEBUG)/%.win.gtk3.debug.o: %.cpp
 	@echo "Compiling $< for Windows GTK3 debug..."
 	$(CXX_WIN) $(CXXFLAGS_WIN_GTK3_DEBUG) -c $< -o $@
 
+#
+# Linux NSF Player build targets
+#
+$(BUILD_DIR_LINUX_NSF)/$(TARGET_LINUX_NSF): $(addprefix $(BUILD_DIR_LINUX_NSF)/,$(OBJS_LINUX_NSF))
+	@echo "Linking Linux NSF Player executable..."
+	$(CXX_LINUX) $^ -o $@ $(LDFLAGS_LINUX_SDL)
+	@echo "Linux NSF Player build complete: $@"
+
+$(BUILD_DIR_LINUX_NSF)/%.nsf.o: %.cpp
+	@echo "Compiling $< for Linux NSF Player..."
+	$(CXX_LINUX) $(CXXFLAGS_LINUX_SDL) -c $< -o $@
+
+#
+# Linux NSF Player debug build targets
+#
+$(BUILD_DIR_LINUX_NSF_DEBUG)/$(TARGET_LINUX_NSF_DEBUG): $(addprefix $(BUILD_DIR_LINUX_NSF_DEBUG)/,$(OBJS_LINUX_NSF_DEBUG))
+	@echo "Linking Linux NSF Player debug executable..."
+	$(CXX_LINUX) $^ -o $@ $(LDFLAGS_LINUX_SDL)
+	@echo "Linux NSF Player debug build complete: $@"
+
+$(BUILD_DIR_LINUX_NSF_DEBUG)/%.nsf.debug.o: %.cpp
+	@echo "Compiling $< for Linux NSF Player debug..."
+	$(CXX_LINUX) $(CXXFLAGS_LINUX_SDL_DEBUG) -c $< -o $@
+
+#
+# Windows NSF Player build targets
+#
+$(BUILD_DIR_WIN_NSF)/$(TARGET_WIN_NSF): $(addprefix $(BUILD_DIR_WIN_NSF)/,$(OBJS_WIN_NSF))
+	@echo "Linking Windows NSF Player executable..."
+	$(CXX_WIN) $^ -o $@ $(LDFLAGS_WIN_SDL)
+	@echo "Windows NSF Player build complete: $@"
+
+$(BUILD_DIR_WIN_NSF)/%.win.nsf.o: %.cpp
+	@echo "Compiling $< for Windows NSF Player..."
+	$(CXX_WIN) $(CXXFLAGS_WIN_SDL) -c $< -o $@
+
+#
+# Windows NSF Player debug build targets
+#
+$(BUILD_DIR_WIN_NSF_DEBUG)/$(TARGET_WIN_NSF_DEBUG): $(addprefix $(BUILD_DIR_WIN_NSF_DEBUG)/,$(OBJS_WIN_NSF_DEBUG))
+	@echo "Linking Windows NSF Player debug executable..."
+	$(CXX_WIN) $^ -o $@ $(LDFLAGS_WIN_SDL)
+	@echo "Windows NSF Player debug build complete: $@"
+
+$(BUILD_DIR_WIN_NSF_DEBUG)/%.win.nsf.debug.o: %.cpp
+	@echo "Compiling $< for Windows NSF Player debug..."
+	$(CXX_WIN) $(CXXFLAGS_WIN_SDL_DEBUG) -c $< -o $@
+
 # Check dependencies target
 .PHONY: check-deps
 check-deps:
@@ -482,6 +586,10 @@ clean:
 	rm -f $(BUILD_DIR_WIN_GTK3)/$(TARGET_WIN_GTK3) 2>/dev/null || true
 	rm -f $(BUILD_DIR_LINUX_GTK3_DEBUG)/$(TARGET_LINUX_GTK3_DEBUG) 2>/dev/null || true
 	rm -f $(BUILD_DIR_WIN_GTK3_DEBUG)/$(TARGET_WIN_GTK3_DEBUG) 2>/dev/null || true
+	rm -f $(BUILD_DIR_LINUX_NSF)/$(TARGET_LINUX_NSF) 2>/dev/null || true
+	rm -f $(BUILD_DIR_WIN_NSF)/$(TARGET_WIN_NSF) 2>/dev/null || true
+	rm -f $(BUILD_DIR_LINUX_NSF_DEBUG)/$(TARGET_LINUX_NSF_DEBUG) 2>/dev/null || true
+	rm -f $(BUILD_DIR_WIN_NSF_DEBUG)/$(TARGET_WIN_NSF_DEBUG) 2>/dev/null || true
 
 # Test builds (quick compilation test)
 .PHONY: test-builds
@@ -493,12 +601,16 @@ test-builds:
 	@$(MAKE) linux-allegro >/dev/null 2>&1 && echo "  ✓ Linux Allegro builds successfully" || echo "  ✗ Linux Allegro build failed"
 	@echo "Testing Linux GTK3 build..."
 	@$(MAKE) linux-gtk3 >/dev/null 2>&1 && echo "  ✓ Linux GTK3 builds successfully" || echo "  ✗ Linux GTK3 build failed"
+	@echo "Testing Linux NSF Player build..."
+	@$(MAKE) linux-nsf >/dev/null 2>&1 && echo "  ✓ Linux NSF Player builds successfully" || echo "  ✗ Linux NSF Player build failed"
 	@echo "Testing Windows SDL build..."
 	@$(MAKE) windows-sdl >/dev/null 2>&1 && echo "  ✓ Windows SDL builds successfully" || echo "  ✗ Windows SDL build failed"
 	@echo "Testing Windows Allegro build..."
 	@$(MAKE) windows-allegro >/dev/null 2>&1 && echo "  ✓ Windows Allegro builds successfully" || echo "  ✗ Windows Allegro build failed"
 	@echo "Testing Windows GTK3 build..."
 	@$(MAKE) windows-gtk3 >/dev/null 2>&1 && echo "  ✓ Windows GTK3 builds successfully" || echo "  ✗ Windows GTK3 build failed"
+	@echo "Testing Windows NSF Player build..."
+	@$(MAKE) windows-nsf >/dev/null 2>&1 && echo "  ✓ Windows NSF Player builds successfully" || echo "  ✗ Windows NSF Player build failed"
 
 # Debug what files the makefile thinks it should build
 .PHONY: debug-files
@@ -521,31 +633,38 @@ debug-files:
 	@echo "GTK3 Object Files (Linux):"
 	@for file in $(OBJS_LINUX_GTK3); do echo "  $file"; done
 	@echo ""
-	@echo "GTK3 Object Files (Windows):"
-	@for file in $(OBJS_WIN_GTK3); do echo "  $file"; done
+	@echo "NSF Player Source Files:"
+	@for file in $(NSF_SOURCE_FILES); do echo "  $file"; done
+	@echo ""
+	@echo "NSF Player Object Files (Linux):"
+	@for file in $(OBJS_LINUX_NSF); do echo "  $file"; done
 
 # Help target
 .PHONY: help
 help:
 	@echo "Available targets:"
-	@echo "  make               - Build warpnes for Linux with SDL, Allegro, and GTK3 (default)"
-	@echo "  make linux         - Build SDL, Allegro, and GTK3 versions for Linux"
-	@echo "  make windows       - Build SDL and GTK3 versions for Windows"
+	@echo "  make               - Build warpnes for Linux with SDL, Allegro, GTK3, and NSF Player (default)"
+	@echo "  make linux         - Build SDL, Allegro, GTK3, and NSF Player versions for Linux"
+	@echo "  make windows       - Build SDL, GTK3, and NSF Player versions for Windows"
 	@echo ""
 	@echo "  make linux-sdl     - Build warpnes for Linux with SDL"
 	@echo "  make linux-allegro - Build warpnes for Linux with Allegro"
 	@echo "  make linux-gtk3    - Build warpnes for Linux with GTK3"
+	@echo "  make linux-nsf     - Build NSF Player for Linux"
 	@echo "  make windows-sdl   - Build warpnes for Windows with SDL (requires MinGW + DLLs)"
 	@echo "  make windows-allegro - Build warpnes for Windows with Allegro (requires MinGW + DLLs)"
 	@echo "  make windows-gtk3  - Build warpnes for Windows with GTK3 (requires MinGW + DLLs)"
+	@echo "  make windows-nsf   - Build NSF Player for Windows (requires MinGW + DLLs)"
 	@echo ""
 	@echo "  make debug         - Build debug versions for all platforms"
 	@echo "  make linux-sdl-debug     - Build Linux SDL with debug symbols"
 	@echo "  make linux-allegro-debug - Build Linux Allegro with debug symbols"
 	@echo "  make linux-gtk3-debug    - Build Linux GTK3 with debug symbols"
+	@echo "  make linux-nsf-debug     - Build Linux NSF Player with debug symbols"
 	@echo "  make windows-sdl-debug   - Build Windows SDL with debug symbols"
 	@echo "  make windows-allegro-debug - Build Windows Allegro with debug symbols"
 	@echo "  make windows-gtk3-debug  - Build Windows GTK3 with debug symbols"
+	@echo "  make windows-nsf-debug   - Build Windows NSF Player with debug symbols"
 	@echo ""
 	@echo "  make check-deps    - Check for required dependencies"
 	@echo "  make install-deps  - Install dependencies (Ubuntu/Debian)"
@@ -555,4 +674,4 @@ help:
 	@echo "  make debug-files   - Show source and object file lists"
 	@echo ""
 	@echo "Note: Windows builds require MinGW cross-compilation setup"
-	@echo "  - Windows GTK3 uses the same collect_dlls.sh script as SDL"
+	@echo "  - NSF Player uses SDL audio subsystem only (no video)"
