@@ -113,7 +113,7 @@ public:
     bool isFrameComplete() const { return frameComplete; }
     void resetFrame() { frameComplete = false; currentRenderScanline = 0; }
     uint16_t getCurrentPixelColor(int x, int y);
-    void renderSingleSprite(int scanline, int spriteIndex, bool behindBackground);
+    void renderSingleSprite(int scanline, int spriteIndex, bool behindBackground, bool mapperVisibleFetch = true);
 
 private:
     WarpNES& engine;
@@ -210,6 +210,9 @@ private:
     uint16_t getNametableIndex(uint16_t address);
     uint8_t readByte(uint16_t address);
     uint8_t readCHR(int index);
+    uint8_t peekCHR(int index);
+    int spriteHeight() const;
+    uint16_t spritePatternAddr(uint8_t tileIndex, int row) const;
     uint8_t readCHRFromBank(int index, uint8_t chr_bank);  // Add this method
     uint8_t readDataRegister();
     void renderTile(uint32_t* buffer, int index, int xOffset, int yOffset);

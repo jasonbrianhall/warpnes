@@ -980,8 +980,10 @@ void WarpNES::checkSprite0Hit(int scanline, int cycle) {
 
   sprite0_y++; // Sprite delay
 
+  int spriteHeight = (ppu->getControl() & 0x20) ? 16 : 8;
+
   // Simple collision detection - if we're in sprite 0's area
-  if (scanline >= sprite0_y && scanline < sprite0_y + 8) {
+  if (scanline >= sprite0_y && scanline < sprite0_y + spriteHeight) {
     if (cycle >= sprite0_x && cycle < sprite0_x + 8) {
       // WE GOT A HIT!
       ppu->setSprite0Hit(true);

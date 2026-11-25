@@ -16,7 +16,9 @@ extern const uint32_t* paletteRGB;
 
 void WarpNES::updateMMC2Banks() {
 
-  uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks (0x1000 = 4096)
+  uint32_t totalCHRBanks = chrSize / 0x1000; // 4KB banks (0x1000 = 4096)
+  if (totalCHRBanks == 0)
+    totalCHRBanks = 1;
 
   // Update current banks based on latch states
   mmc2.currentCHRBank0 =
@@ -60,57 +62,35 @@ void WarpNES::writeMMC2Register(uint16_t address, uint8_t value) {
   case 0xF000:
     // Mirroring ($F000-$FFFF)
     mmc2.mirroring = value & 0x01; // 0=vertical, 1=horizontal
+    // Applied by PPU::getNametableIndex() via getMMC2Mirroring()
     break;
   }
 }
 
 void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
-  // Only respond to CHR fetches in $0000–$1FFF
-  if (address > 0x1FFF)
+  // The MMC2 watches the PPU address bus. After the PPU fetches the high
+  // bitplane of tile $FD or $FE, the corresponding latch flips. The switch
+  // takes effect for the *next* fetch (the trigger tile itself comes from the
+  // old bank), so this must be called after the CHR byte has been read.
+  //
+  //   PPU $0FD8        -> latch 0 = $FD   (only this exact address on MMC2)
+  //   PPU $0FE8        -> latch 0 = $FE
+  //   PPU $1FD8-$1FDF  -> latch 1 = $FD
+  //   PPU $1FE8-$1FEF  -> latch 1 = $FE
+  (void)tileID;
+  if (address >= 0x2000)
     return;
 
-  uint8_t h = address >> 8;     // High byte
-  uint8_t l = address & 0xF0;   // Align to tile boundary
-
-  // Must be in pattern table area and accessing tile data
-  if ((h & 0xF) != 0xF)
-    return;
-
-  if (h < 0x10) {
-    // Pattern table 0 ($0000–$0FFF)
-    if (l == 0xD0) {
-      // Accessing tile $FD
-      if (mmc2.latch0 != false) {
-        mmc2.latch0 = false;
-        updateMMC2Banks();
-      }
-    } else if (l == 0xE0) {
-      // Accessing tile $FE
-      if (mmc2.latch0 != true) {
-        mmc2.latch0 = true;
-        updateMMC2Banks();
-      }
-    }
-  } else {
-    // Pattern table 1 ($1000–$1FFF)
-    if (l == 0xD0) {
-      // Accessing tile $FD
-      if (mmc2.latch1 == true) {
-        mmc2.latch1 = false;
-        updateMMC2Banks();
-      }
-    } else if (l == 0xE0) {
-      // Accessing tile $FE
-      if (mmc2.latch1 == false) {
-        mmc2.latch1 = true;
-        updateMMC2Banks();
-      }
-    }
+  if (address == 0x0FD8) {
+    if (mmc2.latch0) { mmc2.latch0 = false; updateMMC2Banks(); }
+  } else if (address == 0x0FE8) {
+    if (!mmc2.latch0) { mmc2.latch0 = true; updateMMC2Banks(); }
+  } else if ((address & 0xFFF8) == 0x1FD8) {
+    if (mmc2.latch1) { mmc2.latch1 = false; updateMMC2Banks(); }
+  } else if ((address & 0xFFF8) == 0x1FE8) {
+    if (!mmc2.latch1) { mmc2.latch1 = true; updateMMC2Banks(); }
   }
 }
-
-
-
 
 void PPU::renderBackgroundScanlineMMC2(int scanline) {
     if (scanline < 0 || scanline >= 240) return;
@@ -134,28 +114,21 @@ void PPU::renderBackgroundScanlineMMC2(int scanline) {
         nametableAddrY = baseNametableY ? 0x0000 : 0x0800;
     }
     
-    // Calculate which tiles to render
+    // The real PPU fetches 34 tiles per scanline starting at the coarse X
+    // scroll: up to 33 can be visible (fine X), the 34th never is. MMC2 sees
+    // every one of those fetches, including the off-screen ones. Punch-Out!!
+    // relies on this: it places $FD tiles just past the right edge so the
+    // latch is set for the *next* scanline (status bar and ring ropes).
     int startTileX = scrollX / 8;
-    int endTileX = (scrollX + 256) / 8 + 1;
+    int endTileX = startTileX + 33;
     
     for (int tileX = startTileX; tileX <= endTileX; tileX++) {
         int screenX = (tileX * 8) - scrollX;
         
-        if (screenX + 8 <= 0 || screenX >= 256) continue;
-        
         // Determine nametable with proper horizontal wrapping
-        uint16_t nametableAddrX;
-        int localTileX = tileX;
-        
-        if (localTileX < 0) {
-            localTileX = (localTileX % 32 + 32) % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400;
-        } else if (localTileX < 32) {
-            nametableAddrX = baseNametable ? 0x0400 : 0x0000;
-        } else {
-            localTileX = localTileX % 32;
-            nametableAddrX = baseNametable ? 0x0000 : 0x0400;
-        }
+        int localTileX = tileX & 31;
+        bool otherNametable = ((tileX >> 5) & 1) != 0;
+        uint16_t nametableAddrX = (baseNametable ^ (otherNametable ? 1 : 0)) ? 0x0400 : 0x0000;
         
         // Combine horizontal and vertical nametable addresses
         uint16_t nametableAddr = 0x2000 + nametableAddrX + nametableAddrY;
@@ -166,12 +139,15 @@ void PPU::renderBackgroundScanlineMMC2(int scanline) {
         uint8_t tileIndex = readByte(tileAddr);
         uint8_t attribute = getAttributeTableValue(tileAddr);
         
-        // Get pattern data
+        // Get pattern data (this is the fetch the MMC2 latch watches)
         uint16_t patternBase = tileIndex * 16;
         if (ctrl & 0x10) patternBase += 0x1000;
         
         uint8_t patternLo = readCHR(patternBase + fineY);
         uint8_t patternHi = readCHR(patternBase + fineY + 8);
+        
+        // Off-screen fetches only affect the mapper, nothing to draw
+        if (screenX + 8 <= 0 || screenX >= 256) continue;
         
         // Render pixels
         for (int pixelX = 0; pixelX < 8; pixelX++) {

@@ -167,6 +167,10 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     int offset = address % 0x400;
     // Use the actual mirroring from the ROM header
     int mode = engine.nesHeader.mirroring;  // 0=horizontal, 1=vertical
+    if (engine.getMapper() == 9) {
+        // MMC2 controls mirroring at $F000: 0=vertical, 1=horizontal
+        mode = engine.getMMC2Mirroring() ? 0 : 1;
+    }
 
     return (nametableMirrorLookup[mode][table] * 0x400 + offset) % 2048;
 }
@@ -178,8 +182,8 @@ uint8_t PPU::readByte(uint16_t address)
 
     if (address < 0x2000)
     {
-        // CHR
-        return engine.getCHR()[address];
+        // CHR (bank-aware, no MMC2 latch side effects)
+        return engine.readCHRData(address);
     }
     else if (address < 0x3f00)
     {
@@ -195,23 +199,52 @@ void PPU::checkCHRLatch(uint16_t address, uint8_t tileID) {
     engine.checkCHRLatch(address, tileID);
 }
 
+// A real PPU pattern fetch. On MMC2 the latch flips *after* the trigger
+// tile ($FD/$FE) has been fetched, so the trigger tile itself still comes
+// from the old bank and only subsequent fetches see the new one.
 uint8_t PPU::readCHR(int index)
 {
-    if (index < 0x2000)
-    {
-        // CRITICAL FIX: Check latch BEFORE reading data
-        if (engine.getMapper() == 9) {
-            engine.checkCHRLatch(index, 0);  // This may switch banks
-        }
-        
-        // NOW read from the correct (possibly switched) bank
-        uint8_t result = engine.readCHRData(index);        
-        return result;
-    }
-    else
-    {
+    if (index < 0 || index >= 0x2000)
         return 0;
+
+    uint8_t result = engine.readCHRData(index);
+    if (engine.getMapper() == 9) {
+        engine.checkCHRLatch(index, 0);  // May switch banks for later fetches
     }
+    return result;
+}
+
+// Read pattern data without touching mapper state. Use for anything that is
+// not a genuine PPU rendering fetch (sprite-0 helpers, debug, zapper, etc.),
+// otherwise those extra reads would flip the MMC2 latches.
+uint8_t PPU::peekCHR(int index)
+{
+    if (index < 0 || index >= 0x2000)
+        return 0;
+    return engine.readCHRData(index);
+}
+
+int PPU::spriteHeight() const
+{
+    return (ppuCtrl & 0x20) ? 16 : 8;
+}
+
+// Address of the low bitplane for a given sprite row (row already flipped,
+// 0..height-1). Handles both 8x8 and 8x16 sprites.
+uint16_t PPU::spritePatternAddr(uint8_t tileIndex, int row) const
+{
+    if (ppuCtrl & 0x20) {
+        // 8x16: bit 0 of tile index picks the pattern table, top tile is even
+        uint16_t table = (tileIndex & 0x01) ? 0x1000 : 0x0000;
+        uint8_t tile = tileIndex & 0xFE;
+        if (row >= 8) {
+            tile++;
+            row -= 8;
+        }
+        return table + tile * 16 + row;
+    }
+    uint16_t table = (ppuCtrl & 0x08) ? 0x1000 : 0x0000;
+    return table + tileIndex * 16 + row;
 }
 
 uint8_t PPU::readDataRegister()
@@ -852,24 +885,21 @@ void PPU::checkSprite0HitScanline(int scanline) {
     if (sprite0Y >= 0xEF || sprite0X >= 0xF9) return;
     
     // Check if sprite 0 is on this scanline (accounting for 1-line delay)
-    if (scanline < sprite0Y + 1 || scanline >= sprite0Y + 9) return;
+    int height = spriteHeight();
+    if (scanline < sprite0Y + 1 || scanline >= sprite0Y + 1 + height) return;
     
     // Calculate sprite row for this scanline
     int spriteRow = scanline - (sprite0Y + 1);
     
     // Handle vertical flip
     if (sprite0Attr & 0x80) {
-        spriteRow = 7 - spriteRow;
+        spriteRow = height - 1 - spriteRow;
     }
     
     // Get sprite 0 pattern data for this row
-    uint16_t patternBase = sprite0Tile * 16;
-    if (ppuCtrl & 0x08) {  // Sprite pattern table select
-        patternBase += 0x1000;
-    }
-    
-    uint8_t spriteLo = readCHR(patternBase + spriteRow);
-    uint8_t spriteHi = readCHR(patternBase + spriteRow + 8);
+    uint16_t spriteAddr = spritePatternAddr(sprite0Tile, spriteRow);
+    uint8_t spriteLo = peekCHR(spriteAddr);
+    uint8_t spriteHi = peekCHR(spriteAddr + 8);
     
     // Check each pixel in the sprite row for collision
     for (int col = 0; col < 8; col++) {
@@ -945,8 +975,8 @@ void PPU::checkSprite0HitScanline(int scanline) {
             bgPatternBase += 0x1000;
         }
         
-        uint8_t bgLo = readCHR(bgPatternBase + pixelY);
-        uint8_t bgHi = readCHR(bgPatternBase + pixelY + 8);
+        uint8_t bgLo = peekCHR(bgPatternBase + pixelY);
+        uint8_t bgHi = peekCHR(bgPatternBase + pixelY + 8);
         
         // Extract background pixel value
         uint8_t bgPixel = 0;
@@ -999,32 +1029,56 @@ void PPU::renderScanline(int scanline, int mapper) {
         // Clear sprite priority mask for this scanline
         memset(&spritePriorityMask[scanline * 256], 0, 256);
         
-        // Render sprites in hardware order (0 to 63)
+        // Render sprites in hardware order (0 to 63). The PPU only performs
+        // pattern fetches for the first 8 sprites on a line; only those
+        // fetches are visible to the mapper (matters for MMC2 latches).
+        int height = spriteHeight();
+        int fetched = 0;
         for (int spriteIndex = 0; spriteIndex < 64; spriteIndex++) {
+            uint8_t spriteY = oam[spriteIndex * 4];
+            bool onLine = scanline >= spriteY + 1 && scanline < spriteY + 1 + height;
+            bool realFetch = onLine && fetched < 8;
+            if (realFetch) fetched++;
             uint8_t attributes = oam[spriteIndex * 4 + 2];
             bool behindBackground = (attributes & 0x20) != 0;
-            renderSingleSprite(scanline, spriteIndex, behindBackground);
+            renderSingleSprite(scanline, spriteIndex, behindBackground, realFetch);
+        }
+
+        // Unused sprite slots still fetch tile $FF. In 8x16 mode that hits
+        // $1FE8, which resets MMC2 latch 1 to $FE every scanline; Punch-Out!!
+        // depends on this.
+        if (engine.getMapper() == 9) {
+            for (int slot = fetched; slot < 8; slot++) {
+                uint16_t addr = spritePatternAddr(0xFF, 0);
+                readCHR(addr);
+                readCHR(addr + 8);
+            }
         }
     }
 }
 
-void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackground) {
+void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackground, bool mapperVisibleFetch) {
     uint8_t spriteY = oam[spriteIndex * 4];
     uint8_t tileIndex = oam[spriteIndex * 4 + 1];
     uint8_t attributes = oam[spriteIndex * 4 + 2];
     uint8_t spriteX = oam[spriteIndex * 4 + 3];
     
-    if (scanline < spriteY + 1 || scanline >= spriteY + 9) return;
-    if (spriteY >= 0xEF || spriteX >= 0xF9) return;
+    int height = spriteHeight();
+    if (scanline < spriteY + 1 || scanline >= spriteY + 1 + height) return;
+    if (spriteY >= 0xEF) return;
     
     int spriteRow = scanline - (spriteY + 1);
-    if (attributes & 0x80) spriteRow = 7 - spriteRow;
+    if (attributes & 0x80) spriteRow = height - 1 - spriteRow;
     
-    uint16_t patternBase = tileIndex * 16;
-    if (ppuCtrl & 0x08) patternBase += 0x1000;
-    
-    uint8_t patternLo = readCHR(patternBase + spriteRow);
-    uint8_t patternHi = readCHR(patternBase + spriteRow + 8);
+    uint16_t patternAddr = spritePatternAddr(tileIndex, spriteRow);
+    uint8_t patternLo, patternHi;
+    if (mapperVisibleFetch) {
+        patternLo = readCHR(patternAddr);
+        patternHi = readCHR(patternAddr + 8);
+    } else {
+        patternLo = peekCHR(patternAddr);
+        patternHi = peekCHR(patternAddr + 8);
+    }
     
     for (int pixelX = 0; pixelX < 8; pixelX++) {
         uint8_t paletteIndex = 0;
@@ -1201,8 +1255,8 @@ void PPU::checkSprite0Hit()
         patternBase += 0x1000;
     }
     
-    uint8_t spriteLo = readCHR(patternBase + spriteRow);
-    uint8_t spriteHi = readCHR(patternBase + spriteRow + 8);
+    uint8_t spriteLo = peekCHR(patternBase + spriteRow);
+    uint8_t spriteHi = peekCHR(patternBase + spriteRow + 8);
     
     // Extract sprite pixel value
     uint8_t spritePixel = 0;
@@ -1263,8 +1317,8 @@ void PPU::checkSprite0Hit()
         bgPatternBase += 0x1000;
     }
     
-    uint8_t bgLo = readCHR(bgPatternBase + pixelY);
-    uint8_t bgHi = readCHR(bgPatternBase + pixelY + 8);
+    uint8_t bgLo = peekCHR(bgPatternBase + pixelY);
+    uint8_t bgHi = peekCHR(bgPatternBase + pixelY + 8);
     
     // Extract background pixel value
     uint8_t bgPixel = 0;
@@ -1396,8 +1450,8 @@ uint16_t PPU::getBackgroundPixelColor(int x, int y) {
         patternBase += 0x1000;
     }
     
-    uint8_t patternLo = readCHR(patternBase + pixelY);
-    uint8_t patternHi = readCHR(patternBase + pixelY + 8);
+    uint8_t patternLo = peekCHR(patternBase + pixelY);
+    uint8_t patternHi = peekCHR(patternBase + pixelY + 8);
     
     // Extract pixel value
     uint8_t pixelValue = 0;
@@ -1439,8 +1493,8 @@ uint16_t PPU::getSpritePixelColor(int x, int y, int spriteIndex) {
         patternBase += 0x1000;
     }
     
-    uint8_t patternLo = readCHR(patternBase + pixelY);
-    uint8_t patternHi = readCHR(patternBase + pixelY + 8);
+    uint8_t patternLo = peekCHR(patternBase + pixelY);
+    uint8_t patternHi = peekCHR(patternBase + pixelY + 8);
     
     // Extract pixel value - match the working render logic exactly
     uint8_t paletteIndex = 0;
