@@ -13,11 +13,19 @@
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
+#include <direct.h>     // _getcwd
+#include <io.h>         // _findfirst / _findnext
+#define getcwd _getcwd
+#else
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 #ifdef __DJGPP__
 #include <dir.h>        // getdisk / setdisk
+#elif defined(_WIN32)
+#include <direct.h>     // _getdrives
 #endif
 
 // ---------------------------------------------------------------- drawing
@@ -477,9 +485,22 @@ private:
 
     bool readDir(const std::string& p)
     {
+        std::vector<Entry> dirs, files;
+#ifdef _MSC_VER
+        // MSVC has no dirent.h: the C runtime's _findfirst/_findnext
+        struct _finddata_t fd;
+        intptr_t h = _findfirst(join(p, "*").c_str(), &fd);
+        if (h == -1) return false;
+        do {
+            std::string name = fd.name;
+            if (name == "." || name == "..") continue;
+            if (fd.attrib & _A_SUBDIR) dirs.push_back({ name, E_DIR });
+            else if (isGame(name)) files.push_back({ name, E_FILE });
+        } while (_findnext(h, &fd) == 0);
+        _findclose(h);
+#else
         DIR* d = opendir(p.c_str());
         if (!d) return false;
-        std::vector<Entry> dirs, files;
         while (struct dirent* de = readdir(d)) {
             std::string name = de->d_name;
             if (name == "." || name == "..") continue;
@@ -489,6 +510,7 @@ private:
             else if (isGame(name)) files.push_back({ name, E_FILE });
         }
         closedir(d);
+#endif
         auto byName = [](const Entry& a, const Entry& b) { return lower(a.name) < lower(b.name); };
         std::sort(dirs.begin(), dirs.end(), byName);
         std::sort(files.begin(), files.end(), byName);
@@ -506,6 +528,11 @@ private:
             if (getdisk() == dr) entries.push_back({ std::string(1, (char)('A' + dr)) + ":", E_DRIVE });
         }
         setdisk(current);
+#elif defined(_WIN32)
+        // Drive letters, as on DOS
+        unsigned long drives = _getdrives();
+        for (int dr = 0; dr < 26; dr++)
+            if (drives & (1UL << dr)) entries.push_back({ std::string(1, (char)('A' + dr)) + ":", E_DRIVE });
 #endif
         games = (int)files.size();
         path = p;

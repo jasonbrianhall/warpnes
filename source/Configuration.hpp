@@ -15,10 +15,10 @@ public:
     bool saveToFile(const std::string& filename);
     
     // Get value with default fallback
-    std::string getString(const std::string& section, const std::string& key, const std::string& defaultValue = "");
-    int getInt(const std::string& section, const std::string& key, int defaultValue = 0);
-    float getFloat(const std::string& section, const std::string& key, float defaultValue = 0.0f);
-    bool getBool(const std::string& section, const std::string& key, bool defaultValue = false);
+    std::string getString(const std::string& section, const std::string& key, const std::string& defaultValue = "") const;
+    int getInt(const std::string& section, const std::string& key, int defaultValue = 0) const;
+    float getFloat(const std::string& section, const std::string& key, float defaultValue = 0.0f) const;
+    bool getBool(const std::string& section, const std::string& key, bool defaultValue = false) const;
     
     // Set values
     void setString(const std::string& section, const std::string& key, const std::string& value);

@@ -1,0 +1,239 @@
+# Builds WarpNES for Windows (MSVC, SDL2 from vcpkg) and MS-DOS (DJGPP),
+# makes a Windows installer (MSI), and on every push to main publishes a
+# release with all of it.
+#
+# Releases are tagged by date (US Eastern): the first of the day is
+# 2026.11.26a, then 2026.11.26b, c, ... (after z: aa, ab, ...).
+#
+# Pull requests and "Run workflow" build everything and keep the files as
+# workflow artifacts (7 days), without making a release.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# One run at a time on main, so two pushes can't pick the same tag
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      msi_version: ${{ steps.v.outputs.msi_version }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Pick the release tag (date + letter)
+      id: v
+      run: |
+        DATE=$(TZ=America/New_York date +%Y.%m.%d)
+        EXISTING=$(git ls-remote --tags origin "refs/tags/${DATE}*" | sed 's#.*refs/tags/##; s#\^{}$##' | sort -u)
+        # n -> a, b, ..., z, aa, ab, ...
+        suffix() {
+          local n=$1 s=""
+          while :; do
+            s=$(printf "\\$(printf '%03o' $((97 + n % 26)))")$s
+            n=$((n / 26 - 1))
+            [ $n -lt 0 ] && break
+          done
+          echo "$s"
+        }
+        n=0
+        while grep -qx "${DATE}$(suffix $n)" <<< "$EXISTING"; do n=$((n + 1)); done
+        TAG="${DATE}$(suffix $n)"
+        # MSI versions are numbers (major < 256, minor < 256, build < 65536):
+        # YY.MM.DDnn, nn = 00 for a, 01 for b, ...
+        YY=$(TZ=America/New_York date +%y); MM=$(TZ=America/New_York date +%-m); DD=$(TZ=America/New_York date +%-d)
+        NN=$(( n > 99 ? 99 : n ))
+        MSI_VERSION="${YY}.${MM}.$(( DD * 100 + NN ))"
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "msi_version=$MSI_VERSION" >> "$GITHUB_OUTPUT"
+        echo "Tag $TAG, MSI version $MSI_VERSION"
+
+  build-windows:
+    runs-on: windows-latest
+    env:
+      TRIPLET: x64-windows-static
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Bootstrap vcpkg
+      run: |
+        git clone --branch 2026.07.29 --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
+        C:\vcpkg\bootstrap-vcpkg.bat
+        echo "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "VCPKG_BINARY_SOURCES=clear;files,C:\vcpkg_bincache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: C:\vcpkg_bincache
+        key: vcpkg-bincache-${{ env.TRIPLET }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-bincache-${{ env.TRIPLET }}-
+
+    - name: Install dependencies (vcpkg)
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\vcpkg_bincache | Out-Null
+        C:\vcpkg\vcpkg.exe install --triplet $env:TRIPLET --x-install-root=C:\vcpkg\installed
+
+    - name: Save vcpkg binary cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: C:\vcpkg_bincache
+        key: vcpkg-bincache-${{ env.TRIPLET }}-${{ hashFiles('vcpkg.json') }}
+
+    - name: Configure (CMake, MSVC)
+      run: |
+        cmake -S . -B build-msvc -A x64 `
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+          -DVCPKG_TARGET_TRIPLET=$env:TRIPLET `
+          -DVCPKG_INSTALLED_DIR=C:\vcpkg\installed `
+          -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build-msvc --config Release --parallel
+
+    - name: Package (portable zip)
+      run: |
+        New-Item -ItemType Directory -Force -Path dist\WarpNES | Out-Null
+        Copy-Item build-msvc\Release\WarpNES.exe dist\WarpNES\
+        Copy-Item README.md, LICENSE.md dist\WarpNES\
+        Get-ChildItem dist\WarpNES | Format-Table Name, Length
+        Compress-Archive -Path dist\WarpNES -DestinationPath WarpNES-Windows-x64-Portable.zip -Force
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: warpnes-windows-x64
+        path: WarpNES-Windows-x64-Portable.zip
+        retention-days: 7
+
+  build-msi:
+    # WiX 3 has no ARM64 support; the installer is x64
+    needs: [version, build-windows]
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: warpnes-windows-x64
+        path: .
+
+    - name: Extract build
+      run: Expand-Archive -Path WarpNES-Windows-x64-Portable.zip -DestinationPath stage -Force
+
+    - name: Set up WiX Toolset 3
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" -OutFile wix.zip
+        Expand-Archive -Path wix.zip -DestinationPath wix
+        echo "$env:GITHUB_WORKSPACE\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Build MSI
+      run: |
+        $version = "${{ needs.version.outputs.msi_version }}"
+        & candle.exe -nologo -arch x64 -out warpnes.wixobj `
+          "-dVersion=$version" "-dSourceDir=stage\WarpNES" "-dResDir=res" "-dInstallerDir=installer" `
+          installer\warpnes.wxs
+        if ($LASTEXITCODE -ne 0) { Write-Error "candle failed"; exit 1 }
+        & light.exe -nologo -ext WixUIExtension -out WarpNES-Windows-x64.msi warpnes.wixobj
+        if ($LASTEXITCODE -ne 0) { Write-Error "light failed"; exit 1 }
+        Get-Item WarpNES-Windows-x64.msi | Format-Table Name, Length
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: warpnes-msi
+        path: WarpNES-Windows-x64.msi
+        retention-days: 7
+
+  build-msdos:
+    # The SDL version for MS-DOS / FreeDOS (msdos/: DJGPP + SDL3, CWSDPMI built in)
+    runs-on: ubuntu-latest
+    env:
+      DJGPP_URL: https://github.com/andrewwutw/build-djgpp/releases/download/v3.4/djgpp-linux64-gcc1220.tar.bz2
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Restore DJGPP
+      id: djgpp-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/djgpp
+        key: djgpp-linux64-gcc1220-v3.4
+
+    - name: Download DJGPP
+      if: steps.djgpp-cache.outputs.cache-hit != 'true'
+      run: |
+        curl -sSfL "$DJGPP_URL" -o /tmp/djgpp.tar.bz2
+        tar xjf /tmp/djgpp.tar.bz2 -C ~
+
+    - name: Install dependencies
+      # DJGPP's binutils (ar) need libfl
+      run: sudo apt-get update -q && sudo apt-get install -y -q libfl2 zip
+
+    - name: Build
+      working-directory: msdos
+      run: |
+        export PATH="$HOME/djgpp/bin:$PATH"
+        make DOCKER=0 -j"$(nproc)" dist
+
+    - name: Package
+      run: |
+        (cd msdos/build/dist && zip -r -9 "$GITHUB_WORKSPACE/WarpNES-DOS.zip" WARPNES)
+        unzip -l WarpNES-DOS.zip
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: warpnes-dos
+        path: WarpNES-DOS.zip
+        retention-days: 7
+
+  release:
+    needs: [version, build-windows, build-msi, build-msdos]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: release
+        merge-multiple: true
+
+    - run: ls -l release
+
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ needs.version.outputs.tag }}
+        target_commitish: ${{ github.sha }}
+        name: WarpNES ${{ needs.version.outputs.tag }}
+        make_latest: true
+        files: |
+          release/WarpNES-Windows-x64.msi
+          release/WarpNES-Windows-x64-Portable.zip
+          release/WarpNES-DOS.zip
+        body: |
+          **Commit:** ${{ github.sha }}
+
+          ### Downloads
+          - **WarpNES-Windows-x64.msi**: Windows installer (64-bit), with a Start Menu shortcut and a desktop shortcut. Settings and save states go to `%APPDATA%\WarpNES`.
+          - **WarpNES-Windows-x64-Portable.zip**: the same program without installing. Unzip anywhere and run `WarpNES.exe`; settings and saves stay in that folder.
+          - **WarpNES-DOS.zip**: MS-DOS / FreeDOS version (`WARPNES.EXE`, DPMI host built in). Runs in DOSBox too; see `README.TXT`.
+
+          ### Silent install
+          ```
+          msiexec /i WarpNES-Windows-x64.msi /quiet /norestart
+          msiexec /i WarpNES-Windows-x64.msi /quiet /norestart DESKTOP_SHORTCUT=0
+          msiexec /x WarpNES-Windows-x64.msi /quiet /norestart
+          ```
+
+          The Windows build is made with Microsoft Visual C++ (MSVC) and SDL2 from vcpkg.
