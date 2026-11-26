@@ -297,7 +297,8 @@ sdl3: $(SDL3_LIB)
 
 # ---------------------------------------------------------------- the emulator
 # compat/ comes first: the sources' #include <SDL2/SDL.h> finds the SDL3 mapping.
-OPT      = -O2 -march=i486 -mtune=i586 -fomit-frame-pointer
+# -O3: ~4% faster than -O2 in DOSBox (same output, checked with frame hashes)
+OPT      = -O3 -march=i486 -mtune=i586 -fomit-frame-pointer
 # Link-time optimisation lets GCC inline across source files (the 6502 core
 # is split between WarpNES.cpp and Instructions.cpp); ~12% faster in DOSBox.
 # "make LTO=" builds without it.
