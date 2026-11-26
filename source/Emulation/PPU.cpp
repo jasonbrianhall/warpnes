@@ -505,6 +505,9 @@ static inline const uint16_t* paletteRGB565()
 // bitSpread[b] has bit i of b moved to bit 2i, so spread(lo) | spread(hi) << 1
 // holds all eight 2-bit pixels of a tile row
 static uint16_t bitSpread[256];
+// transparentMask[b]: the 8 backgroundMask bytes (1 = transparent) for a row
+// whose opaque pixels are the set bits of b = lo | hi, leftmost pixel first
+static uint32_t transparentMask[256][2];
 static bool bitSpreadReady = false;
 static inline void initBitSpread()
 {
@@ -513,6 +516,9 @@ static inline void initBitSpread()
         uint16_t r = 0;
         for (int i = 0; i < 8; i++) if (b & (1 << i)) r |= 1 << (2 * i);
         bitSpread[b] = r;
+        uint8_t m[8];
+        for (int px = 0; px < 8; px++) m[px] = (b & (0x80 >> px)) ? 0 : 1;
+        memcpy(transparentMask[b], m, 8);
     }
     bitSpreadReady = true;
 }
@@ -603,10 +609,13 @@ void PPU::renderBackgroundScanline(int scanline)
             // Whole tile on screen and unclipped: no per-pixel checks
             uint16_t* fb = &frameBuffer[rowBase + screenX];
             uint8_t* mask = &backgroundMask[rowBase + screenX];
-            for (int px = 0; px < 8; px++) {
-                int pixelValue = (pixels >> (14 - 2 * px)) & 3;
-                mask[px] = pixelValue == 0;
-                fb[px] = colors[pixelValue];
+            // Two pixels / four mask bytes per store: fewer memory writes,
+            // which is what costs most under DOSBox
+            memcpy(mask, transparentMask[patternLo | patternHi], 8);
+            for (int k = 0; k < 4; k++) {
+                uint32_t pair = (uint32_t)colors[(pixels >> (14 - 4 * k)) & 3] |
+                                ((uint32_t)colors[(pixels >> (12 - 4 * k)) & 3] << 16);
+                memcpy(fb + 2 * k, &pair, 4);
             }
         } else {
             for (int px = 0; px < 8; px++) {
@@ -1343,7 +1352,9 @@ void PPU::renderScanline(int scanline, int mapper) {
         for (int spriteIndex = 0; spriteIndex < 64; spriteIndex++) {
             uint8_t spriteY = oam[spriteIndex * 4];
             bool onLine = scanline >= spriteY + 1 && scanline < spriteY + 1 + height;
-            bool realFetch = onLine && fetched < 8;
+            // Sprites not on this line draw nothing and fetch nothing
+            if (!onLine || spriteY >= 0xEF) continue;
+            bool realFetch = fetched < 8;
             if (realFetch) fetched++;
             uint8_t attributes = oam[spriteIndex * 4 + 2];
             bool behindBackground = (attributes & 0x20) != 0;
@@ -1392,40 +1403,36 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
         patternHi = peekCHR(patternAddr + 8);
     }
     
+    initBitSpread();
+    const uint16_t* rgb565 = paletteRGB565();
+    uint16_t colors[4];
+    for (int c = 1; c < 4; c++)
+        colors[c] = rgb565[palette[0x10 + (attributes & 0x03) * 4 + c] & 0x3F];
+    uint32_t pixels = bitSpread[patternLo] | (bitSpread[patternHi] << 1);
+    if (!pixels) return;  // fully transparent row
+    bool flipX = (attributes & 0x40) != 0;
+    bool clipLeft = !(ppuMask & 0x04);
+    int rowBase = scanline * 256;
+
     for (int pixelX = 0; pixelX < 8; pixelX++) {
-        uint8_t paletteIndex = 0;
-        if (patternLo & (0x80 >> pixelX)) paletteIndex |= 1;
-        if (patternHi & (0x80 >> pixelX)) paletteIndex |= 2;
-        
+        int paletteIndex = (pixels >> (14 - 2 * pixelX)) & 3;
         if (paletteIndex == 0) continue; // Transparent
-        
-        int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
-        if (xPixel < 0 || xPixel >= 256) continue;
-        if (xPixel < 8 && !(ppuMask & 0x04)) continue;  // Left-edge sprite clipping
-        
-        int bufferIndex = scanline * 256 + xPixel;
-        
+
+        int xPixel = spriteX + (flipX ? (7 - pixelX) : pixelX);
+        if (xPixel >= 256) continue;
+        if (xPixel < 8 && clipLeft) continue;  // Left-edge sprite clipping
+
+        int bufferIndex = rowBase + xPixel;
+
         // Check if a higher priority sprite already drew here
         if (spritePriorityMask[bufferIndex]) continue;
-        
+
         // Mark this pixel as drawn by a sprite
         spritePriorityMask[bufferIndex] = 1;
-        
-        uint8_t colorIndex = palette[0x10 + (attributes & 0x03) * 4 + paletteIndex];
-        uint32_t color32 = paletteRGB[colorIndex];
-        uint16_t spritePixel = ((color32 & 0xF80000) >> 8) | 
-                              ((color32 & 0x00FC00) >> 5) | 
-                              ((color32 & 0x0000F8) >> 3);
-        
-        if (behindBackground) {
-            // Only draw if background pixel is transparent
-            if (backgroundMask[bufferIndex] == 1) {
-                frameBuffer[bufferIndex] = spritePixel;
-            }
-        } else {
-            // Always draw (sprite in front)
-            frameBuffer[bufferIndex] = spritePixel;
-        }
+
+        // Behind-background sprites only show where the background is transparent
+        if (!behindBackground || backgroundMask[bufferIndex] == 1)
+            frameBuffer[bufferIndex] = colors[paletteIndex];
     }
 }
 
