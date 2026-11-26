@@ -64,6 +64,8 @@ COMMON_SOURCE_FILES = \
 # Platform-specific source files
 SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/SDLMainWindow.cpp \
+    source/SDLGui.cpp \
+    source/SDLInput.cpp \
     source/SDLCacheScaling.cpp \
     source/Emulation/ControllerSDL.cpp
 

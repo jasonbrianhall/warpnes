@@ -28,6 +28,7 @@
 #include <cstring>
 
 static SDL_Rect dos_dest;   // where the picture lands on the screen
+static int pal_count = -1;  // colours in the mode 13h palette (-1: start again)
 static int dos_src_y;       // first frame line shown (mode 13h crops)
 static bool dos_indexed;
 
@@ -43,7 +44,7 @@ static int bpp_rank(SDL_PixelFormat f)
     }
 }
 
-static const SDL_DisplayMode* dos_pick_mode(void)
+static const SDL_DisplayMode* dos_pick_mode(const char* preferred)
 {
     int count = 0;
     SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &count);
@@ -51,6 +52,7 @@ static const SDL_DisplayMode* dos_pick_mode(void)
 
     int want_w = 0, want_h = 0, want_bpp = 0;
     const char* env = getenv("WARPNES_VIDEO");
+    if (env == NULL || !*env) env = preferred;   // the GUI's saved choice
     if (env != NULL) sscanf(env, "%dx%dx%d", &want_w, &want_h, &want_bpp);
 
     const SDL_DisplayMode* best = NULL;
@@ -86,19 +88,16 @@ static const SDL_DisplayMode* dos_pick_mode(void)
     return best ? &chosen : NULL;
 }
 
-SDL_Window* dos_create_window(const char* title)
+static int dos_scale = 1;           // whole-number zoom of the picture
+static int last_w, last_h, last_src_w, last_src_h;  // layout done for these
+
+// After a mode is set: palette for mode 13h, fresh layout and colours
+static void dos_setup_surface(SDL_Window* window)
 {
-    const SDL_DisplayMode* mode = dos_pick_mode();
-    int w = mode ? mode->w : 320;
-    int h = mode ? mode->h : 200;
-    SDL_Window* window = SDL_CreateWindow(title, w, h, SDL_WINDOW_FULLSCREEN);
-    if (window == NULL) return NULL;
-    if (mode) SDL_SetWindowFullscreenMode(window, mode);
-    SDL_SyncWindow(window);
     SDL_Surface* screen = SDL_GetWindowSurface(window);
     if (screen == NULL) {
-        printf("dos_create_window: SDL_GetWindowSurface: %s\n", SDL_GetError());
-        return window;
+        printf("dos_setup_surface: SDL_GetWindowSurface: %s\n", SDL_GetError());
+        return;
     }
     dos_indexed = SDL_ISPIXELFORMAT_INDEXED(screen->format);
     if (dos_indexed) {
@@ -110,15 +109,139 @@ SDL_Window* dos_create_window(const char* title)
         if (pal) SDL_SetSurfacePalette(screen, pal);
         else if (!SDL_GetSurfacePalette(screen)) SDL_CreateSurfacePalette(screen);
     }
+    last_w = last_h = 0;   // lay out again on the next frame
     printf("Video: %dx%d, %d bits%s\n", screen->w, screen->h, SDL_BITSPERPIXEL(screen->format),
            dos_indexed ? " (VGA mode 13h)" : "");
+}
+
+SDL_Window* dos_create_window(const char* title, const char* preferredMode)
+{
+    const SDL_DisplayMode* mode = dos_pick_mode(preferredMode);
+    int w = mode ? mode->w : 320;
+    int h = mode ? mode->h : 200;
+    SDL_Window* window = SDL_CreateWindow(title, w, h, SDL_WINDOW_FULLSCREEN);
+    if (window == NULL) return NULL;
+    if (mode) SDL_SetWindowFullscreenMode(window, mode);
+    SDL_SyncWindow(window);
+    dos_setup_surface(window);
+    SDL_HideCursor();   // the GUI draws its own pointer
     return window;
+}
+
+// ---------------------------------------------------------------- mode list
+// The modes the GUI offers: the ones dos_pick_mode would consider, in order
+// of size and colour depth.
+struct DosMode { int w, h, bpp; bool indexed; SDL_DisplayMode mode; };
+static DosMode dos_modes[64];
+static int dos_mode_n = -1;
+
+static void dos_list_modes(void)
+{
+    if (dos_mode_n >= 0) return;
+    dos_mode_n = 0;
+    int count = 0;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &count);
+    if (modes == NULL) return;
+    for (int i = 0; i < count && dos_mode_n < 64; ++i) {
+        const SDL_DisplayMode* m = modes[i];
+        if (m->w < 320 || m->h < 200) continue;
+        bool indexed = SDL_ISPIXELFORMAT_INDEXED(m->format);
+        if (indexed && (m->w != 320 || m->h != 200)) continue;
+        int bpp = SDL_BITSPERPIXEL(m->format);
+        bool dup = false;
+        for (int k = 0; k < dos_mode_n; ++k)
+            if (dos_modes[k].w == m->w && dos_modes[k].h == m->h && dos_modes[k].bpp == bpp) dup = true;
+        if (dup) continue;
+        DosMode d = { m->w, m->h, bpp, indexed, *m };
+        dos_modes[dos_mode_n++] = d;
+    }
+    SDL_free(modes);
+    // sort: size, then depth
+    for (int i = 1; i < dos_mode_n; ++i)
+        for (int k = i; k > 0; --k) {
+            DosMode& a = dos_modes[k - 1]; DosMode& b = dos_modes[k];
+            long sa = (long)a.w * a.h, sb = (long)b.w * b.h;
+            if (sa > sb || (sa == sb && a.bpp > b.bpp)) { DosMode t = a; a = b; b = t; } else break;
+        }
+}
+
+int dos_mode_count(void)
+{
+    dos_list_modes();
+    return dos_mode_n;
+}
+
+void dos_mode_name(int index, char* buf, int size)
+{
+    dos_list_modes();
+    if (index < 0 || index >= dos_mode_n) { snprintf(buf, size, "?"); return; }
+    const DosMode& m = dos_modes[index];
+    snprintf(buf, size, "%dx%d %d-bit%s", m.w, m.h, m.bpp, m.indexed ? " (VGA)" : "");
+}
+
+// Saved in the settings and read back by dos_create_window
+void dos_mode_id(int index, char* buf, int size)
+{
+    dos_list_modes();
+    if (index < 0 || index >= dos_mode_n) { if (size) buf[0] = 0; return; }
+    snprintf(buf, size, "%dx%dx%d", dos_modes[index].w, dos_modes[index].h, dos_modes[index].bpp);
+}
+
+int dos_current_mode(SDL_Window* window)
+{
+    dos_list_modes();
+    SDL_Surface* screen = SDL_GetWindowSurface(window);
+    if (!screen) return -1;
+    int bpp = SDL_BITSPERPIXEL(screen->format);
+    for (int i = 0; i < dos_mode_n; ++i)
+        if (dos_modes[i].w == screen->w && dos_modes[i].h == screen->h && dos_modes[i].bpp == bpp) return i;
+    for (int i = 0; i < dos_mode_n; ++i)
+        if (dos_modes[i].w == screen->w && dos_modes[i].h == screen->h) return i;
+    return -1;
+}
+
+bool dos_set_mode(SDL_Window* window, int index)
+{
+    dos_list_modes();
+    if (index < 0 || index >= dos_mode_n) return false;
+    if (!SDL_SetWindowFullscreenMode(window, &dos_modes[index].mode)) {
+        printf("dos_set_mode: %s\n", SDL_GetError());
+        return false;
+    }
+    SDL_SyncWindow(window);
+    pal_count = -1;   // mode 13h palette starts again
+    dos_setup_surface(window);
+    SDL_Surface* screen = SDL_GetWindowSurface(window);
+    if (!screen) return false;
+    if (screen->w != dos_modes[index].w || screen->h != dos_modes[index].h) {
+        SDL_SetError("got %dx%d", screen->w, screen->h);
+        return false;
+    }
+    return true;
+}
+
+// Screen position (mouse) -> position in the picture
+void dos_screen_to_picture(float sx, float sy, int* px, int* py)
+{
+    int s = dos_scale > 0 ? dos_scale : 1;
+    *px = (int)((sx - dos_dest.x) / s);
+    *py = (int)((sy - dos_dest.y) / s) + dos_src_y;
+}
+
+// Lines of the picture that are on the screen
+void dos_visible_lines(int pic_h, int* y0, int* y1)
+{
+    *y0 = dos_src_y;
+    int shown = dos_dest.h / (dos_scale > 0 ? dos_scale : 1);
+    *y1 = dos_src_y + (shown > 0 ? shown : pic_h);
+    if (*y1 > pic_h) *y1 = pic_h;
 }
 
 static void dos_layout(SDL_Surface* screen, int src_w, int src_h)
 {
     int scale = SDL_min(screen->w / src_w, screen->h / src_h);
     if (scale < 1) scale = 1;
+    dos_scale = scale;
     int w = src_w * scale, h = src_h * scale;
     dos_src_y = 0;
     if (h > screen->h) {             // too tall (mode 13h): show the middle lines
@@ -135,7 +258,6 @@ static void dos_layout(SDL_Surface* screen, int src_w, int src_h)
 // RGB565 -> palette index, kept from frame to frame (the NES palette is small).
 static uint16_t index_of[65536];     // 0xFFFF: not in the palette yet
 static SDL_Color pal[256];
-static int pal_count = -1;
 
 // Index 0 stays black: it is also the border around the picture.
 static void palette_reset(void)
@@ -280,7 +402,6 @@ void dos_present(SDL_Window* window, const uint16_t* frame, int w, int h)
     SDL_Surface* screen = SDL_GetWindowSurface(window);
     if (screen == NULL) return;
 
-    static int last_w, last_h, last_src_w, last_src_h;
     if (screen->w != last_w || screen->h != last_h || w != last_src_w || h != last_src_h) {
         last_w = screen->w; last_h = screen->h; last_src_w = w; last_src_h = h;
         SDL_FillSurfaceRect(screen, NULL, 0);

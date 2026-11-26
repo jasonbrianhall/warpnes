@@ -329,6 +329,8 @@ GAME_SRCS = \
   Emulation/Mapper40.cpp \
   Emulation/ControllerSDL.cpp \
   SDLMainWindow.cpp \
+  SDLGui.cpp \
+  SDLInput.cpp \
   DOSVideo.cpp
 
 OBJS = $(addprefix $(BUILD)/obj/,$(GAME_SRCS:.cpp=.o)) $(BUILD)/obj/sdl2_compat.o

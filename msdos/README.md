@@ -53,10 +53,38 @@ To choose, set WARPNES_VIDEO to WIDTHxHEIGHTxBITS before starting:
 Keys
 ----
 
-The same as the SDL build elsewhere: arrows, X = A, Z = B, [ = Select,
-] = Start; player 2 on WASD / K / J / U / I. F5-F8 save state (Shift+F5-F8
-load), R resets, Esc quits. There is no fullscreen toggle (F11/F): it is
-always full screen.
+The same as the SDL build elsewhere. Default controls: arrows, X = A,
+Z = B, [ = Select, ] = Start; player 2 on WASD / K / J / U / I; the first
+two joysticks for players 1 and 2. Change them in the Input menu.
+
+    Esc            menus (the game is paused while they are up)
+    Ctrl+O         load a game
+    Ctrl+R         reset
+    Ctrl+P         pause
+    F5-F8          save state 1-4 (Shift+F5-F8: load)
+
+Without a game on the command line, WARPNES.EXE starts in the game browser.
+
+
+Menus
+-----
+
+NESticle-style: a menu bar with drop-down menus and windows, used with the
+mouse or the keyboard (arrows, Enter, Esc). The mouse pointer only shows
+while the mouse is in use; moving it also shows the menu bar for a moment
+without stopping the game.
+
+  File > Load Game   browse folders and drives for .nes files; long file
+                     names where DOS has them (Windows 9x, DOSLFN; SET LFN=N
+                     turns them off), short names otherwise
+  Game               reset, save and load states
+  Video > Display Mode  switch between the VESA/VGA modes the card has
+  Input > Player 1/2    keys and joystick buttons: click a button (or move
+                     to it with the arrows and press Enter), then press the
+                     key or joystick button; right-click or Del clears it
+
+The display mode, controls and game folder are kept in WARPNES.INI next to
+WARPNES.EXE (the WARPNES_VIDEO variable still overrides the mode).
 
 Save states use 8.3 names (SAVE1.SAV, ...); the settings file smbc.conf is
 SMBC.CON on plain DOS.

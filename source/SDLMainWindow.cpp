@@ -1,11 +1,14 @@
 #include <cstdio>
+#include <cstring>
 #include <iostream>
+#include <string>
 
 #include <SDL2/SDL.h>
 #ifdef __DJGPP__
 // MS-DOS (SDL3's DOS port, through msdos/compat/SDL2/SDL.h): SDL_main sets up
 // the near pointers SDL needs; the frame goes straight to the screen (DOSVideo).
 #include <SDL3/SDL_main.h>
+#include <crt0.h>
 #include "DOSVideo.hpp"
 #endif
 
@@ -13,220 +16,53 @@
 #include "Emulation/ControllerSDL.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
-// Include the generated ROM header
 #include "SDLCacheScaling.hpp"
+#include "SDLGui.hpp"
+#include "SDLInput.hpp"
+
+// Settings of this front end (display mode, controls, game folder). Kept
+// apart from CONFIG_FILE_NAME, whose key codes belong to the Allegro build.
+// MS-DOS: next to WARPNES.EXE (the game browser changes folders); elsewhere
+// in the current folder, like CONFIG_FILE_NAME.
+static std::string settingsFile = "warpnes.ini";
+#define SDL_SETTINGS_FILE settingsFile
 
 static SDLScalingCache* scalingCache = nullptr;
 static SDL_Window* window;
 static SDL_Renderer* renderer;
 static SDL_Texture* texture;
 static SDL_Texture* scanlineTexture;
-static WarpNES* smbEngine = nullptr;
+static WarpNES* smbEngine = nullptr;     // the running game (null: none loaded)
 static uint32_t renderBuffer[RENDER_WIDTH * RENDER_HEIGHT];
-static uint16_t renderBuffer16[RENDER_WIDTH * RENDER_HEIGHT];  // ADD: 16-bit buffer
-static uint32_t filteredBuffer[RENDER_WIDTH * RENDER_HEIGHT];
-static uint32_t prevFrameBuffer[RENDER_WIDTH * RENDER_HEIGHT];
-static bool msaaEnabled = false;
+static uint16_t renderBuffer16[RENDER_WIDTH * RENDER_HEIGHT];
+static uint16_t guiBuffer16[RENDER_WIDTH * RENDER_HEIGHT];   // picture + GUI
 
-// Internal controller state
-struct InternalController {
-    bool buttonA = false;
-    bool buttonB = false;
-    bool buttonSelect = false;
-    bool buttonStart = false;
-    bool buttonUp = false;
-    bool buttonDown = false;
-    bool buttonLeft = false;
-    bool buttonRight = false;
-    
-    // Joystick/Gamepad support
-    SDL_Joystick* joystick = nullptr;
-    SDL_GameController* gameController = nullptr;
-    bool hasController = false;
-    
-    void initializeController() {
-        // Initialize joystick subsystem
-        if (SDL_NumJoysticks() > 0) {
-            // Try to open the first available game controller
-            for (int i = 0; i < SDL_NumJoysticks(); i++) {
-                if (SDL_IsGameController(i)) {
-                    gameController = SDL_GameControllerOpen(i);
-                    if (gameController) {
-                        hasController = true;
-                        std::cout << "Game controller initialized: " << SDL_GameControllerName(gameController) << std::endl;
-                        break;
-                    }
-                }
-            }
-            
-            // If no game controller, try to open as joystick
-            if (!hasController) {
-                joystick = SDL_JoystickOpen(0);
-                if (joystick) {
-                    hasController = true;
-                    std::cout << "Joystick initialized: " << SDL_JoystickName(joystick) << std::endl;
-                }
-            }
-        }
-        
-        if (!hasController) {
-            std::cout << "No controller found. Using keyboard controls only." << std::endl;
-        }
-    }
-    
-    void cleanup() {
-        if (gameController) {
-            SDL_GameControllerClose(gameController);
-            gameController = nullptr;
-        }
-        if (joystick) {
-            SDL_JoystickClose(joystick);
-            joystick = nullptr;
-        }
-        hasController = false;
-    }
-    
-    void processControllerEvent(const SDL_Event& event) {
-        if (!hasController) return;
-        
-        if (gameController) {
-            // Handle game controller events
-            switch (event.type) {
-                case SDL_CONTROLLERBUTTONDOWN:
-                case SDL_CONTROLLERBUTTONUP:
-                    {
-                        bool pressed = (event.type == SDL_CONTROLLERBUTTONDOWN);
-                        switch (event.cbutton.button) {
-                            case SDL_CONTROLLER_BUTTON_A:
-                                buttonA = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_B:
-                            case SDL_CONTROLLER_BUTTON_X:
-                                buttonB = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_BACK:
-                                buttonSelect = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_START:
-                                buttonStart = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                                buttonUp = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                                buttonDown = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                                buttonLeft = pressed;
-                                break;
-                            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                                buttonRight = pressed;
-                                break;
-                        }
-                    }
-                    break;
-                case SDL_CONTROLLERAXISMOTION:
-                    {
-                        const int DEADZONE = 8000;
-                        switch (event.caxis.axis) {
-                            case SDL_CONTROLLER_AXIS_LEFTX:
-                                buttonLeft = event.caxis.value < -DEADZONE;
-                                buttonRight = event.caxis.value > DEADZONE;
-                                break;
-                            case SDL_CONTROLLER_AXIS_LEFTY:
-                                buttonUp = event.caxis.value < -DEADZONE;
-                                buttonDown = event.caxis.value > DEADZONE;
-                                break;
-                        }
-                    }
-                    break;
-            }
-        } else if (joystick) {
-            // Handle joystick events
-            switch (event.type) {
-                case SDL_JOYBUTTONDOWN:
-                case SDL_JOYBUTTONUP:
-                    {
-                        bool pressed = (event.type == SDL_JOYBUTTONDOWN);
-                        // Map buttons based on common joystick layouts
-                        switch (event.jbutton.button) {
-                            case 0: // Usually A button
-                                buttonA = pressed;
-                                break;
-                            case 1: // Usually B button
-                                buttonB = pressed;
-                                break;
-                            case 6: // Usually Select/Back
-                                buttonSelect = pressed;
-                                break;
-                            case 7: // Usually Start
-                                buttonStart = pressed;
-                                break;
-                        }
-                    }
-                    break;
-                case SDL_JOYAXISMOTION:
-                    {
-                        const int DEADZONE = 8000;
-                        switch (event.jaxis.axis) {
-                            case 0: // X axis
-                                buttonLeft = event.jaxis.value < -DEADZONE;
-                                buttonRight = event.jaxis.value > DEADZONE;
-                                break;
-                            case 1: // Y axis
-                                buttonUp = event.jaxis.value < -DEADZONE;
-                                buttonDown = event.jaxis.value > DEADZONE;
-                                break;
-                        }
-                    }
-                    break;
-            }
-        }
-    }
-    
-    void updateFromKeyboard(const Uint8* keys) {
-        // Keyboard input (combine with controller input)
-        if (!buttonA) buttonA = keys[SDL_SCANCODE_X];
-        if (!buttonB) buttonB = keys[SDL_SCANCODE_Z];
-        if (!buttonSelect) buttonSelect = keys[SDL_SCANCODE_BACKSPACE];
-        if (!buttonStart) buttonStart = keys[SDL_SCANCODE_RETURN];
-        if (!buttonUp) buttonUp = keys[SDL_SCANCODE_UP];
-        if (!buttonDown) buttonDown = keys[SDL_SCANCODE_DOWN];
-        if (!buttonLeft) buttonLeft = keys[SDL_SCANCODE_LEFT];
-        if (!buttonRight) buttonRight = keys[SDL_SCANCODE_RIGHT];
-    }
-    
-    void printButtonStates() {
-        std::cout << "Controller State - A:" << (buttonA ? "1" : "0") 
-                  << " B:" << (buttonB ? "1" : "0")
-                  << " Select:" << (buttonSelect ? "1" : "0")
-                  << " Start:" << (buttonStart ? "1" : "0")
-                  << " Up:" << (buttonUp ? "1" : "0")
-                  << " Down:" << (buttonDown ? "1" : "0")
-                  << " Left:" << (buttonLeft ? "1" : "0")
-                  << " Right:" << (buttonRight ? "1" : "0") << std::endl;
-    }
-};
+static SimpleINI settings;
+static InputConfig input;
+static bool running = true;
+static bool paused = false;
+#ifndef __DJGPP__
+static int windowScale = 3;
+static bool fullscreen = false;
+#endif
 
-static InternalController controller;
+static void saveSettings()
+{
+    if (!settings.saveToFile(SDL_SETTINGS_FILE))
+        printf("Couldn't save %s\n", SDL_SETTINGS_FILE.c_str());
+}
 
-// ADD: Conversion function from 16-bit RGB565 to 32-bit ARGB8888
+// Conversion from 16-bit RGB565 to 32-bit ARGB8888
 static void convertRGB565ToARGB8888(const uint16_t* src, uint32_t* dst, int width, int height)
 {
     for (int i = 0; i < width * height; i++) {
         uint16_t pixel16 = src[i];
-        
-        // Extract RGB565 components
-        uint8_t r = (pixel16 >> 11) & 0x1F;  // 5 bits
-        uint8_t g = (pixel16 >> 5) & 0x3F;   // 6 bits  
-        uint8_t b = pixel16 & 0x1F;          // 5 bits
-        
-        // Scale to 8-bit (same as DOS version)
-        r = (r << 3) | (r >> 2);  // 5-bit to 8-bit
-        g = (g << 2) | (g >> 4);  // 6-bit to 8-bit  
-        b = (b << 3) | (b >> 2);  // 5-bit to 8-bit
-        
-        // Pack into ARGB8888 format
+        uint8_t r = (pixel16 >> 11) & 0x1F;
+        uint8_t g = (pixel16 >> 5) & 0x3F;
+        uint8_t b = pixel16 & 0x1F;
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
         dst[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
 }
@@ -240,7 +76,136 @@ static void audioCallback(void* userdata, uint8_t* buffer, int len)
     {
         smbEngine->audioCallback(buffer, len);
     }
+    else
+    {
+        memset(buffer, 0, len);   // AUDIO_S8 silence
+    }
 }
+
+#ifndef __DJGPP__
+static void applyWindowMode()
+{
+    if (fullscreen) {
+        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    } else {
+        SDL_SetWindowFullscreen(window, 0);
+        SDL_SetWindowSize(window, RENDER_WIDTH * windowScale, RENDER_HEIGHT * windowScale);
+    }
+}
+#endif
+
+// ---------------------------------------------------------------- GUI host
+class FrontendHost : public GuiHost
+{
+public:
+    std::string lastVideoError;
+    bool loadGame(const std::string& path) override
+    {
+        WarpNES* engine = new WarpNES();
+        printf("Loading ROM: %s\n", path.c_str());
+        if (!engine->loadROM(path)) {
+            printf("Failed to load ROM file: %s\n", path.c_str());
+            delete engine;
+            return false;
+        }
+        engine->reset();
+        // A fresh emulator per game: loading into the old one keeps some of
+        // its state. The old one saves its battery RAM when deleted.
+        SDL_LockAudio();
+        WarpNES* old = smbEngine;
+        smbEngine = engine;
+        SDL_UnlockAudio();
+        delete old;
+        paused = false;
+        memset(renderBuffer16, 0, sizeof(renderBuffer16));
+#ifndef __DJGPP__
+        size_t slash = path.find_last_of("/\\");
+        std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        SDL_SetWindowTitle(window, (std::string(APP_TITLE) + " - " + name).c_str());
+#endif
+        return true;
+    }
+    bool gameLoaded() const override { return smbEngine != nullptr; }
+    void resetGame() override { if (smbEngine) smbEngine->reset(); }
+    void saveState(int slot) override
+    {
+        if (!smbEngine) return;
+        smbEngine->saveState("save" + std::to_string(slot));
+        printf("State %d saved\n", slot);
+    }
+    bool loadState(int slot) override
+    {
+        if (!smbEngine) return false;
+        bool ok = smbEngine->loadState("save" + std::to_string(slot));
+        printf(ok ? "State %d loaded\n" : "Failed to load state %d\n", slot);
+        return ok;
+    }
+    void quit() override { running = false; }
+
+#ifdef __DJGPP__
+    int videoModeCount() override { return dos_mode_count(); }
+    std::string videoModeName(int index) override
+    {
+        char buf[48];
+        dos_mode_name(index, buf, sizeof(buf));
+        return buf;
+    }
+    int currentVideoMode() override { return dos_current_mode(window); }
+    std::string videoError() override { return lastVideoError; }
+    bool setVideoMode(int index) override
+    {
+        if (!dos_set_mode(window, index)) {
+            lastVideoError = SDL_GetError();
+            return false;
+        }
+        char id[32];
+        dos_mode_id(index, id, sizeof(id));
+        settings.setString("video", "dos_mode", id);
+        saveSettings();
+        return true;
+    }
+#else
+    // Window sizes 1x-5x, then full screen
+    int videoModeCount() override { return 6; }
+    std::string videoModeName(int index) override
+    {
+        if (index == 5) return "Full screen";
+        int s = index + 1;
+        return "Window " + std::to_string(s) + "x (" + std::to_string(RENDER_WIDTH * s) + "x" +
+               std::to_string(RENDER_HEIGHT * s) + ")";
+    }
+    int currentVideoMode() override { return fullscreen ? 5 : windowScale - 1; }
+    bool setVideoMode(int index) override
+    {
+        if (index < 0 || index > 5) return false;
+        if (index == 5) fullscreen = true;
+        else { fullscreen = false; windowScale = index + 1; }
+        applyWindowMode();
+        settings.setInt("video", "window_scale", windowScale);
+        settings.setBool("video", "fullscreen", fullscreen);
+        saveSettings();
+        return true;
+    }
+#endif
+
+    InputConfig& input() override { return ::input; }
+    void inputChanged() override
+    {
+        ::input.save(settings);
+        saveSettings();
+        ::input.openJoysticks();
+    }
+
+    std::string gameDirectory() override { return settings.getString("files", "game_dir", ""); }
+    void setGameDirectory(const std::string& dir) override
+    {
+        settings.setString("files", "game_dir", dir);
+        saveSettings();
+    }
+};
+
+static FrontendHost host;
+static Gui gui(host);
 
 /**
  * Initialize libraries for use.
@@ -249,6 +214,8 @@ static bool initialize()
 {
     // Load the configuration
     Configuration::initialize(CONFIG_FILE_NAME);
+    settings.loadFromFile(SDL_SETTINGS_FILE);
+    input.load(settings);
 
     // Initialize SDL with joystick support
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0)
@@ -260,25 +227,31 @@ static bool initialize()
 #ifdef __DJGPP__
     // MS-DOS: the window is the whole screen, in a VESA or VGA mode; there is
     // no SDL renderer, the frame is put on the screen by DOSVideo.cpp.
-    window = dos_create_window(APP_TITLE);
+    std::string mode = settings.getString("video", "dos_mode", "");
+    window = dos_create_window(APP_TITLE, mode.empty() ? nullptr : mode.c_str());
     if (window == nullptr)
     {
         std::cout << "dos_create_window() failed during initialize(): " << SDL_GetError() << std::endl;
         return false;
     }
 #else
+    windowScale = settings.getInt("video", "window_scale", Configuration::getRenderScale());
+    if (windowScale < 1 || windowScale > 5) windowScale = 3;
+    fullscreen = settings.getBool("video", "fullscreen", false);
+
     // Create the window
     window = SDL_CreateWindow(APP_TITLE,
                               SDL_WINDOWPOS_UNDEFINED,
                               SDL_WINDOWPOS_UNDEFINED,
-                              RENDER_WIDTH * Configuration::getRenderScale(),
-                              RENDER_HEIGHT * Configuration::getRenderScale(),
+                              RENDER_WIDTH * windowScale,
+                              RENDER_HEIGHT * windowScale,
                               0);
     if (window == nullptr)
     {
         std::cout << "SDL_CreateWindow() failed during initialize(): " << SDL_GetError() << std::endl;
         return false;
     }
+    if (fullscreen) applyWindowMode();
 
     // Setup the renderer and texture buffer
     renderer = SDL_CreateRenderer(window, -1, (Configuration::getVsyncEnabled() ? SDL_RENDERER_PRESENTVSYNC : 0) | SDL_RENDERER_ACCELERATED);
@@ -300,6 +273,9 @@ static bool initialize()
         std::cout << "SDL_CreateTexture() failed during initialize(): " << SDL_GetError() << std::endl;
         return false;
     }
+
+    // The GUI draws its own pointer, and only while the mouse is in use
+    SDL_ShowCursor(SDL_DISABLE);
 #endif // !__DJGPP__
 
     if (Configuration::getAudioEnabled())
@@ -325,9 +301,7 @@ static bool initialize()
     scalingCache->initialize();
 #endif
 
-    // Initialize the internal controller
-    controller.initializeController();
-
+    input.openJoysticks();
     return true;
 }
 
@@ -336,20 +310,17 @@ static bool initialize()
  */
 static void shutdown()
 {
+    SDL_CloseAudio();
+    delete smbEngine;   // saves battery RAM
+    smbEngine = nullptr;
 
-    // Cleanup internal controller
-    controller.cleanup();
+    input.closeJoysticks();
 
 #ifndef __DJGPP__
     if (scalingCache) {
         delete scalingCache;
         scalingCache = nullptr;
     }
-#endif
-
-    SDL_CloseAudio();
-
-#ifndef __DJGPP__
     SDL_DestroyTexture(scanlineTexture);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
@@ -359,308 +330,220 @@ static void shutdown()
     SDL_Quit();
 }
 
-// UPDATED: mainLoop function with 16-bit bridge
-static void mainLoop(const char* romFilename)
+// Put a 256x240 RGB565 picture on the screen
+static void present(const uint16_t* frame)
 {
-    // Load ROM from file
-    WarpNES engine;
-    smbEngine = &engine;
+#ifdef __DJGPP__
+    // MS-DOS: straight onto the VESA/VGA screen
+    dos_present(window, frame, RENDER_WIDTH, RENDER_HEIGHT);
+#else
+    convertRGB565ToARGB8888(frame, renderBuffer, RENDER_WIDTH, RENDER_HEIGHT);
+    SDL_RenderClear(renderer);
+    SDL_UpdateTexture(texture, NULL, renderBuffer, sizeof(uint32_t) * RENDER_WIDTH);
+    SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT);
+    SDL_RenderCopy(renderer, texture, NULL, NULL);
 
-    printf("Loading ROM: %s\n", romFilename);
-    if (!engine.loadROM(romFilename)) {
-        printf("Failed to load ROM file: %s\n", romFilename);
+    // Render scanlines if enabled
+    if (Configuration::getScanlinesEnabled() && scanlineTexture)
+    {
+        SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH * 3, RENDER_HEIGHT * 3);
+        SDL_RenderCopy(renderer, scanlineTexture, NULL, NULL);
+        SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT);
+    }
+    SDL_RenderPresent(renderer);
+#endif
+}
+
+// Mouse position in picture coordinates
+static void mouseToPicture(float x, float y, int* px, int* py)
+{
+#ifdef __DJGPP__
+    dos_screen_to_picture(x, y, px, py);
+#else
+    // SDL2 already gives renderer logical coordinates (RenderSetLogicalSize)
+    *px = (int)x;
+    *py = (int)y;
+#endif
+}
+
+// Keys that work while playing (the menus have their own)
+static void hotkey(int sc, bool ctrl, bool shift)
+{
+    if (sc == SDL_SCANCODE_ESCAPE) { gui.open(); return; }
+    if (ctrl && sc == SDL_SCANCODE_O) { gui.openGameBrowser(); return; }
+    if (ctrl && sc == SDL_SCANCODE_R) { host.resetGame(); return; }
+    if (ctrl && sc == SDL_SCANCODE_P) { paused = !paused; return; }
+    if (sc >= SDL_SCANCODE_F5 && sc <= SDL_SCANCODE_F8) {
+        int slot = sc - SDL_SCANCODE_F5 + 1;
+        if (shift) host.loadState(slot); else host.saveState(slot);
         return;
     }
-
-    printf("ROM loaded successfully\n");
-    engine.reset();
-
-    // Get the controller from the engine (like in your working SDLMain.cpp)
-    Controller& controller1 = engine.getController1();
-    Controller& controller2 = engine.getController2();
-
-    bool joystickInitialized = controller1.initJoystick();
-    if (joystickInitialized)
-    {
-        std::cout << "Joystick initialized successfully!" << std::endl;
+#ifndef __DJGPP__
+    if (sc == SDL_SCANCODE_F11) {
+        host.setVideoMode(fullscreen ? windowScale - 1 : 5);
+        return;
     }
-    else
+#endif
+}
+
+static void handleEvent(const SDL_Event& event, uint32_t now)
+{
+    GuiEvent ge;
+    switch (event.type)
     {
-        std::cout << "No joystick found or initialization failed. Using keyboard controls only." << std::endl;
+    case SDL_QUIT:
+        running = false;
+        break;
+#ifndef __DJGPP__
+    case SDL_WINDOWEVENT:
+        if (event.window.event == SDL_WINDOWEVENT_CLOSE) running = false;
+        break;
+#endif
+
+    case SDL_KEYDOWN: {
+#if SDL_MAJOR_VERSION >= 3
+        int sc = event.key.scancode;
+        int mod = event.key.mod;
+#else
+        int sc = event.key.keysym.scancode;
+        int mod = event.key.keysym.mod;
+#endif
+        ge.type = GuiEvent::KeyDown;
+        ge.scancode = sc;
+        ge.ctrl = (mod & KMOD_CTRL) != 0;
+        ge.shift = (mod & KMOD_SHIFT) != 0;
+        if (gui.active()) gui.handle(ge, now);
+        else if (!event.key.repeat) hotkey(sc, ge.ctrl, ge.shift);
+        break;
     }
 
-    bool running = true;
+#if SDL_MAJOR_VERSION >= 3
+    case SDL_EVENT_MOUSE_MOTION:
+        ge.type = GuiEvent::MouseMove;
+        mouseToPicture(event.motion.x, event.motion.y, &ge.x, &ge.y);
+        gui.handle(ge, now);
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        ge.type = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? GuiEvent::MouseDown : GuiEvent::MouseUp;
+        ge.button = event.button.button;
+        mouseToPicture(event.button.x, event.button.y, &ge.x, &ge.y);
+        gui.handle(ge, now);
+        break;
+    case SDL_EVENT_MOUSE_WHEEL: {
+        float mx, my;
+        SDL_GetMouseState(&mx, &my);
+        ge.type = GuiEvent::MouseWheel;
+        ge.wheel = event.wheel.y > 0 ? 1 : (event.wheel.y < 0 ? -1 : 0);
+        mouseToPicture(mx, my, &ge.x, &ge.y);
+        gui.handle(ge, now);
+        break;
+    }
+    case SDL_EVENT_JOYSTICK_ADDED:
+    case SDL_EVENT_JOYSTICK_REMOVED:
+        input.openJoysticks();
+        break;
+#else
+    case SDL_MOUSEMOTION:
+        ge.type = GuiEvent::MouseMove;
+        mouseToPicture((float)event.motion.x, (float)event.motion.y, &ge.x, &ge.y);
+        gui.handle(ge, now);
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        ge.type = event.type == SDL_MOUSEBUTTONDOWN ? GuiEvent::MouseDown : GuiEvent::MouseUp;
+        ge.button = event.button.button;
+        mouseToPicture((float)event.button.x, (float)event.button.y, &ge.x, &ge.y);
+        gui.handle(ge, now);
+        break;
+    case SDL_MOUSEWHEEL:
+        // position: the GUI keeps the last one from the motion events
+        ge.type = GuiEvent::MouseWheel;
+        ge.wheel = event.wheel.y > 0 ? 1 : (event.wheel.y < 0 ? -1 : 0);
+        ge.x = -1;
+        gui.handle(ge, now);
+        break;
+    case SDL_JOYDEVICEADDED:
+    case SDL_JOYDEVICEREMOVED:
+        input.openJoysticks();
+        break;
+#endif
+
+    case SDL_JOYBUTTONDOWN:
+        // for "press a button" in the Input dialog
+        if (gui.active()) {
+            ge.type = GuiEvent::JoyButton;
+            ge.joystick = input.joystickIndexFromID(event.jbutton.which);
+            ge.button = event.jbutton.button;
+            if (ge.joystick >= 0) gui.handle(ge, now);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+static void mainLoop()
+{
     int progStartTime = SDL_GetTicks();
     int frame = 0;
-    
-    // Key state tracking for toggle functions
-    static bool optimizedScalingKeyPressed = false;
-    static bool f11KeyPressed = false;
-    static bool fKeyPressed = false;
-    static bool f5KeyPressed = false;
-    static bool f6KeyPressed = false;
-    static bool f7KeyPressed = false;
-    static bool f8KeyPressed = false;
-    
-    printf("Using 16-bit rendering bridge\n");
-    
+
     while (running)
     {
+        uint32_t now = SDL_GetTicks();
         SDL_Event event;
-        while (SDL_PollEvent(&event))
+        while (SDL_PollEvent(&event)) handleEvent(event, now);
+        if (!running) break;
+
+        // No game: the game browser stays up
+        if (!smbEngine && !gui.active()) gui.openGameBrowser();
+
+        if (smbEngine && !gui.active() && !paused)
         {
-            switch (event.type)
-            {
-            case SDL_QUIT:
-                running = false;
-                break;
-#ifndef __DJGPP__
-            case SDL_WINDOWEVENT:
-                switch (event.window.event)
-                {
-                case SDL_WINDOWEVENT_CLOSE:
-                    running = false;
-                    break;
-                }
-                break;
-#endif
-            // Process joystick events (same as your working version)
-            case SDL_JOYAXISMOTION:
-            case SDL_JOYBUTTONDOWN:
-            case SDL_JOYBUTTONUP:
-            case SDL_CONTROLLERBUTTONDOWN:
-            case SDL_CONTROLLERBUTTONUP:
-            case SDL_CONTROLLERAXISMOTION:
-                if (joystickInitialized)
-                {
-                    controller1.processJoystickEvent(event);
-                }
-                break;
-            default:
-                break;
+            const Uint8* keys = SDL_GetKeyboardState(NULL);
+            bool p1[NES_BUTTONS], p2[NES_BUTTONS];
+            input.read(0, keys, p1);
+            input.read(1, keys, p2);
+            // $4016 reads player 1 of controller 1, $4017 player 2 of controller 2
+            Controller& c1 = smbEngine->getController1();
+            Controller& c2 = smbEngine->getController2();
+            for (int b = 0; b < NES_BUTTONS; b++) {
+                c1.setButtonState(PLAYER_1, (ControllerButton)b, p1[b]);
+                c2.setButtonState(PLAYER_2, (ControllerButton)b, p2[b]);
             }
+
+            smbEngine->update();
+            smbEngine->render16(renderBuffer16);
         }
 
-        // Handle keyboard input
-        const Uint8* keys = SDL_GetKeyboardState(NULL);
-
-        // Joystick-only states. Do NOT read getButtonState() here: it also
-        // contains last frame's keyboard state, so ORing it back in made every
-        // key latch on forever (e.g. Punch-Out!! punched once and never again).
-        bool joyA = controller1.getJoystickButtonState(PLAYER_1, BUTTON_A);
-        bool joyB = controller1.getJoystickButtonState(PLAYER_1, BUTTON_B);
-        bool joySelect = controller1.getJoystickButtonState(PLAYER_1, BUTTON_SELECT);
-        bool joyStart = controller1.getJoystickButtonState(PLAYER_1, BUTTON_START);
-        bool joyUp = controller1.getJoystickButtonState(PLAYER_1, BUTTON_UP);
-        bool joyDown = controller1.getJoystickButtonState(PLAYER_1, BUTTON_DOWN);
-        bool joyLeft = controller1.getJoystickButtonState(PLAYER_1, BUTTON_LEFT);
-        bool joyRight = controller1.getJoystickButtonState(PLAYER_1, BUTTON_RIGHT);
-
-        // Combine keyboard and joystick input (OR logic - either input works)
-        controller1.setButtonState(BUTTON_A, keys[SDL_SCANCODE_X] || joyA);
-        controller1.setButtonState(BUTTON_B, keys[SDL_SCANCODE_Z] || joyB);
-        controller1.setButtonState(BUTTON_SELECT, keys[SDL_SCANCODE_LEFTBRACKET] || joySelect);
-        controller1.setButtonState(BUTTON_START, keys[SDL_SCANCODE_RIGHTBRACKET] || joyStart);
-        controller1.setButtonState(BUTTON_UP, keys[SDL_SCANCODE_UP] || joyUp);
-        controller1.setButtonState(BUTTON_DOWN, keys[SDL_SCANCODE_DOWN] || joyDown);
-        controller1.setButtonState(BUTTON_LEFT, keys[SDL_SCANCODE_LEFT] || joyLeft);
-        controller1.setButtonState(BUTTON_RIGHT, keys[SDL_SCANCODE_RIGHT] || joyRight);
-
-        bool joy2A = controller2.getJoystickButtonState(PLAYER_1, BUTTON_A);
-        bool joy2B = controller2.getJoystickButtonState(PLAYER_1, BUTTON_B);
-        bool joy2Select = controller2.getJoystickButtonState(PLAYER_1, BUTTON_SELECT);
-        bool joy2Start = controller2.getJoystickButtonState(PLAYER_1, BUTTON_START);
-        bool joy2Up = controller2.getJoystickButtonState(PLAYER_1, BUTTON_UP);
-        bool joy2Down = controller2.getJoystickButtonState(PLAYER_1, BUTTON_DOWN);
-        bool joy2Left = controller2.getJoystickButtonState(PLAYER_1, BUTTON_LEFT);
-        bool joy2Right = controller2.getJoystickButtonState(PLAYER_1, BUTTON_RIGHT);
-
-        // Controller 2 keyboard mapping (using different keys)
-        controller2.setButtonState(BUTTON_A, keys[SDL_SCANCODE_K] || joy2A);          // K for A
-        controller2.setButtonState(BUTTON_B, keys[SDL_SCANCODE_J] || joy2B);          // J for B
-        controller2.setButtonState(BUTTON_SELECT, keys[SDL_SCANCODE_U] || joy2Select); // U for Select
-        controller2.setButtonState(BUTTON_START, keys[SDL_SCANCODE_I] || joy2Start);   // I for Start
-        controller2.setButtonState(BUTTON_UP, keys[SDL_SCANCODE_W] || joy2Up);        // W for Up
-        controller2.setButtonState(BUTTON_DOWN, keys[SDL_SCANCODE_S] || joy2Down);    // S for Down
-        controller2.setButtonState(BUTTON_LEFT, keys[SDL_SCANCODE_A] || joy2Left);    // A for Left
-        controller2.setButtonState(BUTTON_RIGHT, keys[SDL_SCANCODE_D] || joy2Right);  // D for Right
-
-        
-        // Debug key to print controller state (press D key)
-        if (keys[SDL_SCANCODE_D])
+        gui.setPausedLabel(paused && smbEngine && !gui.active());
+        if (gui.visible(now))
         {
-            controller1.printButtonStates();
-        }
-
-        // Update joystick state (same as your working version)
-        if (joystickInitialized)
-        {
-            controller1.updateJoystickState();
-        }
-
-        // Game control keys
-        if (keys[SDL_SCANCODE_R])
-        {
-            engine.reset();
-        }
-        if (keys[SDL_SCANCODE_ESCAPE])
-        {
-            running = false;
-            break;
-        }
-        
-        // Save/Load state handling (F5-F8 keys)
-        bool shiftPressed = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]);
-        
-        // F5 - Save/Load State 1
-        if (keys[SDL_SCANCODE_F5] && !f5KeyPressed) {
-            if (shiftPressed) {
-                if (engine.loadState("save1")) {
-                    printf("State 1 loaded\n");
-                } else {
-                    printf("Failed to load state 1\n");
-                }
-            } else {
-                engine.saveState("save1");
-                printf("State 1 saved\n");
-            }
-            f5KeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F5]) {
-            f5KeyPressed = false;
-        }
-
-        // F6 - Save/Load State 2
-        if (keys[SDL_SCANCODE_F6] && !f6KeyPressed) {
-            if (shiftPressed) {
-                if (engine.loadState("save2")) {
-                    printf("State 2 loaded\n");
-                } else {
-                    printf("Failed to load state 2\n");
-                }
-            } else {
-                engine.saveState("save2");
-                printf("State 2 saved\n");
-            }
-            f6KeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F6]) {
-            f6KeyPressed = false;
-        }
-
-        // F7 - Save/Load State 3
-        if (keys[SDL_SCANCODE_F7] && !f7KeyPressed) {
-            if (shiftPressed) {
-                if (engine.loadState("save3")) {
-                    printf("State 3 loaded\n");
-                } else {
-                    printf("Failed to load state 3\n");
-                }
-            } else {
-                engine.saveState("save3");
-                printf("State 3 saved\n");
-            }
-            f7KeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F7]) {
-            f7KeyPressed = false;
-        }
-
-        // F8 - Save/Load State 4
-        if (keys[SDL_SCANCODE_F8] && !f8KeyPressed) {
-            if (shiftPressed) {
-                if (engine.loadState("save4")) {
-                    printf("State 4 loaded\n");
-                } else {
-                    printf("Failed to load state 4\n");
-                }
-            } else {
-                engine.saveState("save4");
-                printf("State 4 saved\n");
-            }
-            f8KeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F8]) {
-            f8KeyPressed = false;
-        }
-        
-#ifndef __DJGPP__
-        // Toggle fullscreen with F11 (MS-DOS: always full screen)
-        if (keys[SDL_SCANCODE_F11] && !f11KeyPressed) {
-            Uint32 windowFlags = SDL_GetWindowFlags(window);
-            if (windowFlags & SDL_WINDOW_FULLSCREEN_DESKTOP) {
-                SDL_SetWindowFullscreen(window, 0);
-                printf("Switched to windowed mode\n");
-            } else {
-                SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-                printf("Switched to fullscreen mode\n");
-            }
-            f11KeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F11]) {
-            f11KeyPressed = false;
-        }
-        
-        // Keep F key for legacy fullscreen (always switches to fullscreen)
-        if (keys[SDL_SCANCODE_F] && !fKeyPressed) {
-            SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-            printf("F key: Switched to fullscreen mode\n");
-            fKeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_F]) {
-            fKeyPressed = false;
-        }
-#endif
-        
-        // Toggle optimized scaling (press O key)
-        if (keys[SDL_SCANCODE_O] && !optimizedScalingKeyPressed) {
-            if (scalingCache) {
-                bool enabled = scalingCache->isOptimizedScaling();
-                scalingCache->setOptimizedScaling(!enabled);
-                printf("Optimized scaling: %s\n", !enabled ? "Enabled" : "Disabled");
-            }
-            optimizedScalingKeyPressed = true;
-        } else if (!keys[SDL_SCANCODE_O]) {
-            optimizedScalingKeyPressed = false;
-        }
-
-        // Game engine update and rendering
-        engine.update();
-        
-        // CHANGED: Use 16-bit rendering like DOS version
-        engine.render16(renderBuffer16);
-
+            int y0 = 0, y1 = RENDER_HEIGHT;
 #ifdef __DJGPP__
-        // MS-DOS: straight onto the VESA/VGA screen
-        dos_present(window, renderBuffer16, RENDER_WIDTH, RENDER_HEIGHT);
-#else
-        // CHANGED: Convert 16-bit to 32-bit for SDL
-        convertRGB565ToARGB8888(renderBuffer16, renderBuffer, RENDER_WIDTH, RENDER_HEIGHT);
-
-        // Clear the renderer
-        SDL_RenderClear(renderer);
-
-        // Original rendering code (now using converted buffer)
-        SDL_UpdateTexture(texture, NULL, renderBuffer, sizeof(uint32_t) * RENDER_WIDTH);
-        SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT);
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-
-        // Render scanlines if enabled
-        if (Configuration::getScanlinesEnabled())
-        {
-            SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH * 3, RENDER_HEIGHT * 3);
-            SDL_RenderCopy(renderer, scanlineTexture, NULL, NULL);
-        }
-
-        // Present the rendered frame
-        SDL_RenderPresent(renderer);
+            dos_visible_lines(RENDER_HEIGHT, &y0, &y1);
 #endif
+            memcpy(guiBuffer16, renderBuffer16, sizeof(guiBuffer16));
+            gui.draw(guiBuffer16, RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now);
+            present(guiBuffer16);
+        }
+        else
+        {
+            present(renderBuffer16);
+        }
 
         // Frame timing
-        int now = SDL_GetTicks();
-        int delay = progStartTime + int(double(frame) * double(MS_PER_SEC) / double(Configuration::getFrameRate())) - now;
-        if(delay > 0) 
+        int nowTicks = SDL_GetTicks();
+        int delay = progStartTime + int(double(frame) * double(MS_PER_SEC) / double(Configuration::getFrameRate())) - nowTicks;
+        if (delay > 0)
         {
             SDL_Delay(delay);
         }
-        else 
+        else
         {
             frame = 0;
-            progStartTime = now;
+            progStartTime = nowTicks;
         }
         frame++;
     }
@@ -670,11 +553,15 @@ int main(int argc, char** argv)
 {
 #ifdef __DJGPP__
     setvbuf(stdout, NULL, _IONBF, 0); // WARPNES ROM.NES > LOG.TXT keeps everything, even after a crash
-#endif
-    if (argc < 2) {
-        std::cout << "Usage: " << argv[0] << " <rom_file>" << std::endl;
-        return -1;
+    // Long file names when DOS has them (Windows 9x, DOSLFN; SET LFN=N turns
+    // them off); show short names as they are rather than lowercased
+    _crt0_startup_flags |= _CRT0_FLAG_PRESERVE_FILENAME_CASE;
+    if (argv[0]) {
+        std::string exe = argv[0];
+        size_t slash = exe.find_last_of("/\\");
+        if (slash != std::string::npos) settingsFile = exe.substr(0, slash + 1) + "warpnes.ini";
     }
+#endif
 
     if (!initialize())
     {
@@ -682,7 +569,17 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    mainLoop(argv[1]);
+    // A game on the command line; without one, the game browser opens
+    if (argc >= 2)
+    {
+        if (!host.loadGame(argv[1]))
+        {
+            gui.openGameBrowser();
+            gui.showMessage("Error", std::string("Couldn't load ") + argv[1]);
+        }
+    }
+
+    mainLoop();
 
     shutdown();
 
