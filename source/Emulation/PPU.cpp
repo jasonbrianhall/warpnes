@@ -486,6 +486,37 @@ void PPU::scrollIncrementY()
 // Background for one scanline, driven by the loopy v/x registers captured at
 // the start of the line. Fetches 34 tiles like the real PPU (the MMC2 latch
 // relies on the off-screen ones).
+// RGB565 version of the active palette table, rebuilt only when the table
+// pointer changes
+static const uint32_t* rgb565Source = nullptr;
+static uint16_t rgb565Table[64];
+static inline const uint16_t* paletteRGB565()
+{
+    if (rgb565Source != paletteRGB) {
+        for (int i = 0; i < 64; i++) {
+            uint32_t c = paletteRGB[i];
+            rgb565Table[i] = ((c & 0xF80000) >> 8) | ((c & 0x00FC00) >> 5) | ((c & 0x0000F8) >> 3);
+        }
+        rgb565Source = paletteRGB;
+    }
+    return rgb565Table;
+}
+
+// bitSpread[b] has bit i of b moved to bit 2i, so spread(lo) | spread(hi) << 1
+// holds all eight 2-bit pixels of a tile row
+static uint16_t bitSpread[256];
+static bool bitSpreadReady = false;
+static inline void initBitSpread()
+{
+    if (bitSpreadReady) return;
+    for (int b = 0; b < 256; b++) {
+        uint16_t r = 0;
+        for (int i = 0; i < 8; i++) if (b & (1 << i)) r |= 1 << (2 * i);
+        bitSpread[b] = r;
+    }
+    bitSpreadReady = true;
+}
+
 void PPU::renderBackgroundScanline(int scanline)
 {
     if (scanline < 0 || scanline >= 240) return;
@@ -497,12 +528,31 @@ void PPU::renderBackgroundScanline(int scanline)
     bool ctrlChanges = !ctrlTimeline.empty();
     bool exAttr = engine.mmc5ExtendedAttributes();
     engine.setMMC5SpriteFetch(false);
+    initBitSpread();
+    const uint16_t* rgb565 = paletteRGB565();
+
+    // Mirroring can't change while one line is drawn, so look up where the
+    // four nametables live once instead of for every byte. MMC5 and the
+    // Mappers.cpp boards can source nametables elsewhere; they keep the
+    // general path.
+    const uint8_t* ntPages[4] = {nullptr, nullptr, nullptr, nullptr};
+    bool fastNT = engine.getMapper() != 5 && !engine.ext;
+    if (fastNT) {
+        for (int t = 0; t < 4; t++) ntPages[t] = &nametable[getNametableIndex(0x2000 + t * 0x400)];
+    }
 
     for (int tile = 0; tile < 34; tile++) {
         uint16_t ntAddr = 0x2000 | (v & 0x0FFF);
         uint16_t atAddr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
-        uint8_t tileIndex = readByte(ntAddr);
-        uint8_t attrByte = readByte(atAddr);
+        uint8_t tileIndex, attrByte;
+        if (fastNT) {
+            const uint8_t* page = ntPages[(v >> 10) & 3];
+            tileIndex = page[v & 0x3FF];
+            attrByte = page[atAddr & 0x3FF];
+        } else {
+            tileIndex = readByte(ntAddr);
+            attrByte = readByte(atAddr);
+        }
         int shift = ((v >> 4) & 0x04) | (v & 0x02);
         uint8_t paletteIndex = (attrByte >> shift) & 0x03;
 
@@ -532,18 +582,35 @@ void PPU::renderBackgroundScanline(int scanline)
             patternHi = readCHR(patternAddr + 8);
         }
 
-        int screenX = tile * 8 - fx;
-        for (int px = 0; px < 8; px++) {
-            int x = screenX + px;
-            if (x < 0 || x >= 256) continue;
-            uint8_t pixelValue = ((patternLo >> (7 - px)) & 1) | (((patternHi >> (7 - px)) & 1) << 1);
-            if (clipLeft && x < 8) pixelValue = 0;
+        // The four colours this tile can use, converted to RGB565 once per
+        // tile instead of once per pixel
+        uint16_t colors[4];
+        colors[0] = rgb565[palette[0] & 0x3F];
+        colors[1] = rgb565[palette[paletteIndex * 4 + 1] & 0x3F];
+        colors[2] = rgb565[palette[paletteIndex * 4 + 2] & 0x3F];
+        colors[3] = rgb565[palette[paletteIndex * 4 + 3] & 0x3F];
+        uint32_t pixels = bitSpread[patternLo] | (bitSpread[patternHi] << 1);
 
-            int bufferIndex = scanline * 256 + x;
-            backgroundMask[bufferIndex] = pixelValue == 0 ? 1 : 0;
-            uint8_t colorIndex = pixelValue == 0 ? palette[0] : palette[paletteIndex * 4 + pixelValue];
-            uint32_t color32 = paletteRGB[colorIndex & 0x3F];
-            frameBuffer[bufferIndex] = ((color32 & 0xF80000) >> 8) | ((color32 & 0x00FC00) >> 5) | ((color32 & 0x0000F8) >> 3);
+        int screenX = tile * 8 - fx;
+        int rowBase = scanline * 256;
+        if (screenX >= 0 && screenX + 7 < 256 && !(clipLeft && screenX < 8)) {
+            // Whole tile on screen and unclipped: no per-pixel checks
+            uint16_t* fb = &frameBuffer[rowBase + screenX];
+            uint8_t* mask = &backgroundMask[rowBase + screenX];
+            for (int px = 0; px < 8; px++) {
+                int pixelValue = (pixels >> (14 - 2 * px)) & 3;
+                mask[px] = pixelValue == 0;
+                fb[px] = colors[pixelValue];
+            }
+        } else {
+            for (int px = 0; px < 8; px++) {
+                int x = screenX + px;
+                if (x < 0 || x >= 256) continue;
+                int pixelValue = (pixels >> (14 - 2 * px)) & 3;
+                if (clipLeft && x < 8) pixelValue = 0;
+                backgroundMask[rowBase + x] = pixelValue == 0;
+                frameBuffer[rowBase + x] = colors[pixelValue];
+            }
         }
 
         // Coarse X increment, wrapping into the horizontal neighbour nametable

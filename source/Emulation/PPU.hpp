@@ -101,6 +101,24 @@ public:
     
     // PPU cycle tracking and catch-up (DJGPP compatible)
     void stepCycle(int scanline, int cycle, int mapper);
+
+    // Fast path for the per-dot loop: stepCycle only does work on a handful
+    // of dots per line, so skip the call on the rest. On dots it skips, the
+    // only effect stepCycle would have had is the position update and the
+    // ppuCycles count on lines 240 and 261.
+    // Dot at which the pending sprite-0 hit lands (0 when there is none)
+    int sprite0EventDot() const { return sprite0HitX + 1; }
+
+    inline void stepCycleFast(int scanline, int cycle, int mapper) {
+        if (cycle <= 1 || cycle == 256 || cycle == 257 || cycle == 280 ||
+            cycle == sprite0HitX + 1) {
+            stepCycle(scanline, cycle, mapper);
+            return;
+        }
+        currentScanline = scanline;
+        currentCycle = cycle;
+        if (scanline == 240 || scanline == 261) ppuCycles++;
+    }
     void catchUp(uint64_t targetCycles);
     uint64_t getCurrentCycles() const { return ppuCycles; }
     void setCycles(uint64_t cycles) { ppuCycles = cycles; }

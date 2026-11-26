@@ -895,6 +895,10 @@ void WarpNES::updateCycleAccurate() {
       0;
   int cpuCycleDebt = 0;
 
+  // The mapper can't change during a frame; look these up once
+  const int mapperNum = nesHeader.mapper;
+  const bool mmc3Family = isMMC3Family();
+
   for (int scanline = 0; scanline < TOTAL_SCANLINES; scanline++) {
     ppuCycleState.scanline = scanline;
 
@@ -916,6 +920,34 @@ void WarpNES::updateCycleAccurate() {
     }
 
     for (int cycle = 0; cycle < cyclesThisScanline; cycle++) {
+      // Skip ahead over dots where nothing happens: no CPU instruction is
+      // due and neither the PPU nor the mapper acts on them. Skipped dots
+      // only add to the CPU budget (and the PPU's dot count on lines 240
+      // and 261). Checked against the dot-by-dot loop with frame hashes.
+      {
+        int target = cycle + (CPU_DIVIDER - 1 - cpuCycleDebt);  // next CPU dot
+        if (target > cycle) {
+          int evt = cycle <= 1 ? cycle : cycle <= 256 ? 256 : cycle <= 257 ? 257
+                  : cycle <= 280 ? 280 : cyclesThisScanline;
+          int s0 = ppu->sprite0EventDot();
+          if (s0 >= cycle && s0 < evt) evt = s0;
+          if (mmc3Family || (ext && ext->wantsScanline)) {
+            if (cycle <= 260 && 260 < evt) evt = 260;
+            else if (mmc3Family && cycle <= 324 && 324 < evt) evt = 324;
+          }
+          if (mapperNum == 5 && cycle <= 337 && 337 < evt) evt = 337;
+          if (scanline == VBLANK_START_SCANLINE && cycle <= 1) evt = cycle;
+          if (evt < target) target = evt;
+          if (target > cyclesThisScanline) target = cyclesThisScanline;
+          int skipped = target - cycle;
+          if (skipped > 0) {
+            cpuCycleDebt += skipped;
+            if (scanline == 240 || scanline == 261) ppu->addCycles(skipped);
+            cycle = target;
+            if (cycle >= cyclesThisScanline) break;
+          }
+        }
+      }
       ppuCycleState.cycle = cycle;
 
       // VBlank flag set on cycle 1 of scanline 241
@@ -932,11 +964,12 @@ void WarpNES::updateCycleAccurate() {
       // Sprite 0 hit is detected pixel-accurately inside PPU::stepCycle
 
       // Step PPU cycle
-      ppu->stepCycle(scanline, cycle, nesHeader.mapper);
+      ppu->stepCycleFast(scanline, cycle, mapperNum);
 
-      if (isMMC3Family()) {
-        checkMMC3IRQ(scanline, cycle);
-      } else if (nesHeader.mapper == 5) {
+      if (mmc3Family) {
+        // checkMMC3IRQ only acts on dot 260 or 324
+        if (cycle == 260 || cycle == 324) checkMMC3IRQ(scanline, cycle);
+      } else if (mapperNum == 5) {
         stepMMC5Scanline(scanline, cycle);
       } else if (ext && ext->wantsScanline && cycle == 260 &&
                  (scanline < 240 || scanline == 261) && (ppu->getMask() & 0x18)) {
@@ -953,8 +986,8 @@ void WarpNES::updateCycleAccurate() {
         uint64_t cyclesBefore = totalCycles;
         // Mapper IRQ line (level-triggered): taken between instructions
         // whenever it is asserted and the I flag is clear.
-        bool mapperIRQ = (isMMC3Family() && mmc3.irqPending) ||
-                         (nesHeader.mapper == 5 && mmc5.irqPending && mmc5.irqEnable) ||
+        bool mapperIRQ = (mmc3Family && mmc3.irqPending) ||
+                         (mapperNum == 5 && mmc5.irqPending && mmc5.irqEnable) ||
                          (ext && ext->irq);
         if (mapperIRQ && !getFlag(FLAG_INTERRUPT)) {
           pushWord(regPC);
