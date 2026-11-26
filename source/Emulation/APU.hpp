@@ -3,15 +3,21 @@
 
 #include <cstdint>
 
+#ifndef __DJGPP__
+#include <mutex>
+#endif
+
 #define AUDIO_BUFFER_LENGTH 4096
 
 class Pulse;
 class Triangle;
 class Noise;
-class AllegroMIDIAudioSystem; // Forward declaration
+class AllegroMIDIAudioSystem; // FM-synthesis alternative output (WarpNES)
 
 /**
  * Audio processing unit emulator.
+ *
+ * Output format is signed 8-bit mono (matches the AUDIO_S8 SDL device).
  */
 class APU
 {
@@ -20,12 +26,13 @@ public:
     ~APU();
 
     /**
-     * Step the APU by one frame.
+     * Step the APU by one video frame (1/frameRate seconds of NES time).
      */
     void stepFrame();
 
     /**
-     * Output audio samples to the provided buffer.
+     * Output audio samples to the provided buffer. Always fills all
+     * len bytes (pads with the last sample on underrun).
      * @param buffer Output buffer for audio samples
      * @param len Length of the buffer in bytes
      */
@@ -39,12 +46,23 @@ public:
     void writeRegister(uint16_t address, uint8_t value);
 
     /**
-     * Toggle between APU and MIDI audio modes.
+     * Read $4015: bit n set while channel n's length counter is non-zero.
+     */
+    uint8_t readStatus();
+
+    /**
+     * Frames per second the frontend actually runs the emulator at, so each
+     * stepFrame() produces matching audio. 0 = use Configuration::getFrameRate().
+     */
+    void setFrameRate(double fps) { frameRateOverride = fps; }
+
+    /**
+     * Toggle between APU and FM-synthesis audio modes.
      */
     void toggleAudioMode();
 
     /**
-     * Check if currently using MIDI mode.
+     * Check if currently using the FM-synthesis mode.
      */
     bool isUsingMIDI() const;
 
@@ -53,43 +71,57 @@ public:
      */
     void debugAudio();
 
-
-
 private:
-    uint8_t audioBuffer[AUDIO_BUFFER_LENGTH];
-    int audioBufferLength;      /**< Amount of data currently in buffer */
+    AllegroMIDIAudioSystem* gameAudio;  /**< FM-synthesis audio system */
+    double frameRateOverride = 0.0;
 
-    int frameValue; /**< The value of the frame counter. */
+    // Ring buffer of signed 8-bit samples
+    int8_t audioBuffer[AUDIO_BUFFER_LENGTH];
+    int readPos;
+    int audioBufferLength;      /**< Amount of data currently in buffer */
+    int8_t lastSample;
+
+#ifndef __DJGPP__
+    std::mutex bufferMutex;
+#endif
+
+    // Frame sequencer
+    int frameStep;              /**< Current step of the frame sequencer */
+    bool fiveStepMode;          /**< $4017 bit 7 */
+
+    // Timing / resampling
+    double cycleRemainder;      /**< Fractional CPU cycles carried between frames */
+    double sampleClock;         /**< CPU cycles still needed for the next sample */
+    uint32_t pulse1Sum;         /**< Channel outputs summed over the current sample */
+    uint32_t pulse2Sum;
+    uint32_t triangleSum;
+    uint32_t noiseSum;
+    uint32_t sumCycles;         /**< CPU cycles covered by the sums */
+
+    // Output filters (approximation of the NES's analog output stage)
+    int filterRate;
+    float hpCoeff;
+    float lpCoeff;
+    float hpPrevIn;
+    float hpPrevOut;
+    float lpPrevOut;
 
     Pulse* pulse1;
     Pulse* pulse2;
     Triangle* triangle;
     Noise* noise;
 
-    AllegroMIDIAudioSystem* gameAudio;  /**< Enhanced audio system */
+    float pulseTable[32];
+    float tndTable[204];
 
-    /**
-     * Get the current mixed audio output sample.
-     * @return 8-bit unsigned audio sample (0-255, 128=silence)
-     */
-    uint8_t getOutput();
-    
-    void stepEnvelope();
-    void stepSweep();
-    void stepLength();
+    float mixAverage();
+    void pushSample(float value);
+
+    void clockQuarterFrame();
+    void clockHalfFrame();
+    void clockFrameSequencer();
     void writeControl(uint8_t value);
-    
-    struct MixCache {
-        uint8_t pulse1_val;
-        uint8_t pulse2_val;
-        uint8_t triangle_val;
-        uint8_t noise_val;
-        uint8_t result;
-        bool valid;
-    };
-    
-    static MixCache outputCache[256];  // Cache recent calculations
-    static int cacheIndex;
+    void writeFrameCounter(uint8_t value);
 };
 
 #endif // APU_HPP

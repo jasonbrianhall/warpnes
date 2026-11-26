@@ -72,6 +72,7 @@ public:
   // Audio
   void audioCallback(uint8_t *stream, int length);
   void toggleAudioMode();
+  void setAudioFrameRate(double fps);
   bool isUsingMIDIAudio() const;
   void debugAudioChannels();
 
@@ -155,6 +156,8 @@ private:
   uint16_t regPC;
   uint8_t regP; // Processor status: NV-BDIZC
   uint64_t totalCycles;
+  int extraCycles = 0;       // branch-taken / page-cross penalties for the current instruction
+  bool pageCrossed = false;  // set by indexed addressing modes
   uint64_t frameCycles;
 
   // NES Zapper

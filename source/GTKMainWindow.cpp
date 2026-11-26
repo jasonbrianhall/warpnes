@@ -259,6 +259,8 @@ bool GTKMainWindow::load_rom(const char* filename) {
     bool ok = engine->loadROM(filename);
     if (ok) {
         engine->reset();
+        // The frame clock runs the emulator at real NES speed
+        engine->setAudioFrameRate(1000000.0 / NES_FRAME_US);
     } else {
         delete engine;
         engine = nullptr;

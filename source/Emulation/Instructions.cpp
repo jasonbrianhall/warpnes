@@ -82,9 +82,21 @@ uint16_t WarpNES::addrZeroPageY() { return (fetchByte() + regY) & 0xFF; }
 
 uint16_t WarpNES::addrAbsolute() { return fetchWord(); }
 
-uint16_t WarpNES::addrAbsoluteX() { return fetchWord() + regX; }
+// Indexed modes note whether the index crossed a page; read instructions pay
+// one extra cycle for that (applied in executeInstruction).
+uint16_t WarpNES::addrAbsoluteX() {
+  uint16_t base = fetchWord();
+  uint16_t addr = base + regX;
+  pageCrossed = ((base ^ addr) & 0xFF00) != 0;
+  return addr;
+}
 
-uint16_t WarpNES::addrAbsoluteY() { return fetchWord() + regY; }
+uint16_t WarpNES::addrAbsoluteY() {
+  uint16_t base = fetchWord();
+  uint16_t addr = base + regY;
+  pageCrossed = ((base ^ addr) & 0xFF00) != 0;
+  return addr;
+}
 
 uint16_t WarpNES::addrIndirect() {
   uint16_t addr = fetchWord();
@@ -104,12 +116,18 @@ uint16_t WarpNES::addrIndirectX() {
 uint16_t WarpNES::addrIndirectY() {
   uint8_t addr = fetchByte();
   uint16_t base = readByte(addr) | (readByte((addr + 1) & 0xFF) << 8);
-  return base + regY;
+  uint16_t result = base + regY;
+  pageCrossed = ((base ^ result) & 0xFF00) != 0;
+  return result;
 }
 
+// Only called for taken branches: +1 cycle, +1 more if the target is on a
+// different page.
 uint16_t WarpNES::addrRelative() {
   int8_t offset = fetchByte();
-  return regPC + offset;
+  uint16_t target = regPC + offset;
+  extraCycles += ((target ^ regPC) & 0xFF00) ? 2 : 1;
+  return target;
 }
 
 // Instruction implementations

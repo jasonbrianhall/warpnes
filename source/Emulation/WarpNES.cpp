@@ -1165,6 +1165,8 @@ void WarpNES::executeInstruction() {
 
   uint8_t opcode = fetchByte();
   uint8_t cycles = instructionCycles[opcode];
+  extraCycles = 0;
+  pageCrossed = false;
 
   //printf("Opcode %i\n", opcode);
 
@@ -2015,6 +2017,25 @@ void WarpNES::executeInstruction() {
     break;
   }
 
+  // Taken branches and page-crossing indexed reads take extra cycles
+  cycles += extraCycles;
+  if (pageCrossed) {
+    switch (opcode) {
+    // abs,X / abs,Y / (ind),Y reads: ADC AND CMP EOR LDA LDX LDY ORA SBC,
+    // plus unofficial LAX and NOP abs,X
+    case 0x7D: case 0x79: case 0x71: case 0x3D: case 0x39: case 0x31:
+    case 0xDD: case 0xD9: case 0xD1: case 0x5D: case 0x59: case 0x51:
+    case 0xBD: case 0xB9: case 0xB1: case 0xBE: case 0xBC: case 0x1D:
+    case 0x19: case 0x11: case 0xFD: case 0xF9: case 0xF1: case 0xBF:
+    case 0xB3: case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC:
+    case 0xFC:
+      cycles++;
+      break;
+    default:
+      break;
+    }
+  }
+
   // Update cycle counters
   totalCycles += cycles;
   frameCycles += cycles;
@@ -2087,6 +2108,8 @@ uint8_t WarpNES::readByte(uint16_t address) {
     // APU and I/O registers
 
     switch (address) {
+    case 0x4015:
+      return apu->readStatus();
     case 0x4016:
       return controller1->readByte(PLAYER_1);
     case 0x4017: {
@@ -2433,6 +2456,8 @@ void WarpNES::audioCallback(uint8_t *stream, int length) {
 }
 
 void WarpNES::toggleAudioMode() { apu->toggleAudioMode(); }
+
+void WarpNES::setAudioFrameRate(double fps) { apu->setFrameRate(fps); }
 
 bool WarpNES::isUsingMIDIAudio() const { return apu->isUsingMIDI(); }
 
