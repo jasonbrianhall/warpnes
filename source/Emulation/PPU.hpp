@@ -127,6 +127,8 @@ public:
     // Frame state tracking
     bool isInVBlank() const { return inVBlank; }
     int getCurrentScanline() const { return currentScanline; }
+    // The frame being drawn (lines above the current scanline are this frame's)
+    const uint16_t* getFrameBuffer() const { return frameBuffer; }
     void setWriteDotOffset(int dots) { writeDotOffset = dots; }
     int getCurrentCycle() const { return currentCycle; }
     bool isFrameComplete() const { return frameComplete; }

@@ -28,24 +28,14 @@ void Zapper::setLightDetected(bool detected)
     lightDetected = detected;
 }
 
-uint8_t Zapper::readByte() 
+uint8_t Zapper::readByte()
 {
-    // NES Zapper register format (read from $4017):
-    // Bit 4: Light sense (0 = light detected, 1 = no light)
-    // Bit 3: Trigger (0 = pressed, 1 = not pressed)
-    
+    // $4017 with a Zapper in port 2:
+    //   bit 3: light sensed, 0 = light seen, 1 = dark
+    //   bit 4: trigger, 1 = pulled
     uint8_t result = 0x00;
-    
-    // Trigger state (inverted - 0 when pressed)
-    if (!triggerPressed) {
-        result |= 0x08;  // Bit 3
-    }
-    
-    // Light detection (inverted - 0 when light detected)
-    if (!lightDetected) {
-        result |= 0x10;  // Bit 4
-    }
-    
+    if (!lightDetected) result |= 0x08;
+    if (triggerPressed) result |= 0x10;
     return result;
 }
 

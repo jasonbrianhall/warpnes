@@ -43,6 +43,9 @@ public:
   bool isZapperEnabled() const { return zapperEnabled; }
   Zapper &getZapper() { return *zapper; }
   void updateZapperInput(int mouseX, int mouseY, bool mousePressed);
+  // Aim (NES pixels; x < 0: off the screen) and trigger, set by the front
+  // end every frame. Light is worked out when the game reads $4017.
+  void setZapperState(int x, int y, bool trigger);
 
   // Add these methods that PPU needs (same as SMBEngine)
   uint8_t readData(uint16_t address);
@@ -232,6 +235,7 @@ private:
     return readByteSlow(address);
   }
   uint8_t readByteSlow(uint16_t address);
+  bool zapperSeesLight();
   int32_t prgOffset(uint16_t address);
   void refillPRGSlot(int slot);
   // PRG read cache: slot pointers valid while prgSlotGen == prgMapGen

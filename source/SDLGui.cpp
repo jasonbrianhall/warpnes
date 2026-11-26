@@ -3,7 +3,7 @@
  */
 #include "SDLGui.hpp"
 #include "SDLInput.hpp"
-#include "GuiFont5x8.h"
+#include "GuiFontDejaVu.h"
 
 #include <SDL2/SDL.h>   // scancodes only
 
@@ -44,7 +44,7 @@ static const uint16_t C_GRAY = rgb(128, 128, 128);
 static const uint16_t C_DIR = rgb(0, 0, 160);
 static const uint16_t C_ACCENT = rgb(176, 0, 0);
 
-static const int CHAR_W = 6;     // 5 pixels + 1 space
+static const int CHAR_W = 6;     // GUI font cell width (GuiFontDejaVu.h)
 static const int LINE_H = 10;
 static const int BAR_H = 11;
 
@@ -84,16 +84,36 @@ static void bevel(int x, int y, int w, int h, bool raised)
     }
 }
 
+// Mix two RGB565 colours: a/4 of c over d (a = 0..4)
+static inline uint16_t mix565(uint16_t d, uint16_t c, int a)
+{
+    int r = ((d >> 11) * (4 - a) + (c >> 11) * a) / 4;
+    int g = (((d >> 5) & 63) * (4 - a) + ((c >> 5) & 63) * a) / 4;
+    int b = ((d & 31) * (4 - a) + (c & 31) * a) / 4;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// Text in the GUI font (DejaVu Sans Mono, anti-aliased). y is the top of
+// the old 8-pixel glyph box: the 6x10 cell starts a line above it, so
+// the baseline stays where it was.
 static void text(int x, int y, const std::string& s, uint16_t c)
 {
     for (size_t i = 0; i < s.size(); i++, x += CHAR_W) {
         unsigned char ch = (unsigned char)s[i];
         if (ch == ' ') continue;
         if (ch < 33 || ch > 126) ch = '?';   // outside ASCII (DOS code page names)
-        const unsigned char* g = font5x8[ch - 33];
-        for (int row = 0; row < 8; row++)
-            for (int col = 0; col < 5; col++)
-                if (g[row] & (1 << col)) pset(x + col, y + row, c);
+        const unsigned int* g = guiFont[ch - 32];
+        for (int row = 0; row < GUI_FONT_H; row++) {
+            int py = y - 1 + row;
+            if (py < cvY0 || py >= cvY1) continue;
+            unsigned int bits = g[row];
+            for (int col = 0; col < GUI_FONT_W && bits; col++, bits >>= 3) {
+                int a = bits & 7, px = x + col;
+                if (!a || px < 0 || px >= cvW) continue;
+                uint16_t& d = cv[py * cvW + px];
+                d = a >= GUI_FONT_LEVELS ? c : mix565(d, c, a);
+            }
+        }
     }
 }
 
@@ -189,10 +209,19 @@ struct ListBox
     static const int SB_W = 9;
     int rows() const { return std::max(1, (h - 4) / LINE_H); }
     int maxScroll() const { return std::max(0, count - rows()); }
-    void clamp()
+    // Keep sel and scroll in range, without moving the view (the wheel and
+    // the scroll bar may leave the selection out of sight)
+    void bound()
     {
         if (count <= 0) { sel = 0; scroll = 0; return; }
         sel = std::max(0, std::min(sel, count - 1));
+        scroll = std::max(0, std::min(scroll, maxScroll()));
+    }
+    // After the selection moved (keys, jump to letter): bring it into view
+    void clamp()
+    {
+        bound();
+        if (count <= 0) return;
         if (sel < scroll) scroll = sel;
         if (sel >= scroll + rows()) scroll = sel - rows() + 1;
         scroll = std::max(0, std::min(scroll, maxScroll()));
@@ -380,7 +409,7 @@ public:
         text(x + 6, y + 15, fitText(path, w - 12, true), C_TEXT);
         list.x = x + 4; list.y = y + 26; list.w = w - 8; list.h = h - 26 - 20;
         list.count = (int)entries.size();
-        list.clamp();
+        list.bound();
         list.draw([&](int i, uint16_t& color) {
             const Entry& en = entries[i];
             if (en.kind != E_FILE) color = C_DIR;
@@ -616,7 +645,9 @@ public:
         window(x, y, w, h, title);
         list.x = x + 4; list.y = y + 15; list.w = w - 8; list.h = h - 15 - 20;
         list.count = gui.host.videoModeCount();
-        list.clamp();
+        // the current mode in view when the dialog opens; after that the
+        // view stays where the user scrolls it
+        if (firstDraw) { list.clamp(); firstDraw = false; } else list.bound();
         list.draw([&](int i, uint16_t& color) {
             if (i == current) color = C_ACCENT;
             return (i == current ? "* " : "  ") + gui.host.videoModeName(i);
@@ -658,6 +689,7 @@ public:
 private:
     ListBox list;
     Button okBtn, cancelBtn;
+    bool firstDraw = true;
     int current, lastRow = -1;
     uint32_t lastTime = 0;
     DialogResult apply()
@@ -851,7 +883,7 @@ private:
 class AboutDialog : public GuiDialog
 {
 public:
-    AboutDialog(Gui& g) : GuiDialog(g, "About WarpNES", 232, 150) {}
+    AboutDialog(Gui& g) : GuiDialog(g, "About WarpNES", 232, 170) {}
     void draw(uint32_t) override
     {
         place();
@@ -870,6 +902,8 @@ public:
 #endif
             "",
             "Controls: Input menu",
+            "Zapper: mouse aims, left click",
+            "  fires (Input > Zapper)",
         };
         int ly = y + 16;
         for (const char* l : lines) { text(x + 8, ly, l, C_TEXT); ly += LINE_H; }
@@ -896,7 +930,7 @@ enum MenuId {
     M_SAVE1, M_SAVE2, M_SAVE3, M_SAVE4,
     M_LOAD1, M_LOAD2, M_LOAD3, M_LOAD4,
     M_VIDEO,
-    M_INPUT1, M_INPUT2,
+    M_INPUT1, M_INPUT2, M_ZAPPER,
     M_ABOUT
 };
 
@@ -915,13 +949,28 @@ static const std::vector<Menu>& menus()
                     { "Load State 1", "Sh+F5", M_LOAD1 }, { "Load State 2", "Sh+F6", M_LOAD2 },
                     { "Load State 3", "Sh+F7", M_LOAD3 }, { "Load State 4", "Sh+F8", M_LOAD4 } } },
         { "Video", { { "Display Mode...", "", M_VIDEO } } },
-        { "Input", { { "Player 1...", "", M_INPUT1 }, { "Player 2...", "", M_INPUT2 } } },
+        { "Input", { { "Player 1...", "", M_INPUT1 }, { "Player 2...", "", M_INPUT2 },
+                     { nullptr, nullptr, 0 },
+                     { "Zapper (mouse)", "", M_ZAPPER } } },
         { "Help", { { "About / Keys...", "", M_ABOUT } } },
     };
     return m;
 }
 
 static bool needsGame(int id) { return id >= M_RESET && id <= M_LOAD4; }
+
+// Right-hand column of a menu item: its key, or for the Zapper its setting
+static const char* itemKeys(const MenuItem& it, GuiHost& host)
+{
+    if (it.id == M_ZAPPER) {
+        switch (host.zapperSetting()) {
+            case 1: return "On";
+            case 2: return "Off";
+            default: return host.zapperActive() ? "Auto: on" : "Auto: off";
+        }
+    }
+    return it.keys;
+}
 
 static int menuTitleX(int menu)
 {
@@ -973,7 +1022,7 @@ void Gui::menuBox(int menu, int& x, int& y, int& w, int& h) const
     for (const MenuItem& it : m.items) {
         if (!it.label) continue;
         labelW = std::max(labelW, textWidth(it.label));
-        keysW = std::max(keysW, textWidth(it.keys));
+        keysW = std::max(keysW, textWidth(it.id == M_ZAPPER ? "Auto: off" : it.keys));
     }
     w = labelW + (keysW ? keysW + 18 : 0) + 16;
     h = 4;
@@ -1031,6 +1080,12 @@ void Gui::runMenuItem(int menu, int item)
         case M_INPUT1: dialog.reset(new InputDialog(*this, 0)); break;
         case M_INPUT2: dialog.reset(new InputDialog(*this, 1)); break;
         case M_ABOUT: dialog.reset(new AboutDialog(*this)); break;
+        case M_ZAPPER:
+            // Auto -> On -> Off -> Auto; the menu stays open to show it
+            host.setZapperSetting((host.zapperSetting() + 1) % 3);
+            openMenu = menu;
+            hotItem = item;
+            break;
     }
 }
 
@@ -1038,13 +1093,19 @@ bool Gui::handle(const GuiEvent& e, uint32_t now)
 {
     bool mouse = e.type == GuiEvent::MouseMove || e.type == GuiEvent::MouseDown ||
                  e.type == GuiEvent::MouseUp || e.type == GuiEvent::MouseWheel;
+    // Aiming the Zapper in the game: the mouse belongs to the game
+    bool aiming = zapperMode && !barOpen && !dialog && !pendingMessage;
     if (mouse) {
         if (!(e.type == GuiEvent::MouseWheel && e.x < 0)) {   // wheel without a position: keep the last
             mouseX = std::max(0, std::min(width - 1, e.x));
             mouseY = std::max(top, std::min(bottom - 1, e.y));
         }
-        lastMouseMove = now;
-        mouseSeen = true;
+        if (!aiming) {
+            lastMouseMove = now;
+            mouseSeen = true;
+        } else {
+            mouseSeen = false;   // no pointer or menu bar over the game
+        }
     }
     GuiEvent ev = e;
     if (mouse) { ev.x = mouseX; ev.y = mouseY; }
@@ -1191,7 +1252,8 @@ void Gui::draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t now)
                 col = C_WHITE;
             }
             text(x + 8, iy + 2, it.label, col);
-            if (it.keys && *it.keys) text(x + mw - 6 - textWidth(it.keys), iy + 2, it.keys, col);
+            const char* keys = itemKeys(it, host);
+            if (keys && *keys) text(x + mw - 6 - textWidth(keys), iy + 2, keys, col);
             iy += LINE_H + 1;
         }
     }

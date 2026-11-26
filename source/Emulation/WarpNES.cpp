@@ -2444,8 +2444,8 @@ uint8_t WarpNES::readByteSlow(uint16_t address) {
       return controller1->readByte(PLAYER_1);
     case 0x4017: {
       if (zapperEnabled && zapper) {
-        uint8_t zapperValue = zapper->readByte();
-        return zapperValue;
+        zapper->setLightDetected(zapperSeesLight());
+        return zapper->readByte();
       } else {
         return controller2->readByte(PLAYER_2);
       }
@@ -3547,6 +3547,47 @@ void WarpNES::enableZapper(bool enable) {
   if (enable) {
     std::cout << "NES Zapper enabled" << std::endl;
   }
+}
+
+void WarpNES::setZapperState(int x, int y, bool trigger) {
+  zapper->setMousePosition(x, y);
+  zapper->setTriggerPressed(trigger);
+}
+
+// The Zapper's photodiode sees light while the TV beam is drawing a bright
+// spot where it points, and for a while after (the phosphor glows and the
+// sensor's output lingers): a bright pixel at the aim point on this frame,
+// drawn within the last ~25 scanlines. Games such as Duck Hunt black out the
+// screen, draw white boxes over the targets for one frame, and poll $4017
+// while that frame is drawn, so it has to be judged at the time of the read.
+bool WarpNES::zapperSeesLight() {
+  int x = zapper->getMouseX(), y = zapper->getMouseY();
+  if (x < 0 || y < 0 || x >= 256 || y >= 240) return false;
+
+  int scanline = ppuCycleState.scanline;
+  int cycle = ppuCycleState.cycle;
+  // Last line already in the frame buffer: lines are drawn at dot 256
+  int lastDrawn = (scanline < 240) ? (cycle >= 256 ? scanline : scanline - 1) : 239;
+  if (scanline >= 261 || lastDrawn < 0) return false;   // new frame not drawn yet
+  if (scanline < 240 && (lastDrawn < y || lastDrawn - y > 25)) return false;
+  if (scanline >= 240 && scanline - y > 25) return false;
+
+  const uint16_t* fb = ppu->getFrameBuffer();
+  // A small area around the aim point, only lines that are drawn already
+  for (int dy = -2; dy <= 2; dy++) {
+    int yy = y + dy;
+    if (yy < 0 || yy > lastDrawn || yy >= 240) continue;
+    for (int dx = -2; dx <= 2; dx++) {
+      int xx = x + dx;
+      if (xx < 0 || xx >= 256) continue;
+      uint16_t c = fb[yy * 256 + xx];
+      int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+      // brightness 0-255 (r, b out of 31; g out of 63)
+      int lum = (r * 8 * 299 + g * 4 * 587 + b * 8 * 114) / 1000;
+      if (lum >= 160) return true;
+    }
+  }
+  return false;
 }
 
 void WarpNES::updateZapperInput(int mouseX, int mouseY, bool mousePressed) {
