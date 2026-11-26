@@ -489,6 +489,7 @@ void PPU::scrollIncrementY()
 // RGB565 version of the active palette table, rebuilt only when the table
 // pointer changes
 static const uint32_t* rgb565Source = nullptr;
+static uint32_t rgb565Generation = 0;  // bumped whenever rgb565Table is rebuilt
 static uint16_t rgb565Table[64];
 static inline const uint16_t* paletteRGB565()
 {
@@ -498,6 +499,7 @@ static inline const uint16_t* paletteRGB565()
             rgb565Table[i] = ((c & 0xF80000) >> 8) | ((c & 0x00FC00) >> 5) | ((c & 0x0000F8) >> 3);
         }
         rgb565Source = paletteRGB;
+        rgb565Generation++;
     }
     return rgb565Table;
 }
@@ -538,26 +540,52 @@ void PPU::renderBackgroundScanline(int scanline)
     const uint16_t* rgb565 = paletteRGB565();
 
     // Mirroring can't change while one line is drawn, so look up where the
-    // four nametables live once instead of for every byte. MMC5 and the
+    // nametables live once instead of for every byte. A line only touches
+    // two of them: the one it starts in and its horizontal neighbour (coarse
+    // X wraps flip bit 10; nothing changes the Y bit mid-line). MMC5 and the
     // Mappers.cpp boards can source nametables elsewhere; they keep the
     // general path.
     const uint8_t* ntPages[4] = {nullptr, nullptr, nullptr, nullptr};
     bool fastNT = engine.getMapper() != 5 && !engine.ext;
     if (fastNT) {
-        for (int t = 0; t < 4; t++) ntPages[t] = &nametable[getNametableIndex(0x2000 + t * 0x400)];
+        int t0 = (v >> 10) & 3;
+        ntPages[t0] = &nametable[getNametableIndex(0x2000 + t0 * 0x400)];
+        ntPages[t0 ^ 1] = &nametable[getNametableIndex(0x2000 + (t0 ^ 1) * 0x400)];
     }
 
     // Also fixed for the whole line: CHR banks and the palette. Look up the
-    // CHR pages once, and build, for each background palette, the colours of
-    // every 2-pixel combination (index = left pixel * 4 + right pixel).
-    const uint8_t* chrPages[8];
-    for (int p = 0; p < 8; p++) chrPages[p] = engine.chrPage(p);
-    uint32_t pairColors[4][16];
-    for (int pal = 0; pal < 4; pal++) {
-        uint16_t c[4];
-        c[0] = rgb565[palette[0] & 0x3F];
-        for (int k = 1; k < 4; k++) c[k] = rgb565[palette[pal * 4 + k] & 0x3F];
-        for (int n = 0; n < 16; n++) pairColors[pal][n] = (uint32_t)c[n >> 2] | ((uint32_t)c[n & 3] << 16);
+    // CHR pages once (only the 4 KB pattern table(s) this line can use).
+    const uint8_t* chrPages[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    {
+        bool lo = ctrlChanges, hi = ctrlChanges;
+        if (!ctrlChanges) {
+            if (scanlineCtrl[scanline] & 0x10) hi = true; else lo = true;
+        }
+        if (lo) for (int p = 0; p < 4; p++) chrPages[p] = engine.chrPage(p);
+        if (hi) for (int p = 4; p < 8; p++) chrPages[p] = engine.chrPage(p);
+    }
+
+    // For each background palette, the colours of every 2-pixel combination
+    // (index = left pixel * 4 + right pixel). Palettes rarely change, so the
+    // table is kept and only rebuilt when the colours it was made from
+    // change, instead of every line.
+    static uint32_t pairColors[4][16];
+    static uint8_t pairKey[16];
+    static const uint16_t* pairKeyTable = nullptr;
+    static uint32_t pairKeySource = 0;
+    uint8_t key[16];
+    for (int i = 0; i < 16; i++) key[i] = palette[i] & 0x3F;
+    if (pairKeyTable != rgb565 || pairKeySource != rgb565Generation ||
+        memcmp(key, pairKey, 16) != 0) {
+        memcpy(pairKey, key, 16);
+        pairKeyTable = rgb565;
+        pairKeySource = rgb565Generation;
+        for (int pal = 0; pal < 4; pal++) {
+            uint16_t c[4];
+            c[0] = rgb565[key[0]];
+            for (int k = 1; k < 4; k++) c[k] = rgb565[key[pal * 4 + k]];
+            for (int n = 0; n < 16; n++) pairColors[pal][n] = (uint32_t)c[n >> 2] | ((uint32_t)c[n & 3] << 16);
+        }
     }
 
     for (int tile = 0; tile < 34; tile++) {
@@ -621,10 +649,15 @@ void PPU::renderBackgroundScanline(int scanline)
             // Two pixels / four mask bytes per store: fewer memory writes,
             // which is what costs most under DOSBox
             memcpy(mask, transparentMask[patternLo | patternHi], 8);
-            for (int k = 0; k < 4; k++) {
-                uint32_t pair = pairs[(pixels >> (12 - 4 * k)) & 15];
-                memcpy(fb + 2 * k, &pair, 4);
-            }
+            // Unrolled by hand: GCC -O2 keeps this as a loop
+            uint32_t p0 = pairs[(pixels >> 12) & 15];
+            uint32_t p1 = pairs[(pixels >> 8) & 15];
+            uint32_t p2 = pairs[(pixels >> 4) & 15];
+            uint32_t p3 = pairs[pixels & 15];
+            memcpy(fb + 0, &p0, 4);
+            memcpy(fb + 2, &p1, 4);
+            memcpy(fb + 4, &p2, 4);
+            memcpy(fb + 6, &p3, 4);
         } else {
             for (int px = 0; px < 8; px++) {
                 int x = screenX + px;
@@ -1337,13 +1370,16 @@ void PPU::renderScanline(int scanline, int mapper) {
                         ((bgColor32 & 0x00FC00) >> 5) | 
                         ((bgColor32 & 0x0000F8) >> 3);
     
-    for (int x = 0; x < 256; x++) {
-        frameBuffer[scanline * 256 + x] = bgColor16;
-    }
-    
-    // Render background first
+    // Render background first. It writes all 256 pixels of the line (34
+    // tiles cover it whatever the fine X; transparent and left-clipped
+    // pixels get the backdrop colour), so the line only needs clearing to
+    // the backdrop when the background is off.
     if (ppuMask & 0x08) {
         renderBackgroundScanline(scanline);
+    } else {
+        uint32_t fill = (uint32_t)bgColor16 * 0x00010001u;
+        uint16_t* row = &frameBuffer[scanline * 256];
+        for (int x = 0; x < 256; x += 2) memcpy(row + x, &fill, 4);
     }
     
     // Render sprites the correct way: in order 0-63, but only draw if no higher priority sprite already drew there
@@ -1359,7 +1395,9 @@ void PPU::renderScanline(int scanline, int mapper) {
         engine.setMMC5SpriteFetch(true);
         for (int spriteIndex = 0; spriteIndex < 64; spriteIndex++) {
             uint8_t spriteY = oam[spriteIndex * 4];
-            bool onLine = scanline >= spriteY + 1 && scanline < spriteY + 1 + height;
+            // On this line: spriteY + 1 <= scanline < spriteY + 1 + height,
+            // as one unsigned compare
+            bool onLine = (unsigned)(scanline - spriteY - 1) < (unsigned)height;
             // Sprites not on this line draw nothing and fetch nothing
             if (!onLine || spriteY >= 0xEF) continue;
             bool realFetch = fetched < 8;

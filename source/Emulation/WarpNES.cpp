@@ -922,7 +922,9 @@ void WarpNES::updateCycleAccurate() {
 
     // One CPU instruction (with any pending mapper IRQ taken first).
     auto runCPU = [&]() {
-      uint64_t cyclesBefore = totalCycles;
+      // Low 32 bits are enough for the few cycles one instruction takes,
+      // and cheaper than 64-bit arithmetic on 32-bit CPUs (DOS)
+      uint32_t cyclesBefore = (uint32_t)totalCycles;
       // Mapper IRQ line (level-triggered): taken between instructions
       // whenever it is asserted and the I flag is clear.
       bool mapperIRQ = (mmc3Family && mmc3.irqPending) ||
@@ -937,7 +939,7 @@ void WarpNES::updateCycleAccurate() {
         frameCycles += 7;
       }
       executeInstruction();
-      uint64_t cyclesUsed = totalCycles - cyclesBefore;
+      uint32_t cyclesUsed = (uint32_t)totalCycles - cyclesBefore;
       cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
       if (ext && ext->wantsCpuClock) ext->cpuClock((int)cyclesUsed);
 
@@ -1160,6 +1162,10 @@ void WarpNES::reset() {
 void WarpNES::createExtMapper() {
   delete ext;
   ext = nullptr;
+  // Drop any cached PRG slots: readByte() trusts a valid slot without
+  // checking for ext / MMC5, whose reads never fill the cache
+  for (int s = 0; s < 4; s++) prgSlotPtr[s] = nullptr;
+  prgMapGen++;
   MapperInfo info;
   info.number = nesHeader.mapper;
   info.submapper = nesHeader.submapper;

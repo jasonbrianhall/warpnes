@@ -176,7 +176,7 @@ private:
   void syncAPU();
   int extraCycles = 0;       // branch-taken / page-cross penalties for the current instruction
   bool pageCrossed = false;  // set by indexed addressing modes
-  uint64_t frameCycles;
+  uint32_t frameCycles;  // not read anywhere; 32-bit so the per-instruction add is cheap on 32-bit CPUs
 
   // NES Zapper
   Zapper *zapper;
@@ -221,7 +221,10 @@ private:
   // (registers, mappers, SRAM, open bus) goes to readByteSlow.
   inline uint8_t readByte(uint16_t address) {
     if (address < 0x2000) return ram[address & 0x7FF];
-    if (address >= 0x8000 && !ext && nesHeader.mapper != 5) {
+    // ext and MMC5 boards never fill the slot cache (readByteSlow returns
+    // before refillPRGSlot for them, and createExtMapper clears it), so a
+    // valid slot needs no further checks
+    if (address >= 0x8000) {
       int slot = (address >> 13) & 3;
       if (prgSlotGen[slot] == prgMapGen && prgSlotPtr[slot])
         return prgSlotPtr[slot][address & 0x1FFF];
