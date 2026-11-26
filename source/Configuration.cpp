@@ -69,7 +69,7 @@ bool SimpleINI::saveToFile(const std::string& filename) {
     return true;
 }
 
-std::string SimpleINI::getString(const std::string& section, const std::string& key, const std::string& defaultValue) {
+std::string SimpleINI::getString(const std::string& section, const std::string& key, const std::string& defaultValue) const {
     auto sectionIt = data.find(section);
     if (sectionIt != data.end()) {
         auto keyIt = sectionIt->second.find(key);
@@ -80,7 +80,7 @@ std::string SimpleINI::getString(const std::string& section, const std::string& 
     return defaultValue;
 }
 
-int SimpleINI::getInt(const std::string& section, const std::string& key, int defaultValue) {
+int SimpleINI::getInt(const std::string& section, const std::string& key, int defaultValue) const {
     std::string value = getString(section, key, "");
     if (!value.empty()) {
         try {
@@ -92,7 +92,7 @@ int SimpleINI::getInt(const std::string& section, const std::string& key, int de
     return defaultValue;
 }
 
-float SimpleINI::getFloat(const std::string& section, const std::string& key, float defaultValue) {
+float SimpleINI::getFloat(const std::string& section, const std::string& key, float defaultValue) const {
     std::string value = getString(section, key, "");
     if (!value.empty()) {
         try {
@@ -104,7 +104,7 @@ float SimpleINI::getFloat(const std::string& section, const std::string& key, fl
     return defaultValue;
 }
 
-bool SimpleINI::getBool(const std::string& section, const std::string& key, bool defaultValue) {
+bool SimpleINI::getBool(const std::string& section, const std::string& key, bool defaultValue) const {
     std::string value = getString(section, key, "");
     if (!value.empty()) {
         std::transform(value.begin(), value.end(), value.begin(), ::tolower);

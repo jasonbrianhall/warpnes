@@ -1,5 +1,9 @@
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#if defined(_WIN32) && !defined(__DJGPP__)
+#include <direct.h>   // _mkdir, _chdir
+#endif
 #include <iostream>
 #include <string>
 
@@ -549,8 +553,28 @@ static void mainLoop()
     }
 }
 
+#if defined(_WIN32) && !defined(__DJGPP__)
+// Settings and save states go in the current folder. Started from the
+// installer's shortcut that is Program Files, which can't be written to:
+// then use %APPDATA%\WarpNES instead. (The portable zip, unpacked
+// somewhere writable, keeps everything next to the program.)
+static void useWritableFolder()
+{
+    FILE* f = fopen("warpnes.tmp", "wb");
+    if (f) { fclose(f); remove("warpnes.tmp"); return; }
+    const char* appdata = getenv("APPDATA");
+    if (!appdata || !*appdata) return;
+    std::string dir = std::string(appdata) + "\\WarpNES";
+    _mkdir(dir.c_str());
+    if (_chdir(dir.c_str()) == 0) printf("Settings and saves: %s\n", dir.c_str());
+}
+#endif
+
 int main(int argc, char** argv)
 {
+#if defined(_WIN32) && !defined(__DJGPP__)
+    useWritableFolder();
+#endif
 #ifdef __DJGPP__
     setvbuf(stdout, NULL, _IONBF, 0); // WARPNES ROM.NES > LOG.TXT keeps everything, even after a crash
     // Long file names when DOS has them (Windows 9x, DOSLFN; SET LFN=N turns
