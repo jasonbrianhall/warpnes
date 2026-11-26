@@ -189,10 +189,19 @@ struct ListBox
     static const int SB_W = 9;
     int rows() const { return std::max(1, (h - 4) / LINE_H); }
     int maxScroll() const { return std::max(0, count - rows()); }
-    void clamp()
+    // Keep sel and scroll in range, without moving the view (the wheel and
+    // the scroll bar may leave the selection out of sight)
+    void bound()
     {
         if (count <= 0) { sel = 0; scroll = 0; return; }
         sel = std::max(0, std::min(sel, count - 1));
+        scroll = std::max(0, std::min(scroll, maxScroll()));
+    }
+    // After the selection moved (keys, jump to letter): bring it into view
+    void clamp()
+    {
+        bound();
+        if (count <= 0) return;
         if (sel < scroll) scroll = sel;
         if (sel >= scroll + rows()) scroll = sel - rows() + 1;
         scroll = std::max(0, std::min(scroll, maxScroll()));
@@ -380,7 +389,7 @@ public:
         text(x + 6, y + 15, fitText(path, w - 12, true), C_TEXT);
         list.x = x + 4; list.y = y + 26; list.w = w - 8; list.h = h - 26 - 20;
         list.count = (int)entries.size();
-        list.clamp();
+        list.bound();
         list.draw([&](int i, uint16_t& color) {
             const Entry& en = entries[i];
             if (en.kind != E_FILE) color = C_DIR;
@@ -616,7 +625,9 @@ public:
         window(x, y, w, h, title);
         list.x = x + 4; list.y = y + 15; list.w = w - 8; list.h = h - 15 - 20;
         list.count = gui.host.videoModeCount();
-        list.clamp();
+        // the current mode in view when the dialog opens; after that the
+        // view stays where the user scrolls it
+        if (firstDraw) { list.clamp(); firstDraw = false; } else list.bound();
         list.draw([&](int i, uint16_t& color) {
             if (i == current) color = C_ACCENT;
             return (i == current ? "* " : "  ") + gui.host.videoModeName(i);
@@ -658,6 +669,7 @@ public:
 private:
     ListBox list;
     Button okBtn, cancelBtn;
+    bool firstDraw = true;
     int current, lastRow = -1;
     uint32_t lastTime = 0;
     DialogResult apply()
