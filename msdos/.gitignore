@@ -1,0 +1,10 @@
+/build/
+/warpnes.exe
+/CWSDPMI.EXE
+/CWSDPMI.SWP
+/LOG.TXT
+/smbc.con*
+/*.SAV
+/*.sav
+/*.nes
+/*.NES

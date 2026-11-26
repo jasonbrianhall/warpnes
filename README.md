@@ -70,6 +70,13 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 ./build_dos.sh
 ```
 
+### DOS (SDL version, DJGPP + SDL3)
+Uses a DJGPP cross compiler on the PATH, or Docker. See `msdos/README.md`.
+```bash
+cd msdos
+make
+```
+
 ### Linux
 ```bash
 make
