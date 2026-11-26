@@ -145,13 +145,18 @@ static int scaleMode = SCALE_FIT;
 static int smoothing = SMOOTH_SHARP;
 static int filterMode = FILTER_NONE;
 
-static SDL_Texture* overlayTex = nullptr;    // GUI and crosshair, 256x240 with transparency
+static SDL_Texture* overlayTex = nullptr;    // GUI and crosshair, with transparency
 static SDL_Texture* prescaleTex = nullptr;   // sharp bilinear: whole-number nearest prescale
 static int textureW = 0, textureH = 0, prescaleW = 0, prescaleH = 0;
 static std::vector<uint32_t> filterBuffer;
-static uint32_t overlayBuffer[RENDER_WIDTH * RENDER_HEIGHT];
-static uint16_t overlay16[RENDER_WIDTH * RENDER_HEIGHT];
+// The GUI layer is drawn overlayScale times larger than the picture, to
+// about the picture's size on the screen, so its text (DejaVu Sans Mono,
+// a TrueType font) is rendered at that size instead of being blown up
+static std::vector<uint16_t> overlay16;
+static std::vector<uint32_t> overlayBuffer;
+static int overlayScale = 1, overlayTexW = 0, overlayTexH = 0;
 static const uint16_t OVERLAY_KEY = 0xF81F;  // magenta: not a GUI colour; transparent
+static const int MAX_OVERLAY_SCALE = 8;
 
 // Where the picture goes in the renderer's output (pixels)
 static SDL_Rect pictureRect(int outW, int outH)
@@ -187,6 +192,21 @@ static void loadVideoOptions()
     if (scaleMode < 0 || scaleMode >= SCALE_COUNT) scaleMode = SCALE_FIT;
     if (smoothing < 0 || smoothing >= SMOOTH_COUNT) smoothing = SMOOTH_SHARP;
     if (filterMode < 0 || filterMode >= FILTER_COUNT) filterMode = FILTER_NONE;
+}
+
+// A clear GUI layer at the scale that matches the picture on the screen
+// now (rounded up: a slightly larger layer scaled down looks better than
+// a smaller one scaled up)
+static void clearOverlay()
+{
+    int outW, outH;
+    SDL_GetRendererOutputSize(renderer, &outW, &outH);
+    SDL_Rect r = pictureRect(outW, outH);
+    int k = (r.h + RENDER_HEIGHT - 1) / RENDER_HEIGHT;
+    int kw = (r.w + RENDER_WIDTH - 1) / RENDER_WIDTH;
+    k = SDL_max(1, SDL_min(MAX_OVERLAY_SCALE, SDL_max(k, kw)));
+    overlayScale = k;
+    overlay16.assign((size_t)RENDER_WIDTH * k * RENDER_HEIGHT * k, OVERLAY_KEY);
 }
 #endif
 
@@ -508,23 +528,21 @@ static void present(const uint16_t* frame, const uint16_t* overlay = nullptr)
     SDL_SetTextureScaleMode(src, filterHow);
     SDL_RenderCopy(renderer, src, NULL, &dst);
 
-    // Menus, pointer and crosshair over it, sharp
+    // Menus, pointer and crosshair over it, sharp: the layer is drawn at
+    // overlayScale, near the picture's size on the screen
     if (overlay) {
-        for (int i = 0; i < RENDER_WIDTH * RENDER_HEIGHT; i++) {
+        int ow = RENDER_WIDTH * overlayScale, oh = RENDER_HEIGHT * overlayScale;
+        overlayBuffer.resize((size_t)ow * oh);
+        for (size_t i = 0; i < overlayBuffer.size(); i++) {
             uint16_t c = overlay[i];
             if (c == OVERLAY_KEY) { overlayBuffer[i] = 0; continue; }
             uint32_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
             overlayBuffer[i] = 0xFF000000u | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
         }
-        if (!overlayTex) {
-            overlayTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
-            if (overlayTex) {
-                SDL_SetTextureBlendMode(overlayTex, SDL_BLENDMODE_BLEND);
-                SDL_SetTextureScaleMode(overlayTex, SDL_ScaleModeNearest);
-            }
-        }
-        if (overlayTex) {
-            SDL_UpdateTexture(overlayTex, NULL, overlayBuffer, RENDER_WIDTH * (int)sizeof(uint32_t));
+        if (sizeTexture(overlayTex, overlayTexW, overlayTexH, ow, oh, SDL_TEXTUREACCESS_STREAMING)) {
+            SDL_SetTextureBlendMode(overlayTex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(overlayTex, (dst.w == ow && dst.h == oh) ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+            SDL_UpdateTexture(overlayTex, NULL, overlayBuffer.data(), ow * (int)sizeof(uint32_t));
             SDL_RenderCopy(renderer, overlayTex, NULL, &dst);
         }
     }
@@ -592,14 +610,17 @@ static void updateZapper(bool playing)
 }
 
 // Crosshair over the picture (only on what is shown, not what the Zapper sees)
-static void drawCrosshair(uint16_t* buf)
+static void drawCrosshair(uint16_t* buf, int scale = 1)
 {
     if (!smbEngine || !smbEngine->isZapperEnabled()) return;
     int cx = mousePicX, cy = mousePicY;
     if (cx < 0 || cx >= RENDER_WIDTH || cy < 0 || cy >= RENDER_HEIGHT) return;
     const uint16_t red = 0xF800, black = 0x0000;
     auto put = [&](int x, int y, uint16_t c) {
-        if (x >= 0 && x < RENDER_WIDTH && y >= 0 && y < RENDER_HEIGHT) buf[y * RENDER_WIDTH + x] = c;
+        if (x < 0 || x >= RENDER_WIDTH || y < 0 || y >= RENDER_HEIGHT) return;
+        for (int dy = 0; dy < scale; dy++)
+            for (int dx = 0; dx < scale; dx++)
+                buf[(y * scale + dy) * RENDER_WIDTH * scale + x * scale + dx] = c;
     };
     for (int d = 2; d <= 6; d++) {
         // black edges first, so the red shows on light backgrounds too
@@ -772,10 +793,10 @@ static void mainLoop()
             present(guiBuffer16);
 #else
             // On their own layer, so smoothing and filters leave them sharp
-            std::fill(overlay16, overlay16 + RENDER_WIDTH * RENDER_HEIGHT, OVERLAY_KEY);
-            if (!gui.active()) drawCrosshair(overlay16);
-            gui.draw(overlay16, RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now);
-            present(renderBuffer16, overlay16);
+            clearOverlay();
+            if (!gui.active()) drawCrosshair(overlay16.data(), overlayScale);
+            gui.draw(overlay16.data(), RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now, overlayScale);
+            present(renderBuffer16, overlay16.data());
 #endif
         }
         else if (smbEngine && smbEngine->isZapperEnabled())
@@ -785,9 +806,9 @@ static void mainLoop()
             drawCrosshair(guiBuffer16);
             present(guiBuffer16);
 #else
-            std::fill(overlay16, overlay16 + RENDER_WIDTH * RENDER_HEIGHT, OVERLAY_KEY);
-            drawCrosshair(overlay16);
-            present(renderBuffer16, overlay16);
+            clearOverlay();
+            drawCrosshair(overlay16.data(), overlayScale);
+            present(renderBuffer16, overlay16.data());
 #endif
         }
         else

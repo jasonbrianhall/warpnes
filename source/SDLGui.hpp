@@ -91,7 +91,9 @@ public:
 
     // Draw over a copy of the picture: w x h RGB565; only lines y0..y1-1 are
     // on the screen (VGA mode 13h shows 200 of the 240)
-    void draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t nowMs);
+    // scale: pixels is (w * scale) x (h * scale), the GUI drawn that much
+    // larger (sharper text on big windows); coordinates stay w x h
+    void draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t nowMs, int scale = 1);
 
     // "Paused" label while the game is paused with the menus closed
     void setPausedLabel(bool on) { pausedLabel = on; }

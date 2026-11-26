@@ -48,24 +48,27 @@ static const int CHAR_W = 6;     // GUI font cell width (GuiFontDejaVu.h)
 static const int LINE_H = 10;
 static const int BAR_H = 11;
 
-// The canvas being drawn on
+// The canvas being drawn on. Coordinates are in picture pixels (256x240);
+// the canvas itself can be cvS times larger (cvS x cvS canvas pixels per
+// picture pixel), so the desktop builds can draw the GUI at the window's
+// resolution: boxes stay blocky-sharp, text is rendered at that size.
 static uint16_t* cv;
-static int cvW, cvH, cvY0, cvY1;
-
-static inline void pset(int x, int y, uint16_t c)
-{
-    if (x >= 0 && x < cvW && y >= cvY0 && y < cvY1) cv[y * cvW + x] = c;
-}
+static int cvW, cvH, cvY0, cvY1;   // in picture pixels
+static int cvS = 1;                // scale
+static int cvStride = 256;         // canvas pixels per row (cvW * cvS)
 
 static void fill(int x, int y, int w, int h, uint16_t c)
 {
     int x0 = std::max(x, 0), x1 = std::min(x + w, cvW);
     int y0 = std::max(y, cvY0), y1 = std::min(y + h, cvY1);
-    for (int yy = y0; yy < y1; yy++) {
-        uint16_t* row = cv + yy * cvW;
-        for (int xx = x0; xx < x1; xx++) row[xx] = c;
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int yy = y0 * cvS; yy < y1 * cvS; yy++) {
+        uint16_t* row = cv + yy * cvStride;
+        for (int xx = x0 * cvS; xx < x1 * cvS; xx++) row[xx] = c;
     }
 }
+
+static inline void pset(int x, int y, uint16_t c) { fill(x, y, 1, 1, c); }
 
 static void hline(int x, int y, int w, uint16_t c) { fill(x, y, w, 1, c); }
 static void vline(int x, int y, int h, uint16_t c) { fill(x, y, 1, h, c); }
@@ -84,20 +87,110 @@ static void bevel(int x, int y, int w, int h, bool raised)
     }
 }
 
-// Mix two RGB565 colours: a/4 of c over d (a = 0..4)
+// Mix two RGB565 colours: a/255 of c over d
 static inline uint16_t mix565(uint16_t d, uint16_t c, int a)
 {
-    int r = ((d >> 11) * (4 - a) + (c >> 11) * a) / 4;
-    int g = (((d >> 5) & 63) * (4 - a) + ((c >> 5) & 63) * a) / 4;
-    int b = ((d & 31) * (4 - a) + (c & 31) * a) / 4;
+    int r = ((d >> 11) * (255 - a) + (c >> 11) * a + 127) / 255;
+    int g = (((d >> 5) & 63) * (255 - a) + ((c >> 5) & 63) * a + 127) / 255;
+    int b = ((d & 31) * (255 - a) + (c & 31) * a + 127) / 255;
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-// Text in the GUI font (DejaVu Sans Mono, anti-aliased). y is the top of
-// the old 8-pixel glyph box: the 6x10 cell starts a line above it, so
-// the baseline stays where it was.
+// One glyph image: coverage 0-255, placed relative to the pen (x) and the
+// baseline (y)
+struct GlyphImage { int x0 = 0, y0 = 0, w = 0, h = 0; std::vector<uint8_t> a; };
+
+#ifndef __DJGPP__
+// ---- DejaVu Sans Mono at any size (desktop builds), with stb_truetype,
+// from felixterminal's DejaVuMono.h
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "third_party/stb_truetype.h"
+#include "third_party/DejaVuMono.h"
+#include <map>
+
+static std::vector<uint8_t> ttfData;
+static stbtt_fontinfo ttf;
+static int ttfState = 0;   // 0 not loaded yet, 1 ready, -1 failed
+
+static bool loadTTF()
+{
+    if (ttfState) return ttfState > 0;
+    ttfState = -1;
+    // base64 -> TTF bytes
+    static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int map[256];
+    for (int i = 0; i < 256; i++) map[i] = -1;
+    for (int i = 0; i < 64; i++) map[(unsigned char)b64[i]] = i;
+    ttfData.reserve(DEJAVU_REGULAR_FONT_ORIGINAL_SIZE);
+    unsigned int acc = 0; int bits = 0;
+    for (size_t i = 0; i < DEJAVU_REGULAR_FONT_B64_SIZE; i++) {
+        int v = map[(unsigned char)DEJAVU_REGULAR_FONT_B64[i]];
+        if (v < 0) continue;   // '=' padding
+        acc = (acc << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; ttfData.push_back((uint8_t)(acc >> bits)); }
+    }
+    if (ttfData.size() != DEJAVU_REGULAR_FONT_ORIGINAL_SIZE) return false;
+    if (!stbtt_InitFont(&ttf, ttfData.data(), stbtt_GetFontOffsetForIndex(ttfData.data(), 0))) return false;
+    ttfState = 1;
+    return true;
+}
+
+// The glyph for ch at scale s (cell 6s x 10s), rendered once and kept
+static const GlyphImage* ttfGlyph(unsigned char ch, int s)
+{
+    static std::map<int, std::vector<GlyphImage>> cache;
+    auto it = cache.find(s);
+    if (it == cache.end()) {
+        if (!loadTTF()) return nullptr;
+        std::vector<GlyphImage> set(95);
+        float sc = stbtt_ScaleForMappingEmToPixels(&ttf, 10.0f * s);
+        for (int c = 33; c <= 126; c++) {
+            GlyphImage& g = set[c - 32];
+            int x1, y1;
+            stbtt_GetCodepointBitmapBox(&ttf, c, sc, sc, &g.x0, &g.y0, &x1, &y1);
+            g.w = x1 - g.x0; g.h = y1 - g.y0;
+            if (g.w <= 0 || g.h <= 0) { g.w = g.h = 0; continue; }
+            g.a.resize((size_t)g.w * g.h);
+            stbtt_MakeCodepointBitmap(&ttf, g.a.data(), g.w, g.h, g.w, sc, sc, c);
+        }
+        it = cache.emplace(s, std::move(set)).first;
+    }
+    return &it->second[ch - 32];
+}
+#endif
+
+// Text in the GUI font, DejaVu Sans Mono. y is the top of the old 8-pixel
+// glyph box: the 6x10 cell starts a line above it and the baseline is at
+// y + 7. At scale 1 (and on MS-DOS) the glyphs come from the hinted bitmap
+// in GuiFontDejaVu.h; at larger scales from the TrueType font itself.
 static void text(int x, int y, const std::string& s, uint16_t c)
 {
+#ifndef __DJGPP__
+    if (cvS > 1 && loadTTF()) {
+        int pyMin = cvY0 * cvS, pyMax = cvY1 * cvS, pxMax = cvW * cvS;
+        for (size_t i = 0; i < s.size(); i++, x += CHAR_W) {
+            unsigned char ch = (unsigned char)s[i];
+            if (ch == ' ') continue;
+            if (ch < 33 || ch > 126) ch = '?';
+            const GlyphImage* g = ttfGlyph(ch, cvS);
+            if (!g || !g->w) continue;
+            int ox = x * cvS + g->x0, oy = (y + 7) * cvS + g->y0;
+            for (int r = 0; r < g->h; r++) {
+                int py = oy + r;
+                if (py < pyMin || py >= pyMax) continue;
+                const uint8_t* src = &g->a[(size_t)r * g->w];
+                uint16_t* row = cv + py * cvStride;
+                for (int k = 0; k < g->w; k++) {
+                    int a = src[k], px = ox + k;
+                    if (!a || px < 0 || px >= pxMax) continue;
+                    row[px] = a == 255 ? c : mix565(row[px], c, a);
+                }
+            }
+        }
+        return;
+    }
+#endif
     for (size_t i = 0; i < s.size(); i++, x += CHAR_W) {
         unsigned char ch = (unsigned char)s[i];
         if (ch == ' ') continue;
@@ -110,8 +203,8 @@ static void text(int x, int y, const std::string& s, uint16_t c)
             for (int col = 0; col < GUI_FONT_W && bits; col++, bits >>= 3) {
                 int a = bits & 7, px = x + col;
                 if (!a || px < 0 || px >= cvW) continue;
-                uint16_t& d = cv[py * cvW + px];
-                d = a >= GUI_FONT_LEVELS ? c : mix565(d, c, a);
+                uint16_t& d = cv[py * cvStride + px];
+                d = a >= GUI_FONT_LEVELS ? c : mix565(d, c, a * 255 / GUI_FONT_LEVELS);
             }
         }
     }
@@ -1228,9 +1321,11 @@ bool Gui::handle(const GuiEvent& e, uint32_t now)
     }
 }
 
-void Gui::draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t now)
+void Gui::draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t now, int scale)
 {
+    cvS = std::max(1, scale);
     cv = pixels; cvW = w; cvH = h; cvY0 = std::max(0, y0); cvY1 = std::min(h, y1);
+    cvStride = w * cvS;
     width = w; top = cvY0; bottom = cvY1;
 
     bool recentMouse = mouseSeen && now - lastMouseMove < 2500;
