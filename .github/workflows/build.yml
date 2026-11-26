@@ -82,7 +82,7 @@ jobs:
     - name: Install dependencies (vcpkg)
       run: |
         New-Item -ItemType Directory -Force -Path C:\vcpkg_bincache | Out-Null
-        C:\vcpkg\vcpkg.exe install --triplet $env:TRIPLET --x-install-root=C:\vcpkg\installed
+        C:\vcpkg\vcpkg.exe install --triplet ${{ env.TRIPLET }} --x-install-root=C:\vcpkg\installed
 
     - name: Save vcpkg binary cache
       if: always()
@@ -95,7 +95,7 @@ jobs:
       run: |
         cmake -S . -B build-msvc -A x64 `
           -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
-          -DVCPKG_TARGET_TRIPLET=$env:TRIPLET `
+          -DVCPKG_TARGET_TRIPLET=${{ env.TRIPLET }} `
           -DVCPKG_INSTALLED_DIR=C:\vcpkg\installed `
           -DCMAKE_BUILD_TYPE=Release
 
