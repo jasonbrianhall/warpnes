@@ -143,7 +143,20 @@ public:
     uint8_t mirroring;   // 0=horizontal, 1=vertical
     bool battery;        // Battery-backed RAM
     bool trainer;        // 512-byte trainer present
+    uint8_t submapper = 0;   // NES 2.0 submapper
+    bool isNES2 = false;
+    bool fourScreen = false; // header byte 6 bit 3
+    uint32_t chrRamSize = 0; // NES 2.0 CHR-RAM size (0 = unspecified)
   } nesHeader;
+  class Mapper* ext = nullptr;  // mappers implemented in Mappers.cpp
+  void createExtMapper();
+  uint8_t mmc3RawCHRBank(int slot) const;
+  bool isMMC3Family() const { return nesHeader.mapper == 4 || nesHeader.mapper == 118 || nesHeader.mapper == 119; }
+  bool mmc1WramDisabled() const;
+  bool mmc3WramReadable() const;
+  bool mmc3WramWritable() const;
+  bool isMMC2Family() const { return nesHeader.mapper == 9 || nesHeader.mapper == 10; }
+  uint8_t tqromChrRam[0x2000];  // mapper 119: 8 KB CHR-RAM next to the CHR-ROM
   PPU* getPPU() { return ppu; }
   const std::string& getROMBaseName() const { return romBaseName; }
 

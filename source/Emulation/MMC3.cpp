@@ -21,7 +21,7 @@ void WarpNES::checkMMC3IRQ(int scanline, int cycle) {
   // tables are the other way round, the edge comes from the background
   // prefetch for the next line at dot 324. Only while rendering is on, and
   // only on visible lines plus the pre-render line.
-  if (nesHeader.mapper != 4) return;
+  if (!isMMC3Family()) return;
   if (!(ppu->getMask() & 0x18)) return;
   if (scanline >= 240 && scanline != 261) return;
 
@@ -101,8 +101,9 @@ void WarpNES::writeMMC3Register(uint16_t address, uint8_t value) {
 }
 
 void WarpNES::updateMMC3Banks() {
-  uint8_t totalPRGBanks = prgSize / 0x2000; // Number of 8KB banks
-  uint8_t totalCHRBanks = chrSize / 0x400;  // Number of 1KB banks
+  uint32_t totalPRGBanks = prgSize / 0x2000; // Number of 8KB banks
+  uint32_t totalCHRBanks = chrSize / 0x400;  // Number of 1KB banks
+  if (totalCHRBanks == 0) totalCHRBanks = 1;
 
   // PRG banking - ensure last two banks are properly fixed
   bool prgSwap = (mmc3.bankSelect & 0x40) != 0;
@@ -163,6 +164,30 @@ void WarpNES::updateMMC3Banks() {
     mmc3.currentCHRBanks[7] = mmc3.bankData[5] % totalCHRBanks; // R5
   }
 
+}
+
+// $A001 PRG-RAM protect: bit 7 enable, bit 6 deny writes. Only honoured for
+// NES 2.0 dumps; plain iNES MMC3 dumps include StarTropics (MMC6), which
+// uses the register differently.
+bool WarpNES::mmc3WramReadable() const {
+  if (!nesHeader.isNES2 || nesHeader.submapper == 1) return true;
+  return (mmc3.prgRamProtect & 0x80) != 0;
+}
+
+bool WarpNES::mmc3WramWritable() const {
+  if (!nesHeader.isNES2 || nesHeader.submapper == 1) return true;
+  return (mmc3.prgRamProtect & 0xC0) == 0x80;
+}
+
+// Raw bank register value behind 1 KB CHR slot 0-7 (2 KB registers give
+// their even/odd halves). Used by TxSROM (118) and TQROM (119).
+uint8_t WarpNES::mmc3RawCHRBank(int slot) const {
+  int s = (mmc3.bankSelect & 0x80) ? (slot ^ 4) : slot;
+  if (s < 4) {
+    uint8_t r = mmc3.bankData[s >> 1];
+    return (r & ~1) | (s & 1);
+  }
+  return mmc3.bankData[s - 2];
 }
 
 void WarpNES::stepMMC3IRQ() {

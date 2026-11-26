@@ -81,6 +81,7 @@ COMMON_SOURCE_FILES = \
     source/Emulation/MMC2.cpp \
     source/Emulation/MMC3.cpp \
     source/Emulation/MMC5.cpp \
+    source/Emulation/Mappers.cpp \
     source/Emulation/Mapper40.cpp
 
 # Platform-specific source files

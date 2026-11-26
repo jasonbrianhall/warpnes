@@ -1,6 +1,7 @@
 #include "WarpNES.hpp"
 
 #include "PPU.hpp"
+#include "Mappers.hpp"
 
 std::vector<FlipCacheEntry> PPU::g_flipCache;
 std::unordered_map<uint32_t, size_t> PPU::g_flipCacheIndex;
@@ -174,13 +175,23 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     int offset = address % 0x400;
     // Use the actual mirroring from the ROM header
     int mode = engine.nesHeader.mirroring;  // 0=horizontal, 1=vertical
-    if (engine.getMapper() == 9) {
+    if (engine.ext) {
+        return engine.ext->ntPage(table) * 0x400 + offset;
+    }
+    if (engine.nesHeader.fourScreen) {
+        return address;
+    }
+    if (engine.getMapper() == 118) {
+        // TxSROM: CHR bank register bit 7 picks the CIRAM page
+        return ((engine.mmc3RawCHRBank(table) >> 7) & 1) * 0x400 + offset;
+    }
+    if (engine.isMMC2Family()) {
         // MMC2 controls mirroring at $F000: 0=vertical, 1=horizontal
         mode = engine.getMMC2Mirroring() ? 0 : 1;
     } else if (engine.getMapper() == 7) {
         // AxROM: one-screen mirroring selected by bit 4 of the register
         mode = engine.getAxROMUpperNametable() ? 3 : 2;
-    } else if (engine.getMapper() == 4) {
+    } else if (engine.isMMC3Family()) {
         // MMC3 $A000: 0=vertical, 1=horizontal
         mode = engine.getMMC3Mirroring() ? 0 : 1;
     } else if (engine.getMapper() == 1) {
@@ -207,6 +218,7 @@ uint8_t PPU::readByte(uint16_t address)
     {
         // Nametable
         if (engine.getMapper() == 5) return engine.mmc5NametableRead(address, nametable);
+        if (engine.ext && engine.ext->ntFromRom((address >> 10) & 3)) return engine.ext->ntRomRead(address);
         return nametable[getNametableIndex(address)];
     }
 
@@ -227,7 +239,7 @@ uint8_t PPU::readCHR(int index)
         return 0;
 
     uint8_t result = engine.readCHRData(index);
-    if (engine.getMapper() == 9) {
+    if (engine.isMMC2Family()) {
         engine.checkCHRLatch(index, 0);  // May switch banks for later fetches
     }
     return result;
@@ -274,6 +286,9 @@ uint8_t PPU::readDataRegister()
         // Normal VRAM - return buffered value
         value = vramBuffer;
         vramBuffer = readByte(currentAddress);
+        // MMC2/MMC4 watch every PPU bus read, including $2007 reads
+        if ((currentAddress & 0x3FFF) < 0x2000 && engine.isMMC2Family())
+            engine.checkCHRLatch(currentAddress & 0x3FFF, 0);
     } else {
         // Palette RAM - return immediately but also update buffer
         value = readByte(currentAddress);
@@ -558,6 +573,7 @@ void PPU::writeByte(uint16_t address, uint8_t value)
             engine.mmc5NametableWrite(address, value, nametable);
             return;
         }
+        if (engine.ext && engine.ext->ntFromRom((address >> 10) & 3)) return;
         uint16_t index = getNametableIndex(address);
     
         nametable[index] = value;
@@ -1265,7 +1281,7 @@ void PPU::renderScanline(int scanline, int mapper) {
         // $1FE8, which resets MMC2 latch 1 to $FE every scanline; Punch-Out!!
         // depends on this.
         engine.setMMC5SpriteFetch(false);
-        if (engine.getMapper() == 9) {
+        if (engine.isMMC2Family()) {
             for (int slot = fetched; slot < 8; slot++) {
                 uint16_t addr = spritePatternAddr(0xFF, 0);
                 readCHR(addr);

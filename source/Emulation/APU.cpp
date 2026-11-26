@@ -596,9 +596,11 @@ float APU::mixAverage()
     float inv = 1.0f / (float)sumCycles;
     float pulse = (float)(pulse1Sum + pulse2Sum) * inv;
     float tnd = (float)(3 * triangleSum + 2 * noiseSum + dmcSum) * inv;
+    float ext = expansionSum * inv;
     pulse1Sum = pulse2Sum = triangleSum = noiseSum = dmcSum = 0;
+    expansionSum = 0.0f;
     sumCycles = 0;
-    return lookup(pulseTable, pulse) + lookup(tndTable, tnd);
+    return lookup(pulseTable, pulse) + lookup(tndTable, tnd) + ext;
 }
 
 void APU::pushSample(float value)
@@ -769,6 +771,7 @@ void APU::run(uint32_t cycles)
             triangleSum += triangle->advance(n);
             noiseSum += noise->advance(n);
             dmcSum += dmc->advance(n);
+            if (expansion) expansionSum += expansion(n);
             sumCycles += n;
             sampleClock -= n;
             sequencerCycle += n;

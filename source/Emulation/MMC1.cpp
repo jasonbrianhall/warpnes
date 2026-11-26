@@ -78,9 +78,10 @@ void WarpNES::updateMMC1Banks() {
         }
     }
 
-    if (nesHeader.chrROMPages > 0) {
+    {
         uint8_t chrMode = (mmc1.control >> 4) & 0x01;
-        uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks
+        uint32_t totalCHRBanks = chrSize / 0x1000; // 4KB banks (ROM or RAM)
+        if (totalCHRBanks == 0) totalCHRBanks = 1;
         
         if (chrMode == 0) {
             // 8KB CHR mode - ignore low bit of chrBank0. Banks are stored in
@@ -92,11 +93,17 @@ void WarpNES::updateMMC1Banks() {
             mmc1.currentCHRBank0 = mmc1.chrBank0 % totalCHRBanks;
             mmc1.currentCHRBank1 = mmc1.chrBank1 % totalCHRBanks;
         }
-    } else {
-        // CHR-RAM - banks are ignored, direct access
-        mmc1.currentCHRBank0 = 0;
-        mmc1.currentCHRBank1 = 0;
     }
+}
+
+// WRAM disable: $E000 bit 4 (MMC1B and later), and on SNROM (8 KB CHR-RAM,
+// up to 256 KB PRG) also CHR bank bit 4.
+bool WarpNES::mmc1WramDisabled() const {
+    if (mmc1.prgBank & 0x10) return true;
+    if (nesHeader.chrROMPages == 0 && chrSize == 0x2000 && prgSize <= 0x40000 &&
+        (mmc1.chrBank0 & 0x10))
+        return true;
+    return false;
 }
 
 void PPU::renderBackgroundScanlineMMC1(int scanline) {

@@ -45,6 +45,13 @@ public:
     void setMemoryReader(std::function<uint8_t(uint16_t)> reader);
 
     /**
+     * Cartridge expansion audio (VRC6, Sunsoft 5B, Namco 163). The callback
+     * advances the mapper's sound by n CPU cycles and returns its output
+     * summed over them. Pass nullptr to remove.
+     */
+    void setExpansionAudio(std::function<float(uint32_t)> source) { expansion = std::move(source); expansionSum = 0.0f; }
+
+    /**
      * Output audio samples to the provided buffer. Always fills all
      * len bytes (pads with the last sample on underrun).
      * @param buffer Output buffer for audio samples
@@ -115,6 +122,8 @@ private:
     uint32_t noiseSum;
     uint32_t dmcSum;
     uint32_t sumCycles;         /**< CPU cycles covered by the sums */
+    std::function<float(uint32_t)> expansion;
+    float expansionSum = 0.0f;
 
     // Output filters (approximation of the NES's analog output stage)
     int filterRate;

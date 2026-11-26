@@ -179,7 +179,7 @@ private:
     uint8_t ppuScrollX; /**< $2005 */
     uint8_t ppuScrollY; /**< $2005 */
 
-    uint8_t nametable[2048]; /**< Background table. */
+    uint8_t nametable[4096]; /**< CIRAM (2 KB) plus 2 KB for four-screen boards. */
     uint8_t oam[256]; /**< Sprite memory. */
     // PPU Address control
     uint16_t currentAddress; /**< Loopy "v": VRAM address, also the scroll position while rendering. */

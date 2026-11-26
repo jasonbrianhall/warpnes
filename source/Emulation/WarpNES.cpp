@@ -4,6 +4,7 @@
 #include <string>
 
 #include "WarpNES.hpp"
+#include "Mappers.hpp"
 #include "../Configuration.hpp"
 #include "../Emulation/APU.hpp"
 #include "../Emulation/PPU.hpp"
@@ -113,6 +114,15 @@ void WarpNES::writeCNROMRegister(uint16_t address, uint8_t value) {
 void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
   if (address >= 0x2000)
     return;
+  if (ext) {
+    ext->chrWrite(address, value);
+    return;
+  }
+  if (nesHeader.mapper == 119) {
+    uint8_t raw = mmc3RawCHRBank(address >> 10);
+    if (raw & 0x40) tqromChrRam[(raw & 7) * 0x400 + (address & 0x3FF)] = value;
+    return;
+  }
 
   // DON'T call catchUpPPU here - it causes infinite loops!
   // The cycle-accurate loop already keeps everything in sync
@@ -137,10 +147,9 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
 
   case 1: // MMC1
     if (nesHeader.chrROMPages == 0) {
-      // MMC1 with CHR-RAM (like Metroid)
-      if (address < chrSize) {
-        chrROM[address] = value; // Direct write to CHR-RAM
-      }
+      // CHR-RAM is banked in 4 KB units like CHR-ROM
+      uint32_t bank = (address < 0x1000) ? mmc1.currentCHRBank0 : mmc1.currentCHRBank1;
+      chrROM[(bank * 0x1000 + (address & 0x0FFF)) % chrSize] = value;
     }
     // MMC1 with CHR-ROM: writes are ignored (banking controlled by registers)
     break;
@@ -175,10 +184,12 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
     break;
 
   case 4: // MMC3
+  case 118:
+  case 119:
     if (nesHeader.chrROMPages == 0) {
-      // MMC3 with CHR-RAM
-      if (address < chrSize) {
-        chrROM[address] = value;
+      // MMC3 with CHR-RAM, 1 KB banking
+      if (address < 0x2000) {
+        chrROM[(mmc3.currentCHRBanks[address >> 10] * 0x400 + (address & 0x3FF)) % chrSize] = value;
 
         static int mmc3ChrWriteCount = 0;
         if (mmc3ChrWriteCount < 5) {
@@ -388,6 +399,8 @@ void WarpNES::unloadROM() {
     chrROM = nullptr;
   }
   prgSize = chrSize = 0;
+  delete ext;
+  ext = nullptr;
   romLoaded = false;
 }
 
@@ -436,7 +449,16 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
   } else {
     // iNES 1.0 mapper parsing (8-bit mapper number)
     nesHeader.mapper = (header[6] >> 4) | (header[7] & 0xF0);
+    // Archaic headers ("DiskDude!" etc.) have junk in bytes 7-15
+    if (header[12] || header[13] || header[14] || header[15])
+      nesHeader.mapper = header[6] >> 4;
   }
+  nesHeader.submapper = isINES2 ? (header[8] >> 4) : 0;
+  nesHeader.isNES2 = isINES2;
+  nesHeader.fourScreen = (header[6] & 0x08) != 0;
+  nesHeader.chrRamSize = 0;
+  if (isINES2 && (header[11] & 0x0F)) nesHeader.chrRamSize = 64u << (header[11] & 0x0F);
+  if (nesHeader.mapper == 155) nesHeader.mapper = 1;  // MMC1A: same as MMC1 here
 
   nesHeader.mirroring = header[6] & 0x01;
   nesHeader.battery = (header[6] & 0x02) != 0;
@@ -455,10 +477,10 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
   std::cout << "Trainer: " << (nesHeader.trainer ? "Yes" : "No") << std::endl;
 
   // Check for unsupported features
-  if (nesHeader.mapper != 0 && nesHeader.mapper != 1 && nesHeader.mapper != 2 &&
-      nesHeader.mapper != 3 && nesHeader.mapper != 4 && nesHeader.mapper != 9 &&
-      nesHeader.mapper != 66 && nesHeader.mapper != 40 && nesHeader.mapper != 5 &&
-      nesHeader.mapper != 7) {
+  static const int builtIn[] = {0, 1, 2, 3, 4, 5, 7, 9, 10, 40, 66, 118, 119};
+  bool supported = mapperImplemented(nesHeader.mapper);
+  for (int m : builtIn) if (m == nesHeader.mapper) supported = true;
+  if (!supported) {
     std::cout << "WARNING: Mapper " << (int)nesHeader.mapper << " not supported"
               << std::endl;
   }
@@ -487,7 +509,7 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
     std::cout << "Mapper: GxROM" << std::endl;
     break;
   default:
-    std::cout << "Mapper: Unknown/Unsupported (" << (int)nesHeader.mapper << ")"
+    std::cout << "Mapper: " << (int)nesHeader.mapper
               << std::endl;
     break;
   }
@@ -515,7 +537,7 @@ bool WarpNES::loadCHRROM(std::ifstream &file) {
   printf("LoadCHRROM\n");
   chrSize = nesHeader.chrROMPages * 8192; // 8KB pages
   if (chrSize == 0) {
-    chrSize = 8192;
+    chrSize = nesHeader.chrRamSize >= 8192 ? nesHeader.chrRamSize : mapperChrRamSize(nesHeader.mapper);
     chrROM = new uint8_t[chrSize];
     memset(chrROM, 0, chrSize);
 
@@ -912,10 +934,13 @@ void WarpNES::updateCycleAccurate() {
       // Step PPU cycle
       ppu->stepCycle(scanline, cycle, nesHeader.mapper);
 
-      if (nesHeader.mapper == 4) {
+      if (isMMC3Family()) {
         checkMMC3IRQ(scanline, cycle);
       } else if (nesHeader.mapper == 5) {
         stepMMC5Scanline(scanline, cycle);
+      } else if (ext && ext->wantsScanline && cycle == 260 &&
+                 (scanline < 240 || scanline == 261) && (ppu->getMask() & 0x18)) {
+        ext->scanline();
       }
 
       // CPU execution: cpuCycleDebt is the PPU-cycle budget available to the
@@ -928,8 +953,9 @@ void WarpNES::updateCycleAccurate() {
         uint64_t cyclesBefore = totalCycles;
         // Mapper IRQ line (level-triggered): taken between instructions
         // whenever it is asserted and the I flag is clear.
-        bool mapperIRQ = (nesHeader.mapper == 4 && mmc3.irqPending) ||
-                         (nesHeader.mapper == 5 && mmc5.irqPending && mmc5.irqEnable);
+        bool mapperIRQ = (isMMC3Family() && mmc3.irqPending) ||
+                         (nesHeader.mapper == 5 && mmc5.irqPending && mmc5.irqEnable) ||
+                         (ext && ext->irq);
         if (mapperIRQ && !getFlag(FLAG_INTERRUPT)) {
           pushWord(regPC);
           pushByte((regP & ~FLAG_BREAK) | 0x20);
@@ -941,6 +967,7 @@ void WarpNES::updateCycleAccurate() {
         executeInstruction();
         uint64_t cyclesUsed = totalCycles - cyclesBefore;
         cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
+        if (ext && ext->wantsCpuClock) ext->cpuClock((int)cyclesUsed);
 
         masterCycles = totalCycles;
       }
@@ -1021,6 +1048,7 @@ void WarpNES::reset() {
   regSP = 0xFF;
   regP = 0x24;
   totalCycles = frameCycles = 0;
+  createExtMapper();
   if (nesHeader.mapper == 1) {
     // Reset MMC1 state properly
     mmc1 = MMC1State(); // Reset to default constructor state
@@ -1041,8 +1069,9 @@ void WarpNES::reset() {
     uxrom = UxROMState();
   } else if (nesHeader.mapper == 3) {
     cnrom = CNROMState();
-  } else if (nesHeader.mapper == 4) {
+  } else if (isMMC3Family()) {
     mmc3 = MMC3State();
+    memset(tqromChrRam, 0, sizeof(tqromChrRam));
     mmc5 = MMC5State();
     mmc3.bankData[0] = 0;
     mmc3.bankData[1] = 2;
@@ -1056,7 +1085,7 @@ void WarpNES::reset() {
     mmc3.irqPending = false;
     mmc3.irqEnable = false;
     updateMMC3Banks();
-  } else if (nesHeader.mapper == 9) {
+  } else if (isMMC2Family()) {
     mmc2 = MMC2State();
     updateMMC2Banks();
   } else if (nesHeader.mapper == 40) {
@@ -1077,8 +1106,35 @@ void WarpNES::reset() {
   memset(ram, 0, sizeof(ram));
 }
 
+void WarpNES::createExtMapper() {
+  delete ext;
+  ext = nullptr;
+  MapperInfo info;
+  info.number = nesHeader.mapper;
+  info.submapper = nesHeader.submapper;
+  info.prg = prgROM;
+  info.prgSize = prgSize;
+  info.chr = chrROM;
+  info.chrSize = chrSize;
+  info.chrRam = (nesHeader.chrROMPages == 0);
+  info.verticalMirroring = nesHeader.mirroring != 0;
+  info.fourScreen = nesHeader.fourScreen;
+  info.battery = nesHeader.battery;
+  info.wram = sram;
+  info.wramSize = sramSize;
+  ext = createMapper(info);
+  if (apu) {
+    if (ext && ext->hasAudio) {
+      Mapper* m = ext;
+      apu->setExpansionAudio([m](uint32_t n) { return m->audio(n); });
+    } else {
+      apu->setExpansionAudio(nullptr);
+    }
+  }
+}
+
 void WarpNES::checkCHRLatch(uint16_t address, uint8_t tileID) {
-  if (nesHeader.mapper == 9) {
+  if (isMMC2Family()) {
     checkMMC2CHRLatch(address, tileID);
   }
 }
@@ -2085,7 +2141,7 @@ void WarpNES::checkPendingInterrupts() {
     checkMapper40IRQ();
   }
 
-  if (nesHeader.mapper == 4 && mmc3.irqPending) {
+  if (isMMC3Family() && mmc3.irqPending) {
     mmc3.irqPending = false;
 
     // Only trigger IRQ if not disabled
@@ -2111,6 +2167,11 @@ void WarpNES::checkPendingInterrupts() {
 }
 
 uint8_t WarpNES::readByte(uint16_t address) {
+  if (ext && address >= 0x4020) {
+    if (address >= 0x8000) return ext->cpuRead(address);
+    uint8_t v;
+    if (ext->cpuReadLow(address, v)) return v;
+  }
   if (nesHeader.mapper == 5 && address >= 0x5000) {
     return readMMC5(address);
   }
@@ -2143,6 +2204,9 @@ uint8_t WarpNES::readByte(uint16_t address) {
 
   } else if (address >= 0x6000 && address < 0x8000) {
     // PRG RAM area ($6000-$7FFF)
+    if ((nesHeader.mapper == 1 && mmc1WramDisabled()) ||
+        (isMMC3Family() && !mmc3WramReadable()))
+      return address >> 8;  // disabled: open bus
     if (sramEnabled && sram) {
       uint16_t sramAddr = address - 0x6000;
       if (sramAddr < sramSize) {
@@ -2153,6 +2217,22 @@ uint8_t WarpNES::readByte(uint16_t address) {
   } else if (address >= 0x8000) {
     // PRG ROM with FIXED MMC1 mapping
     if (nesHeader.mapper == 1) {
+      // 16 KB bank for this half. On 512 KB boards (SUROM/SXROM) bit 4 of
+      // the CHR bank register drives PRG A18, selecting the outer 256 KB.
+      uint32_t banks16 = prgSize / 0x4000;
+      uint32_t outer = (prgSize >= 0x80000 && (mmc1.chrBank0 & 0x10)) ? 16 : 0;
+      uint32_t inner = mmc1.prgBank & 0x0F;
+      bool hi = address >= 0xC000;
+      uint32_t b;
+      switch ((mmc1.control >> 2) & 0x03) {
+      case 0: case 1: b = (inner & 0x0E) | (hi ? 1 : 0); break;
+      case 2: b = hi ? inner : 0; break;
+      default: b = hi ? 15 : inner; break;
+      }
+      b = (outer | b) % banks16;
+      return prgROM[b * 0x4000 + (address & 0x3FFF)];
+    }
+    if (false) {
       uint32_t romAddr;
       uint8_t totalBanks = prgSize / 0x4000;
       uint8_t prgMode = (mmc1.control >> 2) & 0x03;
@@ -2228,7 +2308,7 @@ uint8_t WarpNES::readByte(uint16_t address) {
       if (romAddr < prgSize) {
         return prgROM[romAddr];
       }
-    } else if (nesHeader.mapper == 4) {
+    } else if (isMMC3Family()) {
       // MMC3 mapping - 8KB banks
       uint8_t bankIndex = (address - 0x8000) / 0x2000; // 0-3
       uint16_t bankOffset = (address - 0x8000) % 0x2000;
@@ -2238,6 +2318,11 @@ uint8_t WarpNES::readByte(uint16_t address) {
       if (romAddr < prgSize) {
         return prgROM[romAddr];
       }
+    } else if (nesHeader.mapper == 10) {
+      // MMC4: 16 KB switchable at $8000, last 16 KB fixed at $C000
+      uint32_t banks16 = prgSize / 0x4000;
+      uint32_t bank = (address < 0xC000) ? (mmc2.prgBank % banks16) : (banks16 - 1);
+      return prgROM[bank * 0x4000 + (address & 0x3FFF)];
     } else if (nesHeader.mapper == 9) {
       // MMC2 mapping
       uint32_t romAddr;
@@ -2270,11 +2355,8 @@ uint8_t WarpNES::readByte(uint16_t address) {
       return prgROM[romAddr % prgSize];
     } else if (nesHeader.mapper == 66) {
       // GxROM mapping - 32KB PRG banks
-      uint32_t romAddr = (gxrom.prgBank * 0x8000) + (address - 0x8000);
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
+      uint32_t romAddr = ((gxrom.prgBank * 0x8000) + (address - 0x8000)) % prgSize;
+      return prgROM[romAddr];
     } else if (nesHeader.mapper == 3) {
       // CNROM - 32KB PRG ROM (no PRG banking)
       uint32_t romAddr = address - 0x8000;
@@ -2314,6 +2396,11 @@ uint8_t WarpNES::readByte(uint16_t address) {
 }
 
 void WarpNES::writeByte(uint16_t address, uint8_t value) {
+  if (ext && address >= 0x4020) {
+    if (ext->hasAudio) syncAPU();
+    bool handled = ext->cpuWrite(address, value);
+    if (address >= 0x8000 || handled) return;
+  }
   if (nesHeader.mapper == 5 && address >= 0x5000) {
     writeMMC5(address, value);
     return;
@@ -2342,6 +2429,9 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
         }
     } else if (address >= 0x6000 && address < 0x8000) {
         // PRG RAM area ($6000-$7FFF)
+        if ((nesHeader.mapper == 1 && mmc1WramDisabled()) ||
+            (isMMC3Family() && !mmc3WramWritable()))
+            return;
         if (sramEnabled && sram) {
             uint16_t sramAddr = address - 0x6000;
             if (sramAddr < sramSize) {
@@ -2360,11 +2450,11 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
             writeGxROMRegister(address, value);
         } else if (nesHeader.mapper == 3) {
             writeCNROMRegister(address, value);
-        } else if (nesHeader.mapper == 4) {
+        } else if (isMMC3Family()) {
             writeMMC3Register(address, value);
         } else if (nesHeader.mapper == 2) {
             writeUxROMRegister(address, value);
-        } else if (nesHeader.mapper == 9) {
+        } else if (isMMC2Family()) {
             writeMMC2Register(address, value);
         } else if (nesHeader.mapper == 40) {
             writeMapper40Register(address, value);
@@ -2627,6 +2717,22 @@ void WarpNES::saveState(const std::string &filename) {
     case 7:
       file.write(reinterpret_cast<const char *>(&axromReg), sizeof(axromReg));
       break;
+    case 10:
+      file.write(reinterpret_cast<const char *>(&mmc2), sizeof(mmc2));
+      break;
+    case 118:
+      file.write(reinterpret_cast<const char *>(&mmc3), sizeof(mmc3));
+      break;
+    case 119:
+      file.write(reinterpret_cast<const char *>(&mmc3), sizeof(mmc3));
+      file.write(reinterpret_cast<const char *>(tqromChrRam), sizeof(tqromChrRam));
+      break;
+    default:
+      if (ext) ext->saveState(file);
+      break;
+    }
+    if (nesHeader.fourScreen) {
+      file.write(reinterpret_cast<const char *>(ppu->getVRAM() + 2048), 2048);
     }
 
     // Writable memory that isn't covered above: CHR-RAM and PRG-RAM.
@@ -2814,6 +2920,22 @@ bool WarpNES::loadState(const std::string &filename) {
       std::cerr << "Warning: Could not read AxROM state" << std::endl;
     }
     break;
+  case 10:
+    if (file.read(reinterpret_cast<char *>(&mmc2), sizeof(mmc2))) updateMMC2Banks();
+    break;
+  case 118:
+    if (file.read(reinterpret_cast<char *>(&mmc3), sizeof(mmc3))) updateMMC3Banks();
+    break;
+  case 119:
+    if (file.read(reinterpret_cast<char *>(&mmc3), sizeof(mmc3))) updateMMC3Banks();
+    file.read(reinterpret_cast<char *>(tqromChrRam), sizeof(tqromChrRam));
+    break;
+  default:
+    if (ext) ext->loadState(file);
+    break;
+  }
+  if (nesHeader.fourScreen) {
+    file.read(reinterpret_cast<char *>(ppu->getVRAM() + 2048), 2048);
   }
 
   // CHR-RAM and PRG-RAM (absent in save files from older versions)
@@ -2859,6 +2981,13 @@ void WarpNES::writeData(uint16_t address, uint8_t value) {
 uint8_t WarpNES::readCHRData(uint16_t address) {
   if (address >= 0x2000)
     return 0;
+  if (ext)
+    return ext->chrRead(address);
+  if (nesHeader.mapper == 119 && address < 0x2000) {
+    // TQROM: bank values with bit 6 set select the 8 KB CHR-RAM
+    uint8_t raw = mmc3RawCHRBank(address >> 10);
+    if (raw & 0x40) return tqromChrRam[(raw & 7) * 0x400 + (address & 0x3FF)];
+  }
 
   // Handle CHR reads based on mapper type
   switch (nesHeader.mapper) {
@@ -2885,11 +3014,7 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return chrROM[mapMMC5CHR(address)];
   case 1: // MMC1
   {
-    if (nesHeader.chrROMPages == 0) {
-      if (address < chrSize) {
-        return chrROM[address];
-      }
-    } else {
+    {
       // CHR-ROM - use banking
       uint32_t chrAddr;
       if (address < 0x1000) {
@@ -2924,23 +3049,18 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
       }
     } else {
       // CNROM with CHR-ROM - 8KB banking
-      uint32_t chrAddr = (cnrom.chrBank * 0x2000) + address;
-      if (chrAddr < chrSize) {
-        return chrROM[chrAddr];
-      }
+      uint32_t chrAddr = ((cnrom.chrBank * 0x2000) + address) % chrSize;
+      return chrROM[chrAddr];
     }
     return 0;
   }
 
   case 4: // MMC3
+  case 118:
+  case 119:
   {
-    if (nesHeader.chrROMPages == 0) {
-      // CHR-RAM - direct access
-      if (address < chrSize) {
-        return chrROM[address];
-      }
-    } else {
-      // CHR-ROM with banking
+    {
+      // CHR-ROM or CHR-RAM, 1 KB banking
       uint8_t bankIndex = address / 0x400;   // Which 1KB bank (0-7)
       uint16_t bankOffset = address % 0x400; // Offset within bank
 
@@ -2966,10 +3086,8 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
       }
     } else {
       // GxROM with CHR-ROM - 8KB banking
-      uint32_t chrAddr = (gxrom.chrBank * 0x2000) + address;
-      if (chrAddr < chrSize) {
-        return chrROM[chrAddr];
-      }
+      uint32_t chrAddr = ((gxrom.chrBank * 0x2000) + address) % chrSize;
+      return chrROM[chrAddr];
     }
     return 0;
   }
@@ -2984,6 +3102,7 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
   }
 
   case 9: // MMC2
+  case 10: // MMC4
   {
     if (nesHeader.chrROMPages == 0) {
       if (address < chrSize) {
@@ -3007,24 +3126,6 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     }
     return 0;
   }
-  case 10: // MMC4
-  {
-    if (nesHeader.chrROMPages == 0) {
-      // MMC2/4 with CHR-RAM - direct access
-      if (address < chrSize) {
-        return chrROM[address];
-      }
-    } else {
-      // MMC2/4 with CHR-ROM - complex banking (simplified here)
-      // For now, treat as direct access - full implementation would need
-      // sprite 0 hit detection and banking state tracking
-      if (address < chrSize) {
-        return chrROM[address];
-      }
-    }
-    return 0;
-  }
-
   case 11: // Color Dreams
   {
     if (nesHeader.chrROMPages == 0) {
@@ -3150,7 +3251,7 @@ void WarpNES::updateZapperInput(int mouseX, int mouseY, bool mousePressed) {
 }
 
 void WarpNES::handlePPUCHRRead(uint16_t address) {
-  if (nesHeader.mapper == 9) {
+  if (isMMC2Family()) {
     // Only check latch on actual PPU pattern table reads
     if (address < 0x2000) {
       checkMMC2CHRLatch(address, 0); // Keep tileID parameter for compatibility

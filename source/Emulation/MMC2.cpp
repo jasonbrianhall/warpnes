@@ -32,7 +32,7 @@ void WarpNES::writeMMC2Register(uint16_t address, uint8_t value) {
   switch (address & 0xF000) {
   case 0xA000:
     // PRG ROM bank select ($A000-$AFFF)
-    mmc2.prgBank = value & 0x0F; // 4 bits for PRG bank
+    mmc2.prgBank = value & 0x0F; // 8 KB bank (MMC2) or 16 KB bank (MMC4)
     break;
 
   case 0xB000:
@@ -81,6 +81,9 @@ void WarpNES::checkMMC2CHRLatch(uint16_t address, uint8_t tileID) {
   if (address >= 0x2000)
     return;
 
+  // MMC4 decodes a range for latch 0 as well
+  if (nesHeader.mapper == 10 && (address & 0xFFF8) == 0x0FD8) address = 0x0FD8;
+  if (nesHeader.mapper == 10 && (address & 0xFFF8) == 0x0FE8) address = 0x0FE8;
   if (address == 0x0FD8) {
     if (mmc2.latch0) { mmc2.latch0 = false; updateMMC2Banks(); }
   } else if (address == 0x0FE8) {
