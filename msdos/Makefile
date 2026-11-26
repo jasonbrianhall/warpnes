@@ -321,6 +321,7 @@ GAME_SRCS = \
   Emulation/MMC2.cpp \
   Emulation/MMC3.cpp \
   Emulation/MMC5.cpp \
+  Emulation/Mappers.cpp \
   Emulation/Mapper40.cpp \
   Emulation/ControllerSDL.cpp \
   SDLMainWindow.cpp \
