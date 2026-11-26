@@ -430,6 +430,7 @@ static bool initialize()
     {
         // Initialize audio
         SDL_AudioSpec desiredSpec;
+        SDL_zero(desiredSpec);
         desiredSpec.freq = Configuration::getAudioFrequency();
         desiredSpec.format = AUDIO_S8;
         desiredSpec.channels = 1;
@@ -437,11 +438,20 @@ static bool initialize()
         desiredSpec.callback = audioCallback;
         desiredSpec.userdata = NULL;
 
-        SDL_AudioSpec obtainedSpec;
-        SDL_OpenAudio(&desiredSpec, &obtainedSpec);
-
-        // Start playing audio
-        SDL_PauseAudio(0);
+        // No "obtained" spec: then SDL converts from exactly this format
+        // (8-bit signed mono at the APU's rate) to whatever the device
+        // uses. With one, SDL2 may hand the callback the device's own
+        // format instead (on Windows, WASAPI's 32-bit float stereo), and
+        // the 8-bit samples written into it come out as silence.
+        if (SDL_OpenAudio(&desiredSpec, NULL) < 0)
+        {
+            std::cout << "SDL_OpenAudio() failed, no sound: " << SDL_GetError() << std::endl;
+        }
+        else
+        {
+            // Start playing audio
+            SDL_PauseAudio(0);
+        }
     }
 
 #ifndef __DJGPP__
