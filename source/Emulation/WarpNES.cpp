@@ -900,7 +900,7 @@ void WarpNES::updateCycleAccurate() {
         // Fire NMI immediately if enabled
         if (ppu->getControl() & 0x80) {
           handleNMI();
-          cpuCycleDebt += 7; // Account for NMI cycles
+          cpuCycleDebt -= 7 * CPU_DIVIDER; // NMI entry takes 7 CPU cycles
         }
       }
 
@@ -917,21 +917,17 @@ void WarpNES::updateCycleAccurate() {
         checkMMC3IRQ(scanline, cycle);
       }
 
-      // CPU execution with proper cycle accounting
+      // CPU execution: cpuCycleDebt is the PPU-cycle budget available to the
+      // CPU. Each PPU cycle adds one; each instruction spends 3 per CPU cycle
+      // it took (including DMA stalls). The budget may go negative, which
+      // makes the CPU wait until the PPU catches up.
       cpuCycleDebt++;
 
       if (cpuCycleDebt >= CPU_DIVIDER) {
-        cpuCycleDebt -= CPU_DIVIDER;
-
-        // Execute CPU instruction
         uint64_t cyclesBefore = totalCycles;
         executeInstruction();
         uint64_t cyclesUsed = totalCycles - cyclesBefore;
-
-        // Account for multi-cycle instructions
-        if (cyclesUsed > 1) {
-          cpuCycleDebt += (cyclesUsed - 1) * CPU_DIVIDER;
-        }
+        cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
 
         masterCycles = totalCycles;
       }
@@ -2132,8 +2128,8 @@ uint8_t WarpNES::readByte(uint16_t address) {
           romAddr = (mmc1.currentPRGBank * 0x8000) + (address - 0x8000);
           break;
         case 2:
-          // Switchable last bank
-          romAddr = (mmc1.prgBank * 0x4000) + (address - 0xC000);
+          // Switchable bank at $C000 (bit 4 is PRG-RAM disable, not a bank bit)
+          romAddr = (((mmc1.prgBank & 0x0F) % totalBanks) * 0x4000) + (address - 0xC000);
           break;
         case 3:
         default:
@@ -2265,7 +2261,7 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
         switch (address) {
         case 0x4014:
             ppu->writeDMA(value);
-            masterCycles += 513; // DMA cycles
+            totalCycles += 513; // OAM DMA stalls the CPU for 513 cycles
             break;
 
         case 0x4016:

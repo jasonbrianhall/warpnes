@@ -65,14 +65,15 @@ void WarpNES::updateMMC1Banks() {
         switch (prgMode) {
             case 0:
             case 1:
-                mmc1.currentPRGBank = (mmc1.prgBank >> 1) % (totalPRGBanks / 2);
+                mmc1.currentPRGBank = ((mmc1.prgBank & 0x0F) >> 1) % (totalPRGBanks / 2);
                 break;
             case 2:
                 mmc1.currentPRGBank = 0;
                 break;
             case 3:
             default:
-                mmc1.currentPRGBank = mmc1.prgBank % totalPRGBanks;
+                // Bit 4 of the PRG register is PRG-RAM disable, not a bank bit
+                mmc1.currentPRGBank = (mmc1.prgBank & 0x0F) % totalPRGBanks;
                 break;
         }
     }
@@ -82,9 +83,10 @@ void WarpNES::updateMMC1Banks() {
         uint8_t totalCHRBanks = chrSize / 0x1000; // 4KB banks
         
         if (chrMode == 0) {
-            // 8KB CHR mode - ignore low bit of chrBank0
-            mmc1.currentCHRBank0 = (mmc1.chrBank0 >> 1) % (totalCHRBanks / 2);
-            mmc1.currentCHRBank1 = mmc1.currentCHRBank0; // Same 8KB bank
+            // 8KB CHR mode - ignore low bit of chrBank0. Banks are stored in
+            // 4KB units, so the 8KB bank is the even 4KB bank plus the next.
+            mmc1.currentCHRBank0 = (mmc1.chrBank0 & 0x1E) % totalCHRBanks;
+            mmc1.currentCHRBank1 = (mmc1.currentCHRBank0 + 1) % totalCHRBanks;
         } else {
             // 4KB CHR mode - separate banks
             mmc1.currentCHRBank0 = mmc1.chrBank0 % totalCHRBanks;

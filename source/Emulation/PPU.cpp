@@ -7,8 +7,10 @@ std::unordered_map<uint32_t, size_t> PPU::g_flipCacheIndex;
 PPU::ScalingCache PPU::g_scalingCache;
 
 static const uint8_t nametableMirrorLookup[][4] = {
-    {0, 0, 1, 1}, // Vertical
-    {0, 1, 0, 1}  // Horizontal
+    {0, 0, 1, 1}, // Horizontal ($2000=$2400, $2800=$2C00)
+    {0, 1, 0, 1}, // Vertical   ($2000=$2800, $2400=$2C00)
+    {0, 0, 0, 0}, // One-screen, lower bank
+    {1, 1, 1, 1}  // One-screen, upper bank
 };
 
 /**
@@ -170,6 +172,11 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     if (engine.getMapper() == 9) {
         // MMC2 controls mirroring at $F000: 0=vertical, 1=horizontal
         mode = engine.getMMC2Mirroring() ? 0 : 1;
+    } else if (engine.getMapper() == 1) {
+        // MMC1 control register: 0=one-screen lower, 1=one-screen upper,
+        // 2=vertical, 3=horizontal
+        static const int mmc1Modes[4] = {2, 3, 1, 0};
+        mode = mmc1Modes[engine.getMMC1Mirroring()];
     }
 
     return (nametableMirrorLookup[mode][table] * 0x400 + offset) % 2048;
