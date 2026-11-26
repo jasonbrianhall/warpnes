@@ -929,7 +929,7 @@ enum MenuId {
     M_RESET, M_PAUSE,
     M_SAVE1, M_SAVE2, M_SAVE3, M_SAVE4,
     M_LOAD1, M_LOAD2, M_LOAD3, M_LOAD4,
-    M_VIDEO,
+    M_VIDEO, M_SCALE, M_SMOOTH, M_FILTER,
     M_INPUT1, M_INPUT2, M_ZAPPER,
     M_ABOUT
 };
@@ -948,7 +948,15 @@ static const std::vector<Menu>& menus()
                     { nullptr, nullptr, 0 },
                     { "Load State 1", "Sh+F5", M_LOAD1 }, { "Load State 2", "Sh+F6", M_LOAD2 },
                     { "Load State 3", "Sh+F7", M_LOAD3 }, { "Load State 4", "Sh+F8", M_LOAD4 } } },
+#ifdef __DJGPP__
         { "Video", { { "Display Mode...", "", M_VIDEO } } },
+#else
+        { "Video", { { "Display Mode...", "", M_VIDEO },
+                     { nullptr, nullptr, 0 },
+                     { "Scaling", "", M_SCALE },
+                     { "Smoothing", "", M_SMOOTH },
+                     { "Filter", "", M_FILTER } } },
+#endif
         { "Input", { { "Player 1...", "", M_INPUT1 }, { "Player 2...", "", M_INPUT2 },
                      { nullptr, nullptr, 0 },
                      { "Zapper (mouse)", "", M_ZAPPER } } },
@@ -962,6 +970,10 @@ static bool needsGame(int id) { return id >= M_RESET && id <= M_LOAD4; }
 // Right-hand column of a menu item: its key, or for the Zapper its setting
 static const char* itemKeys(const MenuItem& it, GuiHost& host)
 {
+    if (it.id >= M_SCALE && it.id <= M_FILTER) {
+        const char* v = host.videoOption(it.id - M_SCALE);
+        return v ? v : "";
+    }
     if (it.id == M_ZAPPER) {
         switch (host.zapperSetting()) {
             case 1: return "On";
@@ -1022,7 +1034,10 @@ void Gui::menuBox(int menu, int& x, int& y, int& w, int& h) const
     for (const MenuItem& it : m.items) {
         if (!it.label) continue;
         labelW = std::max(labelW, textWidth(it.label));
-        keysW = std::max(keysW, textWidth(it.id == M_ZAPPER ? "Auto: off" : it.keys));
+        // settings shown on the right: room for the longest value
+        const char* widest = it.id == M_ZAPPER ? "Auto: off"
+                           : (it.id >= M_SCALE && it.id <= M_FILTER) ? "Sharp bilinear" : it.keys;
+        keysW = std::max(keysW, textWidth(widest));
     }
     w = labelW + (keysW ? keysW + 18 : 0) + 16;
     h = 4;
@@ -1080,6 +1095,12 @@ void Gui::runMenuItem(int menu, int item)
         case M_INPUT1: dialog.reset(new InputDialog(*this, 0)); break;
         case M_INPUT2: dialog.reset(new InputDialog(*this, 1)); break;
         case M_ABOUT: dialog.reset(new AboutDialog(*this)); break;
+        case M_SCALE: case M_SMOOTH: case M_FILTER:
+            // next choice; the menu stays open to show it
+            host.cycleVideoOption(it.id - M_SCALE);
+            openMenu = menu;
+            hotItem = item;
+            break;
         case M_ZAPPER:
             // Auto -> On -> Off -> Auto; the menu stays open to show it
             host.setZapperSetting((host.zapperSetting() + 1) % 3);

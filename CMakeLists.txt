@@ -39,6 +39,7 @@ set(WARPNES_SOURCES
     source/SDLGui.cpp
     source/SDLInput.cpp
     source/SDLCacheScaling.cpp
+    source/XBRZScaler.cpp
     source/Emulation/ControllerSDL.cpp
 )
 if(WIN32)
