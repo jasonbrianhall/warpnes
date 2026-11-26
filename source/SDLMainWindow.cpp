@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -6,6 +7,7 @@
 #endif
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <SDL2/SDL.h>
 #ifdef __DJGPP__
@@ -23,6 +25,9 @@
 #include "SDLCacheScaling.hpp"
 #include "SDLGui.hpp"
 #include "SDLInput.hpp"
+#ifndef __DJGPP__
+#include "XBRZScaler.hpp"
+#endif
 
 // Settings of this front end (display mode, controls, game folder). Kept
 // apart from CONFIG_FILE_NAME, whose key codes belong to the Allegro build.
@@ -122,8 +127,66 @@ static void applyWindowMode()
         SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     } else {
         SDL_SetWindowFullscreen(window, 0);
+        SDL_RestoreWindow(window);   // un-maximize, or the size doesn't take
         SDL_SetWindowSize(window, RENDER_WIDTH * windowScale, RENDER_HEIGHT * windowScale);
     }
+}
+
+// ---------------------------------------------------------------- picture options
+// Like the GTK4 build's Scaling and Filters: how the 256x240 picture fills
+// the (resizable) window. The menus are drawn on top, unfiltered and sharp.
+enum { SCALE_FIT, SCALE_INTEGER, SCALE_STRETCH, SCALE_COUNT };
+enum { SMOOTH_NEAREST, SMOOTH_SHARP, SMOOTH_LINEAR, SMOOTH_COUNT };
+enum { FILTER_NONE, FILTER_XBRZ2, FILTER_XBRZ3, FILTER_XBRZ4, FILTER_COUNT };
+static const char* const scaleNames[] = { "Fit", "Integer", "Stretch" };
+static const char* const smoothNames[] = { "Nearest", "Sharp bilinear", "Bilinear" };
+static const char* const filterNames[] = { "None", "xBRZ 2x", "xBRZ 3x", "xBRZ 4x" };
+static int scaleMode = SCALE_FIT;
+static int smoothing = SMOOTH_SHARP;
+static int filterMode = FILTER_NONE;
+
+static SDL_Texture* overlayTex = nullptr;    // GUI and crosshair, 256x240 with transparency
+static SDL_Texture* prescaleTex = nullptr;   // sharp bilinear: whole-number nearest prescale
+static int textureW = 0, textureH = 0, prescaleW = 0, prescaleH = 0;
+static std::vector<uint32_t> filterBuffer;
+static uint32_t overlayBuffer[RENDER_WIDTH * RENDER_HEIGHT];
+static uint16_t overlay16[RENDER_WIDTH * RENDER_HEIGHT];
+static const uint16_t OVERLAY_KEY = 0xF81F;  // magenta: not a GUI colour; transparent
+
+// Where the picture goes in the renderer's output (pixels)
+static SDL_Rect pictureRect(int outW, int outH)
+{
+    SDL_Rect r;
+    if (scaleMode == SCALE_STRETCH) { r.x = 0; r.y = 0; r.w = outW; r.h = outH; return r; }
+    if (scaleMode == SCALE_INTEGER) {
+        int k = SDL_max(1, SDL_min(outW / RENDER_WIDTH, outH / RENDER_HEIGHT));
+        r.w = RENDER_WIDTH * k; r.h = RENDER_HEIGHT * k;
+    } else {
+        double k = SDL_min((double)outW / RENDER_WIDTH, (double)outH / RENDER_HEIGHT);
+        r.w = (int)(RENDER_WIDTH * k + 0.5); r.h = (int)(RENDER_HEIGHT * k + 0.5);
+    }
+    r.x = (outW - r.w) / 2; r.y = (outH - r.h) / 2;
+    return r;
+}
+
+// (Re)make a texture when the size it needs changes
+static bool sizeTexture(SDL_Texture*& t, int& curW, int& curH, int w, int h, int access)
+{
+    if (t && curW == w && curH == h) return true;
+    if (t) SDL_DestroyTexture(t);
+    t = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, access, w, h);
+    curW = t ? w : 0; curH = t ? h : 0;
+    return t != nullptr;
+}
+
+static void loadVideoOptions()
+{
+    scaleMode = settings.getInt("video", "scale_mode", SCALE_FIT);
+    smoothing = settings.getInt("video", "smoothing", SMOOTH_SHARP);
+    filterMode = settings.getInt("video", "filter", FILTER_NONE);
+    if (scaleMode < 0 || scaleMode >= SCALE_COUNT) scaleMode = SCALE_FIT;
+    if (smoothing < 0 || smoothing >= SMOOTH_COUNT) smoothing = SMOOTH_SHARP;
+    if (filterMode < 0 || filterMode >= FILTER_COUNT) filterMode = FILTER_NONE;
 }
 #endif
 
@@ -176,6 +239,27 @@ public:
         return ok;
     }
     void quit() override { running = false; }
+
+#ifndef __DJGPP__
+    const char* videoOption(int which) override
+    {
+        switch (which) {
+            case 0: return scaleNames[scaleMode];
+            case 1: return smoothNames[smoothing];
+            case 2: return filterNames[filterMode];
+        }
+        return nullptr;
+    }
+    void cycleVideoOption(int which) override
+    {
+        switch (which) {
+            case 0: scaleMode = (scaleMode + 1) % SCALE_COUNT; settings.setInt("video", "scale_mode", scaleMode); break;
+            case 1: smoothing = (smoothing + 1) % SMOOTH_COUNT; settings.setInt("video", "smoothing", smoothing); break;
+            case 2: filterMode = (filterMode + 1) % FILTER_COUNT; settings.setInt("video", "filter", filterMode); break;
+        }
+        saveSettings();
+    }
+#endif
 
     int zapperSetting() override { return ::zapperSetting; }
     void setZapperSetting(int v) override
@@ -292,7 +376,7 @@ static bool initialize()
                               SDL_WINDOWPOS_UNDEFINED,
                               RENDER_WIDTH * windowScale,
                               RENDER_HEIGHT * windowScale,
-                              0);
+                              SDL_WINDOW_RESIZABLE);   // resizable: maximize button
     if (window == nullptr)
     {
         std::cout << "SDL_CreateWindow() failed during initialize(): " << SDL_GetError() << std::endl;
@@ -308,14 +392,11 @@ static bool initialize()
         return false;
     }
 
-    if (SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT) < 0)
-    {
-        std::cout << "SDL_RenderSetLogicalSize() failed during initialize(): " << SDL_GetError() << std::endl;
-        return false;
-    }
-
-    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
-    if (texture == nullptr)
+    // The picture is placed by pictureRect() (Video > Scaling), not by a
+    // renderer logical size
+    SDL_SetWindowMinimumSize(window, RENDER_WIDTH, RENDER_HEIGHT);
+    loadVideoOptions();
+    if (!sizeTexture(texture, textureW, textureH, RENDER_WIDTH, RENDER_HEIGHT, SDL_TEXTUREACCESS_STREAMING))
     {
         std::cout << "SDL_CreateTexture() failed during initialize(): " << SDL_GetError() << std::endl;
         return false;
@@ -369,6 +450,8 @@ static void shutdown()
         scalingCache = nullptr;
     }
     SDL_DestroyTexture(scanlineTexture);
+    if (overlayTex) SDL_DestroyTexture(overlayTex);
+    if (prescaleTex) SDL_DestroyTexture(prescaleTex);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
 #endif
@@ -378,24 +461,72 @@ static void shutdown()
 }
 
 // Put a 256x240 RGB565 picture on the screen
-static void present(const uint16_t* frame)
+static void present(const uint16_t* frame, const uint16_t* overlay = nullptr)
 {
 #ifdef __DJGPP__
     // MS-DOS: straight onto the VESA/VGA screen
     dos_present(window, frame, RENDER_WIDTH, RENDER_HEIGHT);
 #else
-    convertRGB565ToARGB8888(frame, renderBuffer, RENDER_WIDTH, RENDER_HEIGHT);
-    SDL_RenderClear(renderer);
-    SDL_UpdateTexture(texture, NULL, renderBuffer, sizeof(uint32_t) * RENDER_WIDTH);
-    SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT);
-    SDL_RenderCopy(renderer, texture, NULL, NULL);
+    int outW, outH;
+    SDL_GetRendererOutputSize(renderer, &outW, &outH);
+    SDL_Rect dst = pictureRect(outW, outH);
 
-    // Render scanlines if enabled
-    if (Configuration::getScanlinesEnabled() && scanlineTexture)
-    {
-        SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH * 3, RENDER_HEIGHT * 3);
-        SDL_RenderCopy(renderer, scanlineTexture, NULL, NULL);
-        SDL_RenderSetLogicalSize(renderer, RENDER_WIDTH, RENDER_HEIGHT);
+    // The game picture, through the filter (xBRZ 2x-4x) if one is chosen
+    convertRGB565ToARGB8888(frame, renderBuffer, RENDER_WIDTH, RENDER_HEIGHT);
+    int f = filterMode == FILTER_NONE ? 1 : filterMode + 1;
+    int tw = RENDER_WIDTH * f, th = RENDER_HEIGHT * f;
+    const uint32_t* pixels = renderBuffer;
+    if (f > 1) {
+        filterBuffer.resize((size_t)tw * th);
+        xbrzStyleScale(f, renderBuffer, filterBuffer.data(), RENDER_WIDTH, RENDER_HEIGHT);
+        pixels = filterBuffer.data();
+    }
+    if (!sizeTexture(texture, textureW, textureH, tw, th, SDL_TEXTUREACCESS_STREAMING)) return;
+    SDL_UpdateTexture(texture, NULL, pixels, tw * (int)sizeof(uint32_t));
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    SDL_Texture* src = texture;
+    SDL_ScaleMode filterHow = smoothing == SMOOTH_NEAREST ? SDL_ScaleModeNearest : SDL_ScaleModeLinear;
+    if (smoothing == SMOOTH_SHARP) {
+        // Sharp bilinear: the largest whole-number scale with nearest
+        // neighbour, then bilinear for the rest. Crisp pixels, all the same
+        // size, at any window size.
+        int k = SDL_min(dst.w / tw, dst.h / th);
+        if (dst.w % tw == 0 && dst.h % th == 0 && dst.w / tw == dst.h / th) {
+            filterHow = SDL_ScaleModeNearest;   // exact multiple: nearest is perfect
+        } else if (k >= 2 && SDL_RenderTargetSupported(renderer) &&
+                   sizeTexture(prescaleTex, prescaleW, prescaleH, tw * k, th * k, SDL_TEXTUREACCESS_TARGET)) {
+            SDL_SetTextureScaleMode(texture, SDL_ScaleModeNearest);
+            SDL_SetRenderTarget(renderer, prescaleTex);
+            SDL_RenderCopy(renderer, texture, NULL, NULL);
+            SDL_SetRenderTarget(renderer, NULL);
+            src = prescaleTex;
+        }
+    }
+    SDL_SetTextureScaleMode(src, filterHow);
+    SDL_RenderCopy(renderer, src, NULL, &dst);
+
+    // Menus, pointer and crosshair over it, sharp
+    if (overlay) {
+        for (int i = 0; i < RENDER_WIDTH * RENDER_HEIGHT; i++) {
+            uint16_t c = overlay[i];
+            if (c == OVERLAY_KEY) { overlayBuffer[i] = 0; continue; }
+            uint32_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+            overlayBuffer[i] = 0xFF000000u | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | ((b << 3) | (b >> 2));
+        }
+        if (!overlayTex) {
+            overlayTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
+            if (overlayTex) {
+                SDL_SetTextureBlendMode(overlayTex, SDL_BLENDMODE_BLEND);
+                SDL_SetTextureScaleMode(overlayTex, SDL_ScaleModeNearest);
+            }
+        }
+        if (overlayTex) {
+            SDL_UpdateTexture(overlayTex, NULL, overlayBuffer, RENDER_WIDTH * (int)sizeof(uint32_t));
+            SDL_RenderCopy(renderer, overlayTex, NULL, &dst);
+        }
     }
     SDL_RenderPresent(renderer);
 #endif
@@ -407,9 +538,14 @@ static void mouseToPicture(float x, float y, int* px, int* py)
 #ifdef __DJGPP__
     dos_screen_to_picture(x, y, px, py);
 #else
-    // SDL2 already gives renderer logical coordinates (RenderSetLogicalSize)
-    *px = (int)x;
-    *py = (int)y;
+    // Window coordinates -> renderer output pixels -> picture
+    int winW, winH, outW, outH;
+    SDL_GetWindowSize(window, &winW, &winH);
+    SDL_GetRendererOutputSize(renderer, &outW, &outH);
+    float ox = winW > 0 ? x * outW / winW : x, oy = winH > 0 ? y * outH / winH : y;
+    SDL_Rect r = pictureRect(outW, outH);
+    *px = r.w > 0 ? (int)SDL_floor((ox - r.x) * RENDER_WIDTH / r.w) : -1;
+    *py = r.h > 0 ? (int)SDL_floor((oy - r.y) * RENDER_HEIGHT / r.h) : -1;
 #endif
 }
 
@@ -629,16 +765,30 @@ static void mainLoop()
 #ifdef __DJGPP__
             dos_visible_lines(RENDER_HEIGHT, &y0, &y1);
 #endif
+#ifdef __DJGPP__
             memcpy(guiBuffer16, renderBuffer16, sizeof(guiBuffer16));
             if (!gui.active()) drawCrosshair(guiBuffer16);
             gui.draw(guiBuffer16, RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now);
             present(guiBuffer16);
+#else
+            // On their own layer, so smoothing and filters leave them sharp
+            std::fill(overlay16, overlay16 + RENDER_WIDTH * RENDER_HEIGHT, OVERLAY_KEY);
+            if (!gui.active()) drawCrosshair(overlay16);
+            gui.draw(overlay16, RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now);
+            present(renderBuffer16, overlay16);
+#endif
         }
         else if (smbEngine && smbEngine->isZapperEnabled())
         {
+#ifdef __DJGPP__
             memcpy(guiBuffer16, renderBuffer16, sizeof(guiBuffer16));
             drawCrosshair(guiBuffer16);
             present(guiBuffer16);
+#else
+            std::fill(overlay16, overlay16 + RENDER_WIDTH * RENDER_HEIGHT, OVERLAY_KEY);
+            drawCrosshair(overlay16);
+            present(renderBuffer16, overlay16);
+#endif
         }
         else
         {

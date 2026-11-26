@@ -51,6 +51,12 @@ public:
     virtual InputConfig& input() = 0;
     virtual void inputChanged() = 0;        // save, reopen joysticks
 
+    // Picture options of the desktop builds (0 scaling, 1 smoothing,
+    // 2 filter): the current choice's name, or null when there are none
+    // (MS-DOS); cycle: next choice
+    virtual const char* videoOption(int) { return nullptr; }
+    virtual void cycleVideoOption(int) {}
+
     // Zapper (light gun) in port 2: 0 = auto (known light-gun games),
     // 1 = on, 2 = off; zapperActive: in use for the game that is loaded
     virtual int zapperSetting() { return 0; }

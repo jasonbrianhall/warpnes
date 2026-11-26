@@ -90,6 +90,7 @@ SDL_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/SDLGui.cpp \
     source/SDLInput.cpp \
     source/SDLCacheScaling.cpp \
+    source/XBRZScaler.cpp \
     source/Emulation/ControllerSDL.cpp
 
 ALLEGRO_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
