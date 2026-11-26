@@ -25,6 +25,8 @@ public:
   WarpNES();
   ~WarpNES();
   // MMC1 control bits 0-1: 0=one-screen lower, 1=one-screen upper, 2=vertical, 3=horizontal
+  // MMC3 $A000: 0=vertical, 1=horizontal
+  uint8_t getMMC3Mirroring() const { return mmc3.mirroring; }
   uint8_t getMMC1Mirroring() const { return mmc1.control & 0x03; }
   uint8_t getMMC2Mirroring() const { return mmc2.mirroring; }
 

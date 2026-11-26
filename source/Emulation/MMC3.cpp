@@ -15,41 +15,25 @@
 #include "../Zapper.hpp"
 
 void WarpNES::checkMMC3IRQ(int scanline, int cycle) {
+  // The MMC3 counter is clocked by rising edges of PPU A12. With the usual
+  // setup (background at $0000, sprites at $1000) that happens once per
+  // scanline when the sprite patterns are fetched, around dot 260. If the
+  // tables are the other way round, the edge comes from the background
+  // prefetch for the next line at dot 324. Only while rendering is on, and
+  // only on visible lines plus the pre-render line.
   if (nesHeader.mapper != 4) return;
-  if (!ppuCycleState.renderingEnabled) return;
-  if (scanline >= 240 && scanline < 261) return; // Skip VBlank
+  if (!(ppu->getMask() & 0x18)) return;
+  if (scanline >= 240 && scanline != 261) return;
 
-  // CRITICAL FIX: More accurate A12 detection
-  bool a12High = false;
-  
-  // A12 goes high during pattern table fetches
-  if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
-    int fetchCycle = cycle % 8;
-    
-    // Pattern table fetches happen on cycles 5 and 7 of each 8-cycle group
-    if (fetchCycle == 5 || fetchCycle == 7) {
-      uint8_t ppuCtrl = ppu->getControl();
-      
-      if (fetchCycle == 5) {
-        // Background pattern fetch - A12 based on PPUCTRL bit 4
-        a12High = (ppuCtrl & 0x10) != 0;
-      } else if (fetchCycle == 7) {
-        // Could be background or sprite pattern fetch
-        // For background: A12 based on PPUCTRL bit 4
-        // For sprites: A12 based on PPUCTRL bit 3
-        a12High = (ppuCtrl & 0x10) != 0; // Simplified - use background
-      }
-    }
-  }
-  
-  // Sprite pattern fetches during sprite loading
-  if (cycle >= 257 && cycle <= 320) {
-    uint8_t ppuCtrl = ppu->getControl();
-    a12High = (ppuCtrl & 0x08) != 0; // Sprite pattern table selection
-  }
+  uint8_t ctrl = ppu->getControl();
+  bool bgHigh = (ctrl & 0x10) != 0;
+  bool spritesHigh = (ctrl & 0x20) ? true : (ctrl & 0x08) != 0; // 8x16: assume $1000
+  int clockDot = (bgHigh && !spritesHigh) ? 324 : 260;
+  if (bgHigh && spritesHigh) return; // A12 stays high: no edges
 
-  // Call the A12 transition detector
-  stepMMC3A12Transition(a12High);
+  if (cycle == clockDot) {
+    stepMMC3IRQ();
+  }
 }
 
 void WarpNES::stepMMC3A12Transition(bool a12High) {
@@ -182,23 +166,17 @@ void WarpNES::updateMMC3Banks() {
 }
 
 void WarpNES::stepMMC3IRQ() {
-  static int irqDebugCount = 0;
-
-  // Handle reload first
-  if (mmc3.irqReload) {
+  // Counter clock: reload from the latch when it is zero or a reload was
+  // requested ($C001), otherwise count down. Reaching zero with IRQs
+  // enabled asserts the IRQ line, which stays asserted until $E000.
+  if (mmc3.irqCounter == 0 || mmc3.irqReload) {
     mmc3.irqCounter = mmc3.irqLatch;
     mmc3.irqReload = false;
-
-    return;
+  } else {
+    mmc3.irqCounter--;
   }
 
-  // Handle normal countdown - ONLY if counter is > 0
-  if (mmc3.irqCounter > 0) {
-    mmc3.irqCounter--;
-
-    // Trigger IRQ when counter reaches 0 AND IRQ is enabled
-    if (mmc3.irqCounter == 0 && mmc3.irqEnable) {
-      mmc3.irqPending = true;
-    }
+  if (mmc3.irqCounter == 0 && mmc3.irqEnable) {
+    mmc3.irqPending = true;
   }
 }

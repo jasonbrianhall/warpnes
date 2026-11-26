@@ -7,6 +7,7 @@
 #include "Emulation/GameGenie.hpp"
 #include "Configuration.hpp"
 #include "Constants.hpp"
+#include "XBRZScaler.hpp"
 
 // NES runs at ~60.0988 frames per second (NTSC)
 static const gint64 NES_FRAME_US = 16639;
@@ -128,7 +129,8 @@ GTKMainWindow::GTKMainWindow()
       nes_framebuffer(nullptr), rgba_framebuffer(nullptr), frame_texture(nullptr),
       texture_width(256), texture_height(240),
       current_resolution_index(0), custom_width(800), custom_height(600),
-      use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(true),
+      use_custom_resolution(false), scale_mode(ScaleMode::FIT), smoothing(Smoothing::SHARP_BILINEAR),
+      prescaled_texture(nullptr), prescaled_source(nullptr), prescaled_factor(0),
       engine(nullptr), game_running(false), game_paused(false),
       tick_id(0), last_frame_time(0), time_accumulator(0),
       joystick_initialized(false),
@@ -159,6 +161,7 @@ GTKMainWindow::GTKMainWindow()
 GTKMainWindow::~GTKMainWindow() {
     shutdown();
     if (frame_texture) g_object_unref(frame_texture);
+    if (prescaled_texture) g_object_unref(prescaled_texture);
     if (app) g_object_unref(app);
     delete[] nes_framebuffer;
     delete[] rgba_framebuffer;
@@ -272,6 +275,14 @@ bool GTKMainWindow::load_rom(const char* filename) {
     key_taps.clear();
     init_gamepads();
 
+    // Remember where ROMs live for the next Open dialog
+    char* abs_path = g_canonicalize_filename(filename, nullptr);
+    char* dir = g_path_get_dirname(abs_path);
+    last_rom_dir = dir;
+    g_free(dir);
+    g_free(abs_path);
+    save_video_settings();
+
     gameGenie = new GameGenie(engine);
     size_t codesLoaded = 0;
     if (gameGenie->loadCodesFromFile(engine->getROMBaseName() + ".gg")) {
@@ -383,6 +394,7 @@ void GTKMainWindow::create_menubar() {
         {"game-genie", action_game_genie, nullptr, nullptr, nullptr, {0}},
         {"controls", action_controls, nullptr, nullptr, nullptr, {0}},
         {"resolution", action_resolution, nullptr, nullptr, nullptr, {0}},
+        {"scaling", action_scaling, nullptr, nullptr, nullptr, {0}},
         {"filters", action_filters, nullptr, nullptr, nullptr, {0}},
         {"fullscreen", action_fullscreen, nullptr, nullptr, nullptr, {0}},
         {"about", action_about, nullptr, nullptr, nullptr, {0}},
@@ -417,7 +429,8 @@ void GTKMainWindow::create_menubar() {
 
     GMenu* options_menu = g_menu_new();
     g_menu_append(options_menu, "_Controls…", "win.controls");
-    g_menu_append(options_menu, "_Resolution…", "win.resolution");
+    g_menu_append(options_menu, "_Scaling…", "win.scaling");
+    g_menu_append(options_menu, "Window _Size…", "win.resolution");
     g_menu_append(options_menu, "_Filters…", "win.filters");
     g_menu_append(options_menu, "F_ullscreen", "win.fullscreen");
     g_menu_append_submenu(bar, "_Options", G_MENU_MODEL(options_menu));
@@ -510,6 +523,12 @@ void GTKMainWindow::present_frame() {
             case FilterType::CRT_SCANLINES: apply_crt_scanlines_filter(nes_framebuffer, filter_buffer, 256, 240); break;
             case FilterType::NTSC:          apply_ntsc_filter(nes_framebuffer, filter_buffer, 256, 240); break;
             case FilterType::SUPER_4XSAI:   apply_4xsai_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::XBRZ2X:
+            case FilterType::XBRZ3X:
+            case FilterType::XBRZ4X:
+                convert_nes_to_rgba();
+                xbrzStyleScale(filter_scale, rgba_framebuffer, filter_buffer, 256, 240);
+                break;
             default:                        filtered = false; break;
         }
     }
@@ -556,32 +575,67 @@ void GTKMainWindow::snapshot_view(GtkWidget* widget, GtkSnapshot* snapshot) {
     Rect dest;
     calculate_render_rect(256, 240, width, height, dest);
     graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)dest.x, (float)dest.y, (float)dest.w, (float)dest.h);
-    gtk_snapshot_append_scaled_texture(snapshot, frame_texture,
-                                       integer_scaling ? GSK_SCALING_FILTER_NEAREST : GSK_SCALING_FILTER_LINEAR,
-                                       &bounds);
+
+    if (smoothing == Smoothing::NEAREST) {
+        gtk_snapshot_append_scaled_texture(snapshot, frame_texture, GSK_SCALING_FILTER_NEAREST, &bounds);
+        return;
+    }
+    if (smoothing == Smoothing::BILINEAR) {
+        gtk_snapshot_append_scaled_texture(snapshot, frame_texture, GSK_SCALING_FILTER_LINEAR, &bounds);
+        return;
+    }
+
+    // Sharp bilinear: scale up by the largest whole factor with nearest
+    // neighbour (on the GPU), then bilinear for the small remainder. Pixels
+    // stay crisp but evenly sized at any window size.
+    int device_scale = gtk_widget_get_scale_factor(widget);
+    int device_w = dest.w * device_scale;
+    int device_h = dest.h * device_scale;
+    if (device_w % texture_width == 0 && device_h % texture_height == 0) {
+        // Exact multiple: nearest is already perfect
+        gtk_snapshot_append_scaled_texture(snapshot, frame_texture, GSK_SCALING_FILTER_NEAREST, &bounds);
+        return;
+    }
+
+    int factor = std::min(device_w / texture_width, device_h / texture_height);
+    GdkTexture* source = frame_texture;
+    if (factor >= 2) {
+        if (prescaled_source != frame_texture || prescaled_factor != factor || !prescaled_texture) {
+            GskRenderer* renderer = gtk_native_get_renderer(gtk_widget_get_native(widget));
+            if (renderer) {
+                graphene_rect_t big = GRAPHENE_RECT_INIT(0.0f, 0.0f,
+                                                         (float)(texture_width * factor),
+                                                         (float)(texture_height * factor));
+                GskRenderNode* node = gsk_texture_scale_node_new(frame_texture, &big, GSK_SCALING_FILTER_NEAREST);
+                GdkTexture* scaled = gsk_renderer_render_texture(renderer, node, &big);
+                gsk_render_node_unref(node);
+                if (prescaled_texture) g_object_unref(prescaled_texture);
+                prescaled_texture = scaled;
+                prescaled_source = frame_texture;
+                prescaled_factor = factor;
+            }
+        }
+        if (prescaled_texture && prescaled_source == frame_texture) source = prescaled_texture;
+    }
+    gtk_snapshot_append_scaled_texture(snapshot, source, GSK_SCALING_FILTER_LINEAR, &bounds);
 }
 
 void GTKMainWindow::calculate_render_rect(int source_width, int source_height,
                                           int target_width, int target_height, Rect& dest_rect) {
-    if (!maintain_aspect_ratio) {
+    if (scale_mode == ScaleMode::STRETCH) {
         dest_rect = {0, 0, target_width, target_height};
         return;
     }
 
-    float source_aspect = (float)source_width / (float)source_height;
-
-    if (integer_scaling) {
-        int scale_x = target_width / source_width;
-        int scale_y = target_height / source_height;
-        int scale = std::max(1, std::min(scale_x, scale_y));
+    if (scale_mode == ScaleMode::INTEGER) {
+        int scale = std::max(1, std::min(target_width / source_width, target_height / source_height));
         dest_rect.w = source_width * scale;
         dest_rect.h = source_height * scale;
-    } else if ((int)(target_width / source_aspect) <= target_height) {
-        dest_rect.w = target_width;
-        dest_rect.h = (int)(target_width / source_aspect);
     } else {
-        dest_rect.w = (int)(target_height * source_aspect);
-        dest_rect.h = target_height;
+        // Fit: as large as possible with the source aspect ratio
+        double scale = std::min((double)target_width / source_width, (double)target_height / source_height);
+        dest_rect.w = (int)std::lround(source_width * scale);
+        dest_rect.h = (int)std::lround(source_height * scale);
     }
     dest_rect.x = (target_width - dest_rect.w) / 2;
     dest_rect.y = (target_height - dest_rect.h) / 2;
@@ -760,6 +814,12 @@ void GTKMainWindow::action_open(GSimpleAction*, GVariant*, gpointer user_data) {
     g_object_unref(filter);
     g_object_unref(filters);
 
+    if (!self->last_rom_dir.empty() && g_file_test(self->last_rom_dir.c_str(), G_FILE_TEST_IS_DIR)) {
+        GFile* folder = g_file_new_for_path(self->last_rom_dir.c_str());
+        gtk_file_dialog_set_initial_folder(dialog, folder);
+        g_object_unref(folder);
+    }
+
     gtk_file_dialog_open(dialog, GTK_WINDOW(self->window), nullptr,
         [](GObject* source, GAsyncResult* result, gpointer data) {
             GTKMainWindow* self = static_cast<GTKMainWindow*>(data);
@@ -814,6 +874,10 @@ void GTKMainWindow::action_resolution(GSimpleAction*, GVariant*, gpointer user_d
     static_cast<GTKMainWindow*>(user_data)->show_resolution_dialog();
 }
 
+void GTKMainWindow::action_scaling(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_scaling_dialog();
+}
+
 void GTKMainWindow::action_filters(GSimpleAction*, GVariant*, gpointer user_data) {
     static_cast<GTKMainWindow*>(user_data)->show_filters_dialog();
 }
@@ -866,6 +930,9 @@ void GTKMainWindow::show_filters_dialog() {
         {FilterType::SCALE2X, "Scale2x (pixel-perfect)"},
         {FilterType::HQ2X, "hq2x (smooth)"},
         {FilterType::HQ3X, "hq3x (3x smooth)"},
+        {FilterType::XBRZ2X, "xBRZ 2x (smooth edges)"},
+        {FilterType::XBRZ3X, "xBRZ 3x (smooth edges)"},
+        {FilterType::XBRZ4X, "xBRZ 4x (smooth edges)"},
         {FilterType::SUPER_4XSAI, "Super 4xSaI (premium 4x smooth)"},
         {FilterType::CRT_SCANLINES, "CRT Scanlines (retro CRT effect)"},
         {FilterType::NTSC, "NTSC Composite (authentic TV look)"},
@@ -903,13 +970,11 @@ void GTKMainWindow::show_resolution_dialog() {
         GtkWidget* custom_radio;
         GtkWidget* width_spin;
         GtkWidget* height_spin;
-        GtkWidget* aspect_check;
-        GtkWidget* integer_check;
     };
 
     GtkWidget *content, *buttons;
-    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Resolution Settings", &content, &buttons);
-    ResolutionData* data = new ResolutionData{this, {}, nullptr, nullptr, nullptr, nullptr, nullptr};
+    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Window Size", &content, &buttons);
+    ResolutionData* data = new ResolutionData{this, {}, nullptr, nullptr, nullptr};
     attach_data(dialog, data);
 
     GtkWidget* preset_box;
@@ -942,19 +1007,8 @@ void GTKMainWindow::show_resolution_dialog() {
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(data->height_spin), custom_height);
     gtk_box_append(GTK_BOX(size_row), data->height_spin);
 
-    GtkWidget* scaling_box;
-    gtk_box_append(GTK_BOX(content), framed("Scaling Options", &scaling_box));
-    data->aspect_check = gtk_check_button_new_with_label("Maintain aspect ratio");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(data->aspect_check), maintain_aspect_ratio);
-    gtk_box_append(GTK_BOX(scaling_box), data->aspect_check);
-    data->integer_check = gtk_check_button_new_with_label("Integer scaling (pixel-perfect)");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(data->integer_check), integer_scaling);
-    gtk_box_append(GTK_BOX(scaling_box), data->integer_check);
-
     auto apply = +[](ResolutionData* d) {
         GTKMainWindow* self = d->self;
-        self->maintain_aspect_ratio = gtk_check_button_get_active(GTK_CHECK_BUTTON(d->aspect_check));
-        self->integer_scaling = gtk_check_button_get_active(GTK_CHECK_BUTTON(d->integer_check));
         if (gtk_check_button_get_active(GTK_CHECK_BUTTON(d->custom_radio))) {
             self->use_custom_resolution = true;
             self->custom_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(d->width_spin));
@@ -984,6 +1038,65 @@ void GTKMainWindow::show_resolution_dialog() {
         close_dialog_cb(b, nullptr);
     }), data);
     gtk_window_set_default_widget(GTK_WINDOW(dialog), ok);
+    gtk_window_present(GTK_WINDOW(dialog));
+}
+
+void GTKMainWindow::show_scaling_dialog() {
+    struct Choice { GTKMainWindow* self; bool is_mode; int value; };
+
+    GtkWidget *content, *buttons;
+    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Scaling", &content, &buttons);
+    auto* choices = new std::vector<Choice*>();
+    g_object_set_data_full(G_OBJECT(dialog), "choices", choices, [](gpointer p) {
+        auto* v = static_cast<std::vector<Choice*>*>(p);
+        for (Choice* c : *v) delete c;
+        delete v;
+    });
+
+    auto on_toggled = +[](GtkCheckButton* button, gpointer d) {
+        if (!gtk_check_button_get_active(button)) return;
+        Choice* c = static_cast<Choice*>(d);
+        if (c->is_mode) c->self->scale_mode = static_cast<ScaleMode>(c->value);
+        else c->self->smoothing = static_cast<Smoothing>(c->value);
+        c->self->save_video_settings();
+        gtk_widget_queue_draw(c->self->view);
+    };
+
+    auto add_group = [&](const char* title, bool is_mode, int current,
+                         std::initializer_list<std::pair<int, const char*>> items) {
+        GtkWidget* box;
+        gtk_box_append(GTK_BOX(content), framed(title, &box));
+        GtkWidget* group = nullptr;
+        for (const auto& item : items) {
+            GtkWidget* radio = gtk_check_button_new_with_label(item.second);
+            if (group) gtk_check_button_set_group(GTK_CHECK_BUTTON(radio), GTK_CHECK_BUTTON(group));
+            else group = radio;
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(radio), item.first == current);
+            Choice* c = new Choice{this, is_mode, item.first};
+            choices->push_back(c);
+            g_signal_connect(radio, "toggled", G_CALLBACK(on_toggled), c);
+            gtk_box_append(GTK_BOX(box), radio);
+        }
+    };
+
+    add_group("Size", true, (int)scale_mode, {
+        {(int)ScaleMode::FIT, "Fit to window (keep aspect ratio)"},
+        {(int)ScaleMode::INTEGER, "Integer multiples only (pixel-perfect, may leave borders)"},
+        {(int)ScaleMode::STRETCH, "Stretch to fill"},
+    });
+    add_group("Smoothing", false, (int)smoothing, {
+        {(int)Smoothing::SHARP_BILINEAR, "Sharp (crisp, evenly sized pixels)"},
+        {(int)Smoothing::NEAREST, "Nearest neighbour (crisp, uneven at non-integer sizes)"},
+        {(int)Smoothing::BILINEAR, "Smooth (bilinear)"},
+    });
+    GtkWidget* note = gtk_label_new("Changes apply immediately. For edge-smoothing upscalers\n"
+                                    "such as xBRZ, see Options > Filters.");
+    gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
+    gtk_widget_add_css_class(note, "dim-label");
+    gtk_box_append(GTK_BOX(content), note);
+
+    GtkWidget* close = add_button(buttons, "_Close", G_CALLBACK(close_dialog_cb), nullptr);
+    gtk_window_set_default_widget(GTK_WINDOW(dialog), close);
     gtk_window_present(GTK_WINDOW(dialog));
 }
 
@@ -1353,14 +1466,19 @@ void GTKMainWindow::save_key_mappings() {
 void GTKMainWindow::load_video_settings() {
     FILE* file = fopen("video_settings.cfg", "r");
     if (!file) {
-        integer_scaling = true;
-        maintain_aspect_ratio = true;
         return;
     }
 
     char line[256];
     while (fgets(line, sizeof(line), file)) {
         if (line[0] == '#' || line[0] == '\n') continue;
+
+        if (strncmp(line, "last_rom_dir=", 13) == 0) {
+            last_rom_dir = line + 13;
+            while (!last_rom_dir.empty() && (last_rom_dir.back() == '\n' || last_rom_dir.back() == '\r'))
+                last_rom_dir.pop_back();
+            continue;
+        }
 
         char key[64];
         char value[64];
@@ -1376,11 +1494,20 @@ void GTKMainWindow::load_video_settings() {
                 custom_height = atoi(value);
             } else if (strcmp(key, "use_custom_resolution") == 0) {
                 use_custom_resolution = (strcmp(value, "true") == 0);
-            } else if (strcmp(key, "maintain_aspect_ratio") == 0) {
-                maintain_aspect_ratio = (strcmp(value, "true") == 0);
-            } else if (strcmp(key, "integer_scaling") == 0) {
-                integer_scaling = (strcmp(value, "true") == 0);
+            } else if (strcmp(key, "scale_mode") == 0) {
+                if (strcmp(value, "integer") == 0) scale_mode = ScaleMode::INTEGER;
+                else if (strcmp(value, "stretch") == 0) scale_mode = ScaleMode::STRETCH;
+                else scale_mode = ScaleMode::FIT;
+            } else if (strcmp(key, "smoothing") == 0) {
+                if (strcmp(value, "nearest") == 0) smoothing = Smoothing::NEAREST;
+                else if (strcmp(value, "bilinear") == 0) smoothing = Smoothing::BILINEAR;
+                else smoothing = Smoothing::SHARP_BILINEAR;
+            } else if (strcmp(key, "filter") == 0) {
+                int f = atoi(value);
+                if (f >= (int)FilterType::NONE && f <= (int)FilterType::XBRZ4X) setFilter(static_cast<FilterType>(f));
             }
+            // maintain_aspect_ratio / integer_scaling from older versions are
+            // ignored: they defaulted to integer scaling, which left borders.
             // preferred_backend / backend_switching_enabled from the GTK3
             // frontend are ignored: there is only one renderer now.
         }
@@ -1397,8 +1524,12 @@ void GTKMainWindow::save_video_settings() {
     fprintf(file, "custom_width=%d\n", custom_width);
     fprintf(file, "custom_height=%d\n", custom_height);
     fprintf(file, "use_custom_resolution=%s\n", use_custom_resolution ? "true" : "false");
-    fprintf(file, "maintain_aspect_ratio=%s\n", maintain_aspect_ratio ? "true" : "false");
-    fprintf(file, "integer_scaling=%s\n", integer_scaling ? "true" : "false");
+    fprintf(file, "scale_mode=%s\n", scale_mode == ScaleMode::INTEGER ? "integer" :
+                                       scale_mode == ScaleMode::STRETCH ? "stretch" : "fit");
+    fprintf(file, "smoothing=%s\n", smoothing == Smoothing::NEAREST ? "nearest" :
+                                      smoothing == Smoothing::BILINEAR ? "bilinear" : "sharp");
+    fprintf(file, "filter=%d\n", (int)current_filter);
+    if (!last_rom_dir.empty()) fprintf(file, "last_rom_dir=%s\n", last_rom_dir.c_str());
     fclose(file);
 }
 
@@ -1428,8 +1559,17 @@ void GTKMainWindow::setFilter(FilterType filter) {
             filter_buffer = new uint32_t[256 * 240 * 9];
             break;
         case FilterType::SUPER_4XSAI:
+        case FilterType::XBRZ4X:
             filter_scale = 4;
             filter_buffer = new uint32_t[256 * 240 * 16];
+            break;
+        case FilterType::XBRZ2X:
+            filter_scale = 2;
+            filter_buffer = new uint32_t[256 * 240 * 4];
+            break;
+        case FilterType::XBRZ3X:
+            filter_scale = 3;
+            filter_buffer = new uint32_t[256 * 240 * 9];
             break;
         case FilterType::NTSC:
             filter_scale = 1;
@@ -1447,8 +1587,12 @@ void GTKMainWindow::setFilter(FilterType filter) {
              filter == FilterType::SCALE3X ? "Scale3x" :
              filter == FilterType::CRT_SCANLINES ? "CRT Scanlines" :
              filter == FilterType::NTSC ? "NTSC Composite" :
-             filter == FilterType::SUPER_4XSAI ? "Super 4xSaI" : "Bilinear");
+             filter == FilterType::SUPER_4XSAI ? "Super 4xSaI" :
+             filter == FilterType::XBRZ2X ? "xBRZ 2x" :
+             filter == FilterType::XBRZ3X ? "xBRZ 3x" :
+             filter == FilterType::XBRZ4X ? "xBRZ 4x" : "Bilinear");
     set_status_message(status_msg);
+    if (window) save_video_settings();
 }
 
 uint32_t GTKMainWindow::rgb565_to_rgb888(uint16_t color) {

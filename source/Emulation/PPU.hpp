@@ -179,7 +179,15 @@ private:
     uint8_t nametable[2048]; /**< Background table. */
     uint8_t oam[256]; /**< Sprite memory. */
     // PPU Address control
-    uint16_t currentAddress; /**< Address that will be accessed on the next PPU read/write. */
+    uint16_t currentAddress; /**< Loopy "v": VRAM address, also the scroll position while rendering. */
+    uint16_t tempAddress;    /**< Loopy "t": scroll/address latch written by $2000/$2005/$2006. */
+    uint8_t fineX;           /**< Loopy "x": fine X scroll (0-7). */
+    uint16_t lineV[240];     /**< v at the start of each visible scanline. */
+    uint8_t lineFineX[240];  /**< fine X used for each visible scanline. */
+    void renderBackgroundScanline(int scanline);
+    void scrollIncrementY();
+    void scrollCopyX() { currentAddress = (currentAddress & ~0x041F) | (tempAddress & 0x041F); }
+    void scrollCopyY() { currentAddress = (currentAddress & 0x041F) | (tempAddress & ~0x041F & 0x7FFF); }
     bool writeToggle; /**< Toggles whether the low or high bit of the current address will be set on the next write to PPUADDR. */
     uint8_t vramBuffer; /**< Stores the last read byte from VRAM to delay reads by 1 byte. */
 

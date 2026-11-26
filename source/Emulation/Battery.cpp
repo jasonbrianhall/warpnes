@@ -18,18 +18,18 @@
 void WarpNES::initializeSRAM() {
   cleanupSRAM();  // Clean up any existing SRAM
   
-  if (!nesHeader.battery) {
-    return;  // No battery save support
-  }
-  
-  // Allocate 8KB SRAM (standard for most games)
+  // Always provide 8KB of PRG RAM at $6000-$7FFF. Many boards have work RAM
+  // without a battery (e.g. Super Mario Bros. 3); only battery-backed RAM is
+  // loaded from / saved to disk (see loadSRAM/saveSRAM).
   sramSize = 8192;
   sram = new uint8_t[sramSize];
   memset(sram, 0, sramSize);  // Initialize to zero
   sramEnabled = true;
   sramDirty = false;
   
-  printf("SRAM: Initialized %d bytes for battery save\n", sramSize);
+  if (nesHeader.battery) {
+    printf("SRAM: Initialized %d bytes for battery save\n", sramSize);
+  }
   
   // Load existing save if it exists
   loadSRAM();

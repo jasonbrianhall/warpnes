@@ -94,6 +94,7 @@ ALLEGRO_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
 
 GTK4_SOURCE_FILES = $(COMMON_SOURCE_FILES) \
     source/GTKMainWindow.cpp \
+    source/XBRZScaler.cpp \
     source/Emulation/ControllerSDL.cpp
 
 # NSF Player source files (uses SDL for audio only)

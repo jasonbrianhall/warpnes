@@ -925,6 +925,16 @@ void WarpNES::updateCycleAccurate() {
 
       if (cpuCycleDebt >= CPU_DIVIDER) {
         uint64_t cyclesBefore = totalCycles;
+        // Mapper IRQ line (level-triggered): taken between instructions
+        // whenever it is asserted and the I flag is clear.
+        if (nesHeader.mapper == 4 && mmc3.irqPending && !getFlag(FLAG_INTERRUPT)) {
+          pushWord(regPC);
+          pushByte((regP & ~FLAG_BREAK) | 0x20);
+          setFlag(FLAG_INTERRUPT, true);
+          regPC = readWord(0xFFFE);
+          totalCycles += 7;
+          frameCycles += 7;
+        }
         executeInstruction();
         uint64_t cyclesUsed = totalCycles - cyclesBefore;
         cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
@@ -2086,8 +2096,8 @@ uint8_t WarpNES::readByte(uint16_t address) {
     }
 
   } else if (address >= 0x6000 && address < 0x8000) {
-    // SRAM area ($6000-$7FFF)
-    if (sramEnabled && sram && nesHeader.battery) {
+    // PRG RAM area ($6000-$7FFF)
+    if (sramEnabled && sram) {
       uint16_t sramAddr = address - 0x6000;
       if (sramAddr < sramSize) {
         return sram[sramAddr];
@@ -2274,8 +2284,8 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
             break;
         }
     } else if (address >= 0x6000 && address < 0x8000) {
-        // SRAM area - not used in NSF
-        if (sramEnabled && sram && nesHeader.battery) {
+        // PRG RAM area ($6000-$7FFF)
+        if (sramEnabled && sram) {
             uint16_t sramAddr = address - 0x6000;
             if (sramAddr < sramSize) {
                 sram[sramAddr] = value;

@@ -35,7 +35,24 @@ enum class FilterType {
     BILINEAR,
     CRT_SCANLINES,
     NTSC,
-    SUPER_4XSAI
+    SUPER_4XSAI,
+    XBRZ2X,
+    XBRZ3X,
+    XBRZ4X
+};
+
+// How the picture is fitted into the window
+enum class ScaleMode {
+    FIT,      // As large as possible, keep aspect ratio (default)
+    INTEGER,  // Largest whole-number multiple, keep aspect ratio
+    STRETCH   // Fill the whole area
+};
+
+// How pixels are filtered when scaled
+enum class Smoothing {
+    NEAREST,         // Hard pixels (uneven at non-integer sizes)
+    SHARP_BILINEAR,  // Integer nearest prescale + bilinear remainder (default)
+    BILINEAR         // Smooth
 };
 
 class GTKMainWindow {
@@ -86,8 +103,14 @@ private:
     int custom_width;
     int custom_height;
     bool use_custom_resolution;
-    bool maintain_aspect_ratio;
-    bool integer_scaling;
+    ScaleMode scale_mode;
+    Smoothing smoothing;
+    std::string last_rom_dir;
+
+    // Sharp-bilinear: GPU-side integer prescale of the current frame
+    GdkTexture* prescaled_texture;
+    GdkTexture* prescaled_source;
+    int prescaled_factor;
 
     // Game state
     WarpNES* engine;
@@ -163,6 +186,7 @@ private:
     static void action_game_genie(GSimpleAction*, GVariant*, gpointer user_data);
     static void action_controls(GSimpleAction*, GVariant*, gpointer user_data);
     static void action_resolution(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_scaling(GSimpleAction*, GVariant*, gpointer user_data);
     static void action_filters(GSimpleAction*, GVariant*, gpointer user_data);
     static void action_fullscreen(GSimpleAction*, GVariant*, gpointer user_data);
     static void action_about(GSimpleAction*, GVariant*, gpointer user_data);
@@ -172,6 +196,7 @@ private:
     void show_message(const char* heading, const char* detail = nullptr);
     void show_controls_dialog();
     void show_resolution_dialog();
+    void show_scaling_dialog();
     void show_filters_dialog();
     void show_about_dialog();
     void show_game_genie_dialog();

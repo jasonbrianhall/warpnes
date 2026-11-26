@@ -100,6 +100,10 @@ PPU::PPU(WarpNES& engine) :
     
     // Keep all existing initialization code:
     currentAddress = 0;
+    tempAddress = 0;
+    fineX = 0;
+    memset(lineV, 0, sizeof(lineV));
+    memset(lineFineX, 0, sizeof(lineFineX));
     writeToggle = false;
     
     ppuCtrl = 0x00;
@@ -172,6 +176,9 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     if (engine.getMapper() == 9) {
         // MMC2 controls mirroring at $F000: 0=vertical, 1=horizontal
         mode = engine.getMMC2Mirroring() ? 0 : 1;
+    } else if (engine.getMapper() == 4) {
+        // MMC3 $A000: 0=vertical, 1=horizontal
+        mode = engine.getMMC3Mirroring() ? 0 : 1;
     } else if (engine.getMapper() == 1) {
         // MMC1 control register: 0=one-screen lower, 1=one-screen upper,
         // 2=vertical, 3=horizontal
@@ -351,15 +358,88 @@ void PPU::writeAddressRegister(uint8_t value)
 {
     if (!writeToggle)
     {
-        // Upper byte
-        currentAddress = (currentAddress & 0xff) | (((uint16_t)value << 8) & 0xff00);
+        // Upper byte (bit 14 is cleared)
+        tempAddress = (tempAddress & 0x00FF) | ((uint16_t)(value & 0x3F) << 8);
     }
     else
     {
-        // Lower byte
-        currentAddress = (currentAddress & 0xff00) | (uint16_t)value;
+        // Lower byte, then t is copied to v. Games use this for mid-frame
+        // scroll splits (e.g. Super Mario Bros. 3's status bar).
+        tempAddress = (tempAddress & 0x7F00) | (uint16_t)value;
+        currentAddress = tempAddress;
     }
     writeToggle = !writeToggle;
+}
+
+// Increment the vertical part of v at the end of a rendered scanline.
+void PPU::scrollIncrementY()
+{
+    uint16_t v = currentAddress;
+    if ((v & 0x7000) != 0x7000) {
+        v += 0x1000;                       // fine Y
+    } else {
+        v &= ~0x7000;
+        int coarseY = (v & 0x03E0) >> 5;
+        if (coarseY == 29) {
+            coarseY = 0;
+            v ^= 0x0800;                   // switch vertical nametable
+        } else if (coarseY == 31) {
+            coarseY = 0;                   // out-of-range Y wraps without switching
+        } else {
+            coarseY++;
+        }
+        v = (v & ~0x03E0) | (coarseY << 5);
+    }
+    currentAddress = v;
+}
+
+// Background for one scanline, driven by the loopy v/x registers captured at
+// the start of the line. Fetches 34 tiles like the real PPU (the MMC2 latch
+// relies on the off-screen ones).
+void PPU::renderBackgroundScanline(int scanline)
+{
+    if (scanline < 0 || scanline >= 240) return;
+
+    uint16_t v = lineV[scanline];
+    int fx = lineFineX[scanline];
+    int fineY = (v >> 12) & 0x07;
+    uint16_t patternTable = (scanlineCtrl[scanline] & 0x10) ? 0x1000 : 0x0000;
+    bool clipLeft = !(ppuMask & 0x02);
+
+    for (int tile = 0; tile < 34; tile++) {
+        uint16_t ntAddr = 0x2000 | (v & 0x0FFF);
+        uint16_t atAddr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
+        uint8_t tileIndex = readByte(ntAddr);
+        uint8_t attrByte = readByte(atAddr);
+        int shift = ((v >> 4) & 0x04) | (v & 0x02);
+        uint8_t paletteIndex = (attrByte >> shift) & 0x03;
+
+        uint16_t patternAddr = patternTable + tileIndex * 16 + fineY;
+        uint8_t patternLo = readCHR(patternAddr);
+        uint8_t patternHi = readCHR(patternAddr + 8);
+
+        int screenX = tile * 8 - fx;
+        for (int px = 0; px < 8; px++) {
+            int x = screenX + px;
+            if (x < 0 || x >= 256) continue;
+            uint8_t pixelValue = ((patternLo >> (7 - px)) & 1) | (((patternHi >> (7 - px)) & 1) << 1);
+            if (clipLeft && x < 8) pixelValue = 0;
+
+            int bufferIndex = scanline * 256 + x;
+            backgroundMask[bufferIndex] = pixelValue == 0 ? 1 : 0;
+            uint8_t colorIndex = pixelValue == 0 ? palette[0] : palette[paletteIndex * 4 + pixelValue];
+            uint32_t color32 = paletteRGB[colorIndex & 0x3F];
+            frameBuffer[bufferIndex] = ((color32 & 0xF80000) >> 8) | ((color32 & 0x00FC00) >> 5) | ((color32 & 0x0000F8) >> 3);
+        }
+
+        // Coarse X increment, wrapping into the horizontal neighbour nametable
+        if ((v & 0x001F) == 31) {
+            v &= ~0x001F;
+            v ^= 0x0400;
+        } else {
+            v++;
+        }
+    }
 }
 
 void PPU::writeByte(uint16_t address, uint8_t value)
@@ -435,6 +515,7 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
     // PPUCTRL
     case 0x2000:
         ppuCtrl = value;
+        tempAddress = (tempAddress & ~0x0C00) | ((value & 0x03) << 10);
         break;
         
     // PPUMASK  
@@ -455,6 +536,12 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
         
     // PPUSCROLL
     case 0x2005:
+        if (!writeToggle) {
+            tempAddress = (tempAddress & ~0x001F) | (value >> 3);
+            fineX = value & 0x07;
+        } else {
+            tempAddress = (tempAddress & ~0x73E0) | ((value & 0x07) << 12) | ((value & 0xF8) << 2);
+        }
         if (!writeToggle) {
             ppuScrollX = value;
             // Only set future scanlines, not all scanlines
@@ -794,8 +881,15 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
     currentScanline = scanline;
     currentCycle = cycle;
     
+    bool renderingOn = (ppuMask & 0x18) != 0;
+
     // Pre-render scanline (261)
     if (scanline == 261) {
+        if (renderingOn) {
+            if (cycle == 256) scrollIncrementY();
+            if (cycle == 257) scrollCopyX();
+            if (cycle == 280) scrollCopyY();   // dots 280-304
+        }
         if (cycle == 1) {
             ppuStatus &= 0x7F;  // Clear VBlank
             ppuStatus &= 0xBF;  // Clear sprite 0 hit
@@ -819,14 +913,25 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
     
     // Visible scanlines (0-239) + potential overscan (240-260)
     if (scanline >= 0 && scanline < 240) {
-        // Latch control register at start of scanline
+        // Latch control register and scroll position at start of scanline
         if (cycle == 0) {
             scanlineCtrl[scanline] = ppuCtrl;
+            lineV[scanline] = currentAddress;
+            lineFineX[scanline] = fineX;
+            // Keep the legacy per-line scroll arrays meaningful for code
+            // that still reads them (sprite-0 helpers)
+            scanlineScrollX[scanline] = ((currentAddress & 0x1F) << 3) | fineX;
+            scanlineScrollY[scanline] = (((currentAddress >> 5) & 0x1F) << 3) | ((currentAddress >> 12) & 7);
+            scanlineCtrl[scanline] = (ppuCtrl & ~0x03) | ((currentAddress >> 10) & 0x03);
         }
         
         // Render the scanline at cycle 256 (end of visible portion)
         if (cycle == 256) {
             renderScanline(scanline, mapper);
+            if (renderingOn) scrollIncrementY();
+        }
+        if (cycle == 257 && renderingOn) {
+            scrollCopyX();
         }
         
         // Sprite 0 hit detection
@@ -1015,20 +1120,7 @@ void PPU::renderScanline(int scanline, int mapper) {
     
     // Render background first
     if (ppuMask & 0x08) {
-        switch (mapper) {
-            case 1:
-                renderBackgroundScanlineMMC1(scanline);
-                break;             
-            case 9:
-                renderBackgroundScanlineMMC2(scanline);
-                break;
-            case 66:
-                renderBackgroundScanlineMMC1(scanline);
-                break;             
-            default:
-                renderBackgroundScanlineMMC1(scanline);
-                break;             
-        }
+        renderBackgroundScanline(scanline);
     }
     
     // Render sprites the correct way: in order 0-63, but only draw if no higher priority sprite already drew there
@@ -1096,6 +1188,7 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
         
         int xPixel = spriteX + ((attributes & 0x40) ? (7 - pixelX) : pixelX);
         if (xPixel < 0 || xPixel >= 256) continue;
+        if (xPixel < 8 && !(ppuMask & 0x04)) continue;  // Left-edge sprite clipping
         
         int bufferIndex = scanline * 256 + xPixel;
         
