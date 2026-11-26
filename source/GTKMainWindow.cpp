@@ -129,7 +129,7 @@ GTKMainWindow::GTKMainWindow()
       nes_framebuffer(nullptr), rgba_framebuffer(nullptr), frame_texture(nullptr),
       texture_width(256), texture_height(240),
       current_resolution_index(0), custom_width(800), custom_height(600),
-      use_custom_resolution(false), scale_mode(ScaleMode::FIT), smoothing(Smoothing::SHARP_BILINEAR),
+      use_custom_resolution(false), scale_mode(ScaleMode::FIT), smoothing(Smoothing::SHARP_BILINEAR), crop_overscan(true),
       prescaled_texture(nullptr), prescaled_source(nullptr), prescaled_factor(0),
       engine(nullptr), game_running(false), game_paused(false),
       tick_id(0), last_frame_time(0), time_accumulator(0),
@@ -545,6 +545,14 @@ void GTKMainWindow::present_frame() {
         convert_nes_to_rgba();
     }
 
+    // NTSC TVs hide roughly the top and bottom 8 lines, and many games
+    // (e.g. Final Fantasy while scrolling vertically) draw garbage there.
+    if (crop_overscan) {
+        int scale = height / 240;
+        pixels += (size_t)8 * scale * width;
+        height -= 16 * scale;
+    }
+
     // 0xAARRGGBB in native endianness == GDK_MEMORY_DEFAULT
     GBytes* bytes = g_bytes_new(pixels, (gsize)width * height * 4);
     GdkTexture* texture = gdk_memory_texture_new(width, height, GDK_MEMORY_DEFAULT, bytes, (gsize)width * 4);
@@ -575,7 +583,7 @@ void GTKMainWindow::snapshot_view(GtkWidget* widget, GtkSnapshot* snapshot) {
 
     // Lay out by NES resolution so filters (2x/3x/4x textures) keep the same size
     Rect dest;
-    calculate_render_rect(256, 240, width, height, dest);
+    calculate_render_rect(256, crop_overscan ? 224 : 240, width, height, dest);
     graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)dest.x, (float)dest.y, (float)dest.w, (float)dest.h);
 
     if (smoothing == Smoothing::NEAREST) {
@@ -1091,6 +1099,17 @@ void GTKMainWindow::show_scaling_dialog() {
         {(int)Smoothing::NEAREST, "Nearest neighbour (crisp, uneven at non-integer sizes)"},
         {(int)Smoothing::BILINEAR, "Smooth (bilinear)"},
     });
+    GtkWidget* crop = gtk_check_button_new_with_label("Hide overscan (top and bottom 8 lines, like a TV)");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(crop), crop_overscan);
+    g_signal_connect(crop, "toggled", G_CALLBACK(+[](GtkCheckButton* b, gpointer d) {
+        GTKMainWindow* self = static_cast<GTKMainWindow*>(d);
+        self->crop_overscan = gtk_check_button_get_active(b);
+        self->save_video_settings();
+        if (self->engine && self->game_running) self->present_frame();
+        gtk_widget_queue_draw(self->view);
+    }), this);
+    gtk_box_append(GTK_BOX(content), crop);
+
     GtkWidget* note = gtk_label_new("Changes apply immediately. For edge-smoothing upscalers\n"
                                     "such as xBRZ, see Options > Filters.");
     gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
@@ -1500,6 +1519,8 @@ void GTKMainWindow::load_video_settings() {
                 if (strcmp(value, "integer") == 0) scale_mode = ScaleMode::INTEGER;
                 else if (strcmp(value, "stretch") == 0) scale_mode = ScaleMode::STRETCH;
                 else scale_mode = ScaleMode::FIT;
+            } else if (strcmp(key, "crop_overscan") == 0) {
+                crop_overscan = (strcmp(value, "false") != 0);
             } else if (strcmp(key, "smoothing") == 0) {
                 if (strcmp(value, "nearest") == 0) smoothing = Smoothing::NEAREST;
                 else if (strcmp(value, "bilinear") == 0) smoothing = Smoothing::BILINEAR;
@@ -1528,6 +1549,7 @@ void GTKMainWindow::save_video_settings() {
     fprintf(file, "use_custom_resolution=%s\n", use_custom_resolution ? "true" : "false");
     fprintf(file, "scale_mode=%s\n", scale_mode == ScaleMode::INTEGER ? "integer" :
                                        scale_mode == ScaleMode::STRETCH ? "stretch" : "fit");
+    fprintf(file, "crop_overscan=%s\n", crop_overscan ? "true" : "false");
     fprintf(file, "smoothing=%s\n", smoothing == Smoothing::NEAREST ? "nearest" :
                                       smoothing == Smoothing::BILINEAR ? "bilinear" : "sharp");
     fprintf(file, "filter=%d\n", (int)current_filter);

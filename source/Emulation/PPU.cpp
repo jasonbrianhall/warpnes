@@ -177,6 +177,9 @@ uint16_t PPU::getNametableIndex(uint16_t address) {
     if (engine.getMapper() == 9) {
         // MMC2 controls mirroring at $F000: 0=vertical, 1=horizontal
         mode = engine.getMMC2Mirroring() ? 0 : 1;
+    } else if (engine.getMapper() == 7) {
+        // AxROM: one-screen mirroring selected by bit 4 of the register
+        mode = engine.getAxROMUpperNametable() ? 3 : 2;
     } else if (engine.getMapper() == 4) {
         // MMC3 $A000: 0=vertical, 1=horizontal
         mode = engine.getMMC3Mirroring() ? 0 : 1;

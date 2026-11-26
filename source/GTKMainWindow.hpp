@@ -105,6 +105,7 @@ private:
     bool use_custom_resolution;
     ScaleMode scale_mode;
     Smoothing smoothing;
+    bool crop_overscan;   // hide the top/bottom 8 lines like an NTSC TV
     std::string last_rom_dir;
 
     // Sharp-bilinear: GPU-side integer prescale of the current frame

@@ -27,6 +27,7 @@ public:
   // MMC1 control bits 0-1: 0=one-screen lower, 1=one-screen upper, 2=vertical, 3=horizontal
   // MMC3 $A000: 0=vertical, 1=horizontal
   uint8_t getMMC3Mirroring() const { return mmc3.mirroring; }
+  bool getAxROMUpperNametable() const { return (axromReg & 0x10) != 0; }
   uint8_t getMMC1Mirroring() const { return mmc1.control & 0x03; }
   uint8_t getMMC2Mirroring() const { return mmc2.mirroring; }
 
@@ -390,6 +391,10 @@ private:
       chrBank = 0;
     }
   } gxrom;
+
+  // Mapper 7 (AxROM): one register, written anywhere in $8000-$FFFF.
+  //   bits 0-3: 32KB PRG bank, bit 4: one-screen nametable (0 lower, 1 upper)
+  uint8_t axromReg = 0;
 
   struct CNROMState {
     uint8_t chrBank; // Current CHR bank (8KB)

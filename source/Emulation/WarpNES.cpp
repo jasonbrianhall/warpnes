@@ -1,3 +1,4 @@
+#include <vector>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -456,7 +457,8 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
   // Check for unsupported features
   if (nesHeader.mapper != 0 && nesHeader.mapper != 1 && nesHeader.mapper != 2 &&
       nesHeader.mapper != 3 && nesHeader.mapper != 4 && nesHeader.mapper != 9 &&
-      nesHeader.mapper != 66 && nesHeader.mapper != 40 && nesHeader.mapper != 5) {
+      nesHeader.mapper != 66 && nesHeader.mapper != 40 && nesHeader.mapper != 5 &&
+      nesHeader.mapper != 7) {
     std::cout << "WARNING: Mapper " << (int)nesHeader.mapper << " not supported"
               << std::endl;
   }
@@ -1033,6 +1035,8 @@ void WarpNES::reset() {
     updateMMC1Banks();
   } else if (nesHeader.mapper == 66) {
     gxrom = GxROMState();
+  } else if (nesHeader.mapper == 7) {
+    axromReg = 0;
   } else if (nesHeader.mapper == 2) {
     uxrom = UxROMState();
   } else if (nesHeader.mapper == 3) {
@@ -2255,6 +2259,12 @@ uint8_t WarpNES::readByte(uint16_t address) {
       if (romAddr < prgSize) {
         return prgROM[romAddr];
       }
+    } else if (nesHeader.mapper == 7) {
+      // AxROM - 32KB PRG banks
+      uint32_t banks = prgSize / 0x8000;
+      if (banks == 0) banks = 1;
+      uint32_t romAddr = ((axromReg & 0x0F) % banks) * 0x8000 + (address - 0x8000);
+      return prgROM[romAddr % prgSize];
     } else if (nesHeader.mapper == 66) {
       // GxROM mapping - 32KB PRG banks
       uint32_t romAddr = (gxrom.prgBank * 0x8000) + (address - 0x8000);
@@ -2341,6 +2351,8 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
         // but some might, so keep the existing mapper code
         if (nesHeader.mapper == 1) {
             writeMMC1Register(address, value);
+        } else if (nesHeader.mapper == 7) {
+            axromReg = value;
         } else if (nesHeader.mapper == 66) {
             writeGxROMRegister(address, value);
         } else if (nesHeader.mapper == 3) {
@@ -2606,6 +2618,21 @@ void WarpNES::saveState(const std::string &filename) {
     case 66:
       file.write(reinterpret_cast<const char *>(&gxrom), sizeof(gxrom));
       break;
+    case 5:
+      file.write(reinterpret_cast<const char *>(&mmc5), sizeof(mmc5));
+      break;
+    case 7:
+      file.write(reinterpret_cast<const char *>(&axromReg), sizeof(axromReg));
+      break;
+    }
+
+    // Writable memory that isn't covered above: CHR-RAM and PRG-RAM.
+    // Appended at the end so older save files still load.
+    if (nesHeader.chrROMPages == 0 && chrROM && chrSize) {
+      file.write(reinterpret_cast<const char *>(chrROM), chrSize);
+    }
+    if (sram && sramSize) {
+      file.write(reinterpret_cast<const char *>(sram), sramSize);
     }
 
     file.close();
@@ -2774,6 +2801,30 @@ bool WarpNES::loadState(const std::string &filename) {
       std::cerr << "Warning: Could not read GxROM state" << std::endl;
     }
     break;
+  case 5:
+    if (!file.read(reinterpret_cast<char *>(&mmc5), sizeof(mmc5))) {
+      std::cerr << "Warning: Could not read MMC5 state" << std::endl;
+    }
+    break;
+  case 7:
+    if (!file.read(reinterpret_cast<char *>(&axromReg), sizeof(axromReg))) {
+      std::cerr << "Warning: Could not read AxROM state" << std::endl;
+    }
+    break;
+  }
+
+  // CHR-RAM and PRG-RAM (absent in save files from older versions)
+  if (nesHeader.chrROMPages == 0 && chrROM && chrSize) {
+    std::vector<uint8_t> chr(chrSize);
+    if (file.read(reinterpret_cast<char *>(chr.data()), chrSize)) {
+      memcpy(chrROM, chr.data(), chrSize);
+    }
+  }
+  if (sram && sramSize) {
+    std::vector<uint8_t> ram(sramSize);
+    if (file.read(reinterpret_cast<char *>(ram.data()), sramSize)) {
+      memcpy(sram, ram.data(), sramSize);
+    }
   }
 
   file.close();
