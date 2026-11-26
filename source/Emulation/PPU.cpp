@@ -547,6 +547,19 @@ void PPU::renderBackgroundScanline(int scanline)
         for (int t = 0; t < 4; t++) ntPages[t] = &nametable[getNametableIndex(0x2000 + t * 0x400)];
     }
 
+    // Also fixed for the whole line: CHR banks and the palette. Look up the
+    // CHR pages once, and build, for each background palette, the colours of
+    // every 2-pixel combination (index = left pixel * 4 + right pixel).
+    const uint8_t* chrPages[8];
+    for (int p = 0; p < 8; p++) chrPages[p] = engine.chrPage(p);
+    uint32_t pairColors[4][16];
+    for (int pal = 0; pal < 4; pal++) {
+        uint16_t c[4];
+        c[0] = rgb565[palette[0] & 0x3F];
+        for (int k = 1; k < 4; k++) c[k] = rgb565[palette[pal * 4 + k] & 0x3F];
+        for (int n = 0; n < 16; n++) pairColors[pal][n] = (uint32_t)c[n >> 2] | ((uint32_t)c[n & 3] << 16);
+    }
+
     for (int tile = 0; tile < 34; tile++) {
         uint16_t ntAddr = 0x2000 | (v & 0x0FFF);
         uint16_t atAddr = 0x23C0 | (v & 0x0C00) | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
@@ -584,7 +597,7 @@ void PPU::renderBackgroundScanline(int scanline)
             patternHi = engine.readCHRAbsolute(base + 8);
         } else {
             uint16_t patternAddr = patternTable + tileIndex * 16 + fineY;
-            const uint8_t* page = engine.chrPage(patternAddr >> 10);
+            const uint8_t* page = chrPages[patternAddr >> 10];
             if (page) {
                 patternLo = page[patternAddr & 0x3FF];
                 patternHi = page[(patternAddr + 8) & 0x3FF];
@@ -596,11 +609,7 @@ void PPU::renderBackgroundScanline(int scanline)
 
         // The four colours this tile can use, converted to RGB565 once per
         // tile instead of once per pixel
-        uint16_t colors[4];
-        colors[0] = rgb565[palette[0] & 0x3F];
-        colors[1] = rgb565[palette[paletteIndex * 4 + 1] & 0x3F];
-        colors[2] = rgb565[palette[paletteIndex * 4 + 2] & 0x3F];
-        colors[3] = rgb565[palette[paletteIndex * 4 + 3] & 0x3F];
+        const uint32_t* pairs = pairColors[paletteIndex];
         uint32_t pixels = bitSpread[patternLo] | (bitSpread[patternHi] << 1);
 
         int screenX = tile * 8 - fx;
@@ -613,8 +622,7 @@ void PPU::renderBackgroundScanline(int scanline)
             // which is what costs most under DOSBox
             memcpy(mask, transparentMask[patternLo | patternHi], 8);
             for (int k = 0; k < 4; k++) {
-                uint32_t pair = (uint32_t)colors[(pixels >> (14 - 4 * k)) & 3] |
-                                ((uint32_t)colors[(pixels >> (12 - 4 * k)) & 3] << 16);
+                uint32_t pair = pairs[(pixels >> (12 - 4 * k)) & 15];
                 memcpy(fb + 2 * k, &pair, 4);
             }
         } else {
@@ -624,7 +632,7 @@ void PPU::renderBackgroundScanline(int scanline)
                 int pixelValue = (pixels >> (14 - 2 * px)) & 3;
                 if (clipLeft && x < 8) pixelValue = 0;
                 backgroundMask[rowBase + x] = pixelValue == 0;
-                frameBuffer[rowBase + x] = colors[pixelValue];
+                frameBuffer[rowBase + x] = (uint16_t)pairs[pixelValue * 5];  // n = v*4+v: low half = colour v
             }
         }
 

@@ -216,7 +216,19 @@ private:
   Controller *controller2;
 
   // Memory mapping
-  uint8_t readByte(uint16_t address);
+  // CPU bus. RAM and cached PRG ROM are handled here, inline, since every
+  // opcode, operand and zero-page/stack access comes through; the rest
+  // (registers, mappers, SRAM, open bus) goes to readByteSlow.
+  inline uint8_t readByte(uint16_t address) {
+    if (address < 0x2000) return ram[address & 0x7FF];
+    if (address >= 0x8000 && !ext && nesHeader.mapper != 5) {
+      int slot = (address >> 13) & 3;
+      if (prgSlotGen[slot] == prgMapGen && prgSlotPtr[slot])
+        return prgSlotPtr[slot][address & 0x1FFF];
+    }
+    return readByteSlow(address);
+  }
+  uint8_t readByteSlow(uint16_t address);
   int32_t prgOffset(uint16_t address);
   void refillPRGSlot(int slot);
   // PRG read cache: slot pointers valid while prgSlotGen == prgMapGen
@@ -226,7 +238,11 @@ private:
   int32_t chrOffset(uint16_t address);
   const uint8_t* chrPagePtr[8] = {};
   uint32_t chrPagesGen = 0;
-  void writeByte(uint16_t address, uint8_t value);
+  inline void writeByte(uint16_t address, uint8_t value) {
+    if (address < 0x2000) { ram[address & 0x7FF] = value; return; }
+    writeByteSlow(address, value);
+  }
+  void writeByteSlow(uint16_t address, uint8_t value);
   uint16_t readWord(uint16_t address);
   void writeWord(uint16_t address, uint16_t value);
 

@@ -920,35 +920,76 @@ void WarpNES::updateCycleAccurate() {
       cyclesThisScanline = 340; // Skip cycle 340 on odd frames when rendering
     }
 
-    for (int cycle = 0; cycle < cyclesThisScanline; cycle++) {
-      // Skip ahead over dots where nothing happens: no CPU instruction is
-      // due and neither the PPU nor the mapper acts on them. Skipped dots
-      // only add to the CPU budget (and the PPU's dot count on lines 240
-      // and 261). Checked against the dot-by-dot loop with frame hashes.
-      {
-        int target = cycle + (CPU_DIVIDER - 1 - cpuCycleDebt);  // next CPU dot
-        if (target > cycle) {
-          int evt = cycle <= 1 ? cycle : cycle <= 256 ? 256 : cycle <= 257 ? 257
-                  : cycle <= 280 ? 280 : cyclesThisScanline;
-          int s0 = ppu->sprite0EventDot();
-          if (s0 >= cycle && s0 < evt) evt = s0;
-          if (mmc3Family || (ext && ext->wantsScanline)) {
-            if (cycle <= 260 && 260 < evt) evt = 260;
-            else if (mmc3Family && cycle <= 324 && 324 < evt) evt = 324;
-          }
-          if (mapperNum == 5 && cycle <= 337 && 337 < evt) evt = 337;
-          if (scanline == VBLANK_START_SCANLINE && cycle <= 1) evt = cycle;
-          if (evt < target) target = evt;
-          if (target > cyclesThisScanline) target = cyclesThisScanline;
-          int skipped = target - cycle;
-          if (skipped > 0) {
-            cpuCycleDebt += skipped;
-            if (scanline == 240 || scanline == 261) ppu->addCycles(skipped);
-            cycle = target;
-            if (cycle >= cyclesThisScanline) break;
-          }
-        }
+    // One CPU instruction (with any pending mapper IRQ taken first).
+    auto runCPU = [&]() {
+      uint64_t cyclesBefore = totalCycles;
+      // Mapper IRQ line (level-triggered): taken between instructions
+      // whenever it is asserted and the I flag is clear.
+      bool mapperIRQ = (mmc3Family && mmc3.irqPending) ||
+                       (mapperNum == 5 && mmc5.irqPending && mmc5.irqEnable) ||
+                       (ext && ext->irq);
+      if (mapperIRQ && !getFlag(FLAG_INTERRUPT)) {
+        pushWord(regPC);
+        pushByte((regP & ~FLAG_BREAK) | 0x20);
+        setFlag(FLAG_INTERRUPT, true);
+        regPC = readWord(0xFFFE);
+        totalCycles += 7;
+        frameCycles += 7;
       }
+      executeInstruction();
+      uint64_t cyclesUsed = totalCycles - cyclesBefore;
+      cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
+      if (ext && ext->wantsCpuClock) ext->cpuClock((int)cyclesUsed);
+
+      masterCycles = totalCycles;
+    };
+    const bool countsPPUCycles = (scanline == 240 || scanline == 261);
+
+    // Dots where the PPU or mapper acts get the full treatment below; on
+    // every other dot the only thing that can happen is a CPU instruction.
+    // So: find the next such event dot, run the CPU instructions due before
+    // it back to back, then process the event dot. cpuCycleDebt is the
+    // PPU-cycle budget available to the CPU: each dot adds one, each
+    // instruction spends 3 per CPU cycle it took (including DMA stalls); it
+    // may go negative, which makes the CPU wait for the PPU to catch up.
+    // Checked against the dot-by-dot loop with frame hashes.
+    int cycle = 0;
+    while (cycle < cyclesThisScanline) {
+      int evt = cycle <= 1 ? cycle : cycle <= 256 ? 256 : cycle <= 257 ? 257
+              : cycle <= 280 ? 280 : cyclesThisScanline;
+      int s0 = ppu->sprite0EventDot();
+      if (s0 >= cycle && s0 < evt) evt = s0;
+      if (mmc3Family || (ext && ext->wantsScanline)) {
+        if (cycle <= 260 && 260 < evt) evt = 260;
+        else if (mmc3Family && cycle <= 324 && 324 < evt) evt = 324;
+      }
+      if (mapperNum == 5 && cycle <= 337 && 337 < evt) evt = 337;
+      if (scanline == VBLANK_START_SCANLINE && cycle <= 1) evt = cycle;
+      if (evt > cyclesThisScanline) evt = cyclesThisScanline;
+
+      // CPU instructions on the quiet dots before the event
+      for (;;) {
+        int fire = cycle + (CPU_DIVIDER - 1 - cpuCycleDebt);  // dot it runs on
+        if (fire < cycle) fire = cycle;
+        if (fire >= evt) break;
+        int skipped = fire - cycle;
+        cpuCycleDebt += skipped + 1;  // the quiet dots, plus this one
+        if (countsPPUCycles) ppu->addCycles(skipped);
+        ppuCycleState.cycle = fire;
+        ppu->stepCycleFast(scanline, fire, mapperNum);  // position only
+        runCPU();
+        cycle = fire + 1;
+      }
+
+      // Quiet dots up to the event (or the end of the line)
+      int skipped = evt - cycle;
+      if (skipped > 0) {
+        cpuCycleDebt += skipped;
+        if (countsPPUCycles) ppu->addCycles(skipped);
+        cycle = evt;
+      }
+      if (cycle >= cyclesThisScanline) break;
+
       ppuCycleState.cycle = cycle;
 
       // VBlank flag set on cycle 1 of scanline 241
@@ -977,34 +1018,9 @@ void WarpNES::updateCycleAccurate() {
         ext->scanline();
       }
 
-      // CPU execution: cpuCycleDebt is the PPU-cycle budget available to the
-      // CPU. Each PPU cycle adds one; each instruction spends 3 per CPU cycle
-      // it took (including DMA stalls). The budget may go negative, which
-      // makes the CPU wait until the PPU catches up.
       cpuCycleDebt++;
-
-      if (cpuCycleDebt >= CPU_DIVIDER) {
-        uint64_t cyclesBefore = totalCycles;
-        // Mapper IRQ line (level-triggered): taken between instructions
-        // whenever it is asserted and the I flag is clear.
-        bool mapperIRQ = (mmc3Family && mmc3.irqPending) ||
-                         (mapperNum == 5 && mmc5.irqPending && mmc5.irqEnable) ||
-                         (ext && ext->irq);
-        if (mapperIRQ && !getFlag(FLAG_INTERRUPT)) {
-          pushWord(regPC);
-          pushByte((regP & ~FLAG_BREAK) | 0x20);
-          setFlag(FLAG_INTERRUPT, true);
-          regPC = readWord(0xFFFE);
-          totalCycles += 7;
-          frameCycles += 7;
-        }
-        executeInstruction();
-        uint64_t cyclesUsed = totalCycles - cyclesBefore;
-        cpuCycleDebt -= (int)(cyclesUsed * CPU_DIVIDER);
-        if (ext && ext->wantsCpuClock) ext->cpuClock((int)cyclesUsed);
-
-        masterCycles = totalCycles;
-      }
+      if (cpuCycleDebt >= CPU_DIVIDER) runCPU();
+      cycle++;
     }
   }
 
@@ -2393,7 +2409,8 @@ void WarpNES::refillPRGSlot(int slot) {
   prgSlotGen[slot] = prgMapGen;
 }
 
-uint8_t WarpNES::readByte(uint16_t address) {
+// Everything readByte() (WarpNES.hpp) doesn't handle inline
+uint8_t WarpNES::readByteSlow(uint16_t address) {
   if (ext && address >= 0x4020) {
     if (address >= 0x8000) return ext->cpuRead(address);
     uint8_t v;
@@ -2454,7 +2471,8 @@ uint8_t WarpNES::readByte(uint16_t address) {
   return 0; // Open bus
 }
 
-void WarpNES::writeByte(uint16_t address, uint8_t value) {
+// Everything writeByte() (WarpNES.hpp) doesn't handle inline
+void WarpNES::writeByteSlow(uint16_t address, uint8_t value) {
   if (address >= 0x4020) prgMapGen++;  // may switch PRG banks
   if (ext && address >= 0x4020) {
     if (ext->hasAudio) syncAPU();
