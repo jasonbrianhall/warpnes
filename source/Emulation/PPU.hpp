@@ -151,6 +151,8 @@ private:
 
     void clearScanline(int scanline);
     void checkSprite0HitScanline(int scanline);
+    int findSprite0HitX(int scanline);  // first dot of sprite-0 hit on this line, or -1
+    int sprite0HitX;
     
     static ScalingCache g_scalingCache;
     

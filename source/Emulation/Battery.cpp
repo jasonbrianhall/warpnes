@@ -21,7 +21,8 @@ void WarpNES::initializeSRAM() {
   // Always provide 8KB of PRG RAM at $6000-$7FFF. Many boards have work RAM
   // without a battery (e.g. Super Mario Bros. 3); only battery-backed RAM is
   // loaded from / saved to disk (see loadSRAM/saveSRAM).
-  sramSize = 8192;
+  // MMC5 boards carry up to 64KB of PRG RAM (banked via $5113-$5116)
+  sramSize = (nesHeader.mapper == 5) ? 65536 : 8192;
   sram = new uint8_t[sramSize];
   memset(sram, 0, sramSize);  // Initialize to zero
   sramEnabled = true;

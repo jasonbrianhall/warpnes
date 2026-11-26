@@ -119,6 +119,7 @@ PPU::PPU(WarpNES& engine) :
     memset(nametable, 0, sizeof(nametable));
     memset(oam, 0, sizeof(oam));
     sprite0Hit = false;
+    sprite0HitX = -1;
     // Set default background color (usually black)
     palette[0] = 0x0F;  // Black
     cachedScrollX = 0;
@@ -202,6 +203,7 @@ uint8_t PPU::readByte(uint16_t address)
     else if (address < 0x3f00)
     {
         // Nametable
+        if (engine.getMapper() == 5) return engine.mmc5NametableRead(address, nametable);
         return nametable[getNametableIndex(address)];
     }
 
@@ -371,6 +373,67 @@ void PPU::writeAddressRegister(uint8_t value)
     writeToggle = !writeToggle;
 }
 
+// Where on this scanline sprite 0 first overlaps the background with both
+// pixels opaque. Uses side-effect-free pattern reads (no mapper latches).
+int PPU::findSprite0HitX(int scanline)
+{
+    if ((ppuMask & 0x18) != 0x18) return -1;  // needs both BG and sprites on
+
+    uint8_t spriteY = oam[0];
+    uint8_t tileIndex = oam[1];
+    uint8_t attributes = oam[2];
+    uint8_t spriteX = oam[3];
+    int height = spriteHeight();
+    int row = scanline - (spriteY + 1);
+    if (row < 0 || row >= height) return -1;
+    if (attributes & 0x80) row = height - 1 - row;
+
+    engine.setMMC5SpriteFetch(true);
+    uint16_t spriteAddr = spritePatternAddr(tileIndex, row);
+    uint8_t sLo = peekCHR(spriteAddr);
+    uint8_t sHi = peekCHR(spriteAddr + 8);
+    engine.setMMC5SpriteFetch(false);
+    if (!(sLo | sHi)) return -1;
+
+    uint16_t v = currentAddress;  // this line's scroll position
+    int fx = fineX;
+    int fineY = (v >> 12) & 0x07;
+    uint16_t patternTable = (ppuCtrl & 0x10) ? 0x1000 : 0x0000;
+    bool exAttr = engine.mmc5ExtendedAttributes();
+    bool leftClip = (ppuMask & 0x06) != 0x06;
+
+    for (int px = 0; px < 8; px++) {
+        int x = spriteX + px;
+        if (x >= 255) break;              // never at x=255
+        if (x < 8 && leftClip) continue;
+        int bit = (attributes & 0x40) ? px : 7 - px;
+        if (!(((sLo >> bit) & 1) | ((sHi >> bit) & 1))) continue;
+
+        // Background pixel at x
+        int pos = fx + x;
+        uint16_t vv = v;
+        for (int t = 0; t < pos / 8; t++) {
+            if ((vv & 0x001F) == 31) { vv &= ~0x001F; vv ^= 0x0400; } else vv++;
+        }
+        uint16_t ntAddr = 0x2000 | (vv & 0x0FFF);
+        uint8_t tile = readByte(ntAddr);
+        uint8_t bLo, bHi;
+        if (exAttr) {
+            uint8_t ex = engine.mmc5ExramByte(ntAddr & 0x3FF);
+            uint32_t base = (uint32_t)((ex & 0x3F) | (engine.mmc5ChrUpper() << 6)) * 0x1000 + tile * 16 + fineY;
+            bLo = engine.readCHRAbsolute(base);
+            bHi = engine.readCHRAbsolute(base + 8);
+        } else {
+            uint16_t a = patternTable + tile * 16 + fineY;
+            bLo = peekCHR(a);
+            bHi = peekCHR(a + 8);
+        }
+        int bbit = 7 - (pos & 7);
+        if (((bLo >> bbit) & 1) | ((bHi >> bbit) & 1)) return x;
+    }
+    return -1;
+}
+
 // Increment the vertical part of v at the end of a rendered scanline.
 void PPU::scrollIncrementY()
 {
@@ -405,6 +468,8 @@ void PPU::renderBackgroundScanline(int scanline)
     int fineY = (v >> 12) & 0x07;
     uint16_t patternTable = (scanlineCtrl[scanline] & 0x10) ? 0x1000 : 0x0000;
     bool clipLeft = !(ppuMask & 0x02);
+    bool exAttr = engine.mmc5ExtendedAttributes();
+    engine.setMMC5SpriteFetch(false);
 
     for (int tile = 0; tile < 34; tile++) {
         uint16_t ntAddr = 0x2000 | (v & 0x0FFF);
@@ -414,9 +479,20 @@ void PPU::renderBackgroundScanline(int scanline)
         int shift = ((v >> 4) & 0x04) | (v & 0x02);
         uint8_t paletteIndex = (attrByte >> shift) & 0x03;
 
-        uint16_t patternAddr = patternTable + tileIndex * 16 + fineY;
-        uint8_t patternLo = readCHR(patternAddr);
-        uint8_t patternHi = readCHR(patternAddr + 8);
+        uint8_t patternLo, patternHi;
+        if (exAttr) {
+            // MMC5 extended attributes: ExRAM byte per tile picks a 4KB CHR
+            // bank (bits 0-5, plus $5130) and the palette (bits 6-7)
+            uint8_t ex = engine.mmc5ExramByte(ntAddr & 0x3FF);
+            paletteIndex = ex >> 6;
+            uint32_t base = (uint32_t)((ex & 0x3F) | (engine.mmc5ChrUpper() << 6)) * 0x1000 + tileIndex * 16 + fineY;
+            patternLo = engine.readCHRAbsolute(base);
+            patternHi = engine.readCHRAbsolute(base + 8);
+        } else {
+            uint16_t patternAddr = patternTable + tileIndex * 16 + fineY;
+            patternLo = readCHR(patternAddr);
+            patternHi = readCHR(patternAddr + 8);
+        }
 
         int screenX = tile * 8 - fx;
         for (int px = 0; px < 8; px++) {
@@ -455,6 +531,10 @@ void PPU::writeByte(uint16_t address, uint8_t value)
     else if (address < 0x3f00)
     {
         // Nametable write
+        if (engine.getMapper() == 5) {
+            engine.mmc5NametableWrite(address, value, nametable);
+            return;
+        }
         uint16_t index = getNametableIndex(address);
     
         nametable[index] = value;
@@ -934,9 +1014,15 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
             scrollCopyX();
         }
         
-        // Sprite 0 hit detection
-        if (cycle == 340) {
-            checkSprite0HitScanline(scanline);
+        // Sprite 0 hit: raised when the PPU reaches the first overlapping
+        // opaque pixel (dot x+1 for pixel x)
+        if (cycle == 0) {
+            sprite0HitX = sprite0Hit ? -1 : findSprite0HitX(scanline);
+        }
+        if (sprite0HitX >= 0 && cycle == sprite0HitX + 1) {
+            sprite0Hit = true;
+            ppuStatus |= 0x40;
+            sprite0HitX = -1;
         }
         
         return;
@@ -1133,6 +1219,7 @@ void PPU::renderScanline(int scanline, int mapper) {
         // fetches are visible to the mapper (matters for MMC2 latches).
         int height = spriteHeight();
         int fetched = 0;
+        engine.setMMC5SpriteFetch(true);
         for (int spriteIndex = 0; spriteIndex < 64; spriteIndex++) {
             uint8_t spriteY = oam[spriteIndex * 4];
             bool onLine = scanline >= spriteY + 1 && scanline < spriteY + 1 + height;
@@ -1146,6 +1233,7 @@ void PPU::renderScanline(int scanline, int mapper) {
         // Unused sprite slots still fetch tile $FF. In 8x16 mode that hits
         // $1FE8, which resets MMC2 latch 1 to $FE every scanline; Punch-Out!!
         // depends on this.
+        engine.setMMC5SpriteFetch(false);
         if (engine.getMapper() == 9) {
             for (int slot = fetched; slot < 8; slot++) {
                 uint16_t addr = spritePatternAddr(0xFF, 0);

@@ -455,7 +455,7 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
   // Check for unsupported features
   if (nesHeader.mapper != 0 && nesHeader.mapper != 1 && nesHeader.mapper != 2 &&
       nesHeader.mapper != 3 && nesHeader.mapper != 4 && nesHeader.mapper != 9 &&
-      nesHeader.mapper != 66 && nesHeader.mapper != 40) {
+      nesHeader.mapper != 66 && nesHeader.mapper != 40 && nesHeader.mapper != 5) {
     std::cout << "WARNING: Mapper " << (int)nesHeader.mapper << " not supported"
               << std::endl;
   }
@@ -904,17 +904,15 @@ void WarpNES::updateCycleAccurate() {
         }
       }
 
-      // Sprite 0 hit detection
-      if (scanline >= 0 && scanline < VISIBLE_SCANLINES &&
-          ppuCycleState.renderingEnabled) {
-        checkSprite0Hit(scanline, cycle);
-      }
+      // Sprite 0 hit is detected pixel-accurately inside PPU::stepCycle
 
       // Step PPU cycle
       ppu->stepCycle(scanline, cycle, nesHeader.mapper);
 
       if (nesHeader.mapper == 4) {
         checkMMC3IRQ(scanline, cycle);
+      } else if (nesHeader.mapper == 5) {
+        stepMMC5Scanline(scanline, cycle);
       }
 
       // CPU execution: cpuCycleDebt is the PPU-cycle budget available to the
@@ -927,7 +925,9 @@ void WarpNES::updateCycleAccurate() {
         uint64_t cyclesBefore = totalCycles;
         // Mapper IRQ line (level-triggered): taken between instructions
         // whenever it is asserted and the I flag is clear.
-        if (nesHeader.mapper == 4 && mmc3.irqPending && !getFlag(FLAG_INTERRUPT)) {
+        bool mapperIRQ = (nesHeader.mapper == 4 && mmc3.irqPending) ||
+                         (nesHeader.mapper == 5 && mmc5.irqPending && mmc5.irqEnable);
+        if (mapperIRQ && !getFlag(FLAG_INTERRUPT)) {
           pushWord(regPC);
           pushByte((regP & ~FLAG_BREAK) | 0x20);
           setFlag(FLAG_INTERRUPT, true);
@@ -1028,6 +1028,7 @@ void WarpNES::reset() {
     cnrom = CNROMState();
   } else if (nesHeader.mapper == 4) {
     mmc3 = MMC3State();
+    mmc5 = MMC5State();
     mmc3.bankData[0] = 0;
     mmc3.bankData[1] = 2;
     mmc3.bankData[2] = 4;
@@ -2071,6 +2072,9 @@ void WarpNES::checkPendingInterrupts() {
 }
 
 uint8_t WarpNES::readByte(uint16_t address) {
+  if (nesHeader.mapper == 5 && address >= 0x5000) {
+    return readMMC5(address);
+  }
   if (address < 0x2000) {
     // RAM (mirrored every 2KB)
     return ram[address & 0x7FF];
@@ -2262,6 +2266,10 @@ uint8_t WarpNES::readByte(uint16_t address) {
 }
 
 void WarpNES::writeByte(uint16_t address, uint8_t value) {
+  if (nesHeader.mapper == 5 && address >= 0x5000) {
+    writeMMC5(address, value);
+    return;
+  }
     if (address < 0x2000) {
         ram[address & 0x7FF] = value;
     } else if (address < 0x4000) {
@@ -2778,6 +2786,11 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return 0;
   }
 
+  case 5: // MMC5
+    if (nesHeader.chrROMPages == 0) {
+      return address < chrSize ? chrROM[address] : 0;
+    }
+    return chrROM[mapMMC5CHR(address)];
   case 1: // MMC1
   {
     if (nesHeader.chrROMPages == 0) {

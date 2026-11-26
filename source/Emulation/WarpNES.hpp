@@ -95,6 +95,7 @@ public:
   uint8_t readMemory(uint16_t address) const;
   void writeMemory(uint16_t address, uint8_t value);
   uint8_t readCHRData(uint16_t address);
+  uint8_t readCHRAbsolute(uint32_t offset) const { return chrSize ? chrROM[offset % chrSize] : 0; }
   uint8_t getCurrentCHRBank() const {
     if (nesHeader.mapper == 66)
       return gxrom.chrBank;
@@ -516,6 +517,61 @@ private:
         prgBank = 0;
     }
   } mapper40;
+
+  // Mapper 5 (MMC5)
+  struct MMC5State {
+    uint8_t prgMode;          // $5100
+    uint8_t chrMode;          // $5101
+    uint8_t ramProtect1;      // $5102
+    uint8_t ramProtect2;      // $5103
+    uint8_t exramMode;        // $5104
+    uint8_t ntMapping;        // $5105
+    uint8_t fillTile;         // $5106
+    uint8_t fillAttr;         // $5107
+    uint8_t prgRegs[5];       // $5113-$5117
+    uint16_t chrA[8];         // $5120-$5127 (sprites, or everything in 8x8 mode)
+    uint16_t chrB[4];         // $5128-$512B (background in 8x16 mode)
+    uint8_t chrUpper;         // $5130
+    bool lastSetB;            // last CHR register written was in the B set
+    uint8_t irqTarget;        // $5203
+    bool irqEnable;           // $5204 write bit 7
+    bool irqPending;
+    bool inFrame;
+    uint8_t scanlineCounter;
+    uint8_t mulA, mulB;       // $5205/$5206
+    uint8_t exram[1024];      // $5C00-$5FFF
+    bool fetchingSprites;     // set by the PPU while fetching sprite patterns
+
+    MMC5State() {
+      prgMode = 3; chrMode = 0; ramProtect1 = ramProtect2 = 0; exramMode = 0;
+      ntMapping = 0; fillTile = 0; fillAttr = 0;
+      for (int i = 0; i < 5; i++) prgRegs[i] = 0xFF;
+      prgRegs[0] = 0;
+      for (int i = 0; i < 8; i++) chrA[i] = i;
+      for (int i = 0; i < 4; i++) chrB[i] = i;
+      chrUpper = 0; lastSetB = false;
+      irqTarget = 0; irqEnable = false; irqPending = false; inFrame = false; scanlineCounter = 0;
+      mulA = mulB = 0xFF;
+      for (int i = 0; i < 1024; i++) exram[i] = 0;
+      fetchingSprites = false;
+    }
+  } mmc5;
+
+  uint8_t readMMC5(uint16_t address);
+  void writeMMC5(uint16_t address, uint8_t value);
+  bool mapMMC5PRG(uint16_t address, uint32_t& offset, bool& isRam);
+  uint32_t mapMMC5CHR(uint16_t address);
+  void stepMMC5Scanline(int scanline, int cycle);
+
+public:
+  // PPU-side MMC5 hooks
+  uint8_t mmc5NametableRead(uint16_t address, const uint8_t* ciram);
+  void mmc5NametableWrite(uint16_t address, uint8_t value, uint8_t* ciram);
+  bool mmc5ExtendedAttributes() const { return nesHeader.mapper == 5 && mmc5.exramMode == 1; }
+  uint8_t mmc5ExramByte(uint16_t index) const { return mmc5.exram[index & 0x3FF]; }
+  uint8_t mmc5ChrUpper() const { return mmc5.chrUpper; }
+  void setMMC5SpriteFetch(bool sprites) { mmc5.fetchingSprites = sprites; }
+private:
 
   void writeMapper40Register(uint16_t address, uint8_t value);
   void stepMapper40IRQ();
