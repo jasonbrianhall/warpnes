@@ -57,6 +57,10 @@ The same as the SDL build elsewhere. Default controls: arrows, X = A,
 Z = B, [ = Select, ] = Start; player 2 on WASD / K / J / U / I; the first
 two joysticks for players 1 and 2. Change them in the Input menu.
 
+Light-gun games (Duck Hunt, Hogan's Alley, Wild Gunman, ...) use the mouse
+as the Zapper: move it to aim, left button to fire. Input > Zapper is Auto
+(on for light-gun games, recognised by file name), On or Off.
+
     Esc            menus (the game is paused while they are up)
     Ctrl+O         load a game
     Ctrl+R         reset

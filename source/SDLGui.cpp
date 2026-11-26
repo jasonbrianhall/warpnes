@@ -851,7 +851,7 @@ private:
 class AboutDialog : public GuiDialog
 {
 public:
-    AboutDialog(Gui& g) : GuiDialog(g, "About WarpNES", 232, 150) {}
+    AboutDialog(Gui& g) : GuiDialog(g, "About WarpNES", 232, 170) {}
     void draw(uint32_t) override
     {
         place();
@@ -870,6 +870,8 @@ public:
 #endif
             "",
             "Controls: Input menu",
+            "Zapper: mouse aims, left click",
+            "  fires (Input > Zapper)",
         };
         int ly = y + 16;
         for (const char* l : lines) { text(x + 8, ly, l, C_TEXT); ly += LINE_H; }
@@ -896,7 +898,7 @@ enum MenuId {
     M_SAVE1, M_SAVE2, M_SAVE3, M_SAVE4,
     M_LOAD1, M_LOAD2, M_LOAD3, M_LOAD4,
     M_VIDEO,
-    M_INPUT1, M_INPUT2,
+    M_INPUT1, M_INPUT2, M_ZAPPER,
     M_ABOUT
 };
 
@@ -915,13 +917,28 @@ static const std::vector<Menu>& menus()
                     { "Load State 1", "Sh+F5", M_LOAD1 }, { "Load State 2", "Sh+F6", M_LOAD2 },
                     { "Load State 3", "Sh+F7", M_LOAD3 }, { "Load State 4", "Sh+F8", M_LOAD4 } } },
         { "Video", { { "Display Mode...", "", M_VIDEO } } },
-        { "Input", { { "Player 1...", "", M_INPUT1 }, { "Player 2...", "", M_INPUT2 } } },
+        { "Input", { { "Player 1...", "", M_INPUT1 }, { "Player 2...", "", M_INPUT2 },
+                     { nullptr, nullptr, 0 },
+                     { "Zapper (mouse)", "", M_ZAPPER } } },
         { "Help", { { "About / Keys...", "", M_ABOUT } } },
     };
     return m;
 }
 
 static bool needsGame(int id) { return id >= M_RESET && id <= M_LOAD4; }
+
+// Right-hand column of a menu item: its key, or for the Zapper its setting
+static const char* itemKeys(const MenuItem& it, GuiHost& host)
+{
+    if (it.id == M_ZAPPER) {
+        switch (host.zapperSetting()) {
+            case 1: return "On";
+            case 2: return "Off";
+            default: return host.zapperActive() ? "Auto: on" : "Auto: off";
+        }
+    }
+    return it.keys;
+}
 
 static int menuTitleX(int menu)
 {
@@ -973,7 +990,7 @@ void Gui::menuBox(int menu, int& x, int& y, int& w, int& h) const
     for (const MenuItem& it : m.items) {
         if (!it.label) continue;
         labelW = std::max(labelW, textWidth(it.label));
-        keysW = std::max(keysW, textWidth(it.keys));
+        keysW = std::max(keysW, textWidth(it.id == M_ZAPPER ? "Auto: off" : it.keys));
     }
     w = labelW + (keysW ? keysW + 18 : 0) + 16;
     h = 4;
@@ -1031,6 +1048,12 @@ void Gui::runMenuItem(int menu, int item)
         case M_INPUT1: dialog.reset(new InputDialog(*this, 0)); break;
         case M_INPUT2: dialog.reset(new InputDialog(*this, 1)); break;
         case M_ABOUT: dialog.reset(new AboutDialog(*this)); break;
+        case M_ZAPPER:
+            // Auto -> On -> Off -> Auto; the menu stays open to show it
+            host.setZapperSetting((host.zapperSetting() + 1) % 3);
+            openMenu = menu;
+            hotItem = item;
+            break;
     }
 }
 
@@ -1038,13 +1061,19 @@ bool Gui::handle(const GuiEvent& e, uint32_t now)
 {
     bool mouse = e.type == GuiEvent::MouseMove || e.type == GuiEvent::MouseDown ||
                  e.type == GuiEvent::MouseUp || e.type == GuiEvent::MouseWheel;
+    // Aiming the Zapper in the game: the mouse belongs to the game
+    bool aiming = zapperMode && !barOpen && !dialog && !pendingMessage;
     if (mouse) {
         if (!(e.type == GuiEvent::MouseWheel && e.x < 0)) {   // wheel without a position: keep the last
             mouseX = std::max(0, std::min(width - 1, e.x));
             mouseY = std::max(top, std::min(bottom - 1, e.y));
         }
-        lastMouseMove = now;
-        mouseSeen = true;
+        if (!aiming) {
+            lastMouseMove = now;
+            mouseSeen = true;
+        } else {
+            mouseSeen = false;   // no pointer or menu bar over the game
+        }
     }
     GuiEvent ev = e;
     if (mouse) { ev.x = mouseX; ev.y = mouseY; }
@@ -1191,7 +1220,8 @@ void Gui::draw(uint16_t* pixels, int w, int h, int y0, int y1, uint32_t now)
                 col = C_WHITE;
             }
             text(x + 8, iy + 2, it.label, col);
-            if (it.keys && *it.keys) text(x + mw - 6 - textWidth(it.keys), iy + 2, it.keys, col);
+            const char* keys = itemKeys(it, host);
+            if (keys && *keys) text(x + mw - 6 - textWidth(keys), iy + 2, keys, col);
             iy += LINE_H + 1;
         }
     }

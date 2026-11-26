@@ -45,6 +45,35 @@ static SimpleINI settings;
 static InputConfig input;
 static bool running = true;
 static bool paused = false;
+
+// Zapper (light gun, port 2), aimed with the mouse
+static int zapperSetting = 0;            // 0 auto, 1 on, 2 off (warpnes.ini [input] zapper)
+static bool zapperLightGunGame = false;  // the loaded game is a known light-gun game
+static int mousePicX = -1, mousePicY = -1; // mouse in picture coordinates (-1: none yet)
+static bool mouseLeftDown = false;
+static int triggerHold = 0;              // frames a short click still holds the trigger
+
+// Light-gun games, recognised by file name (lower case)
+static bool isLightGunGame(const std::string& path)
+{
+    std::string n = path;
+    size_t slash = n.find_last_of("/\\");
+    if (slash != std::string::npos) n = n.substr(slash + 1);
+    for (auto& c : n) c = (char)tolower((unsigned char)c);
+    static const char* names[] = {
+        "duck hunt", "duckhunt", "duck_hunt", "hogan", "wild gunman", "wildgunman", "wild_gunman",
+        "gumshoe", "barker bill", "shooting range", "freedom force", "mechanized attack",
+        "to the earth", "chiller", "baby boomer", "laser invasion",
+    };
+    for (const char* k : names)
+        if (n.find(k) != std::string::npos) return true;
+    return false;
+}
+
+static bool zapperWanted()
+{
+    return zapperSetting == 1 || (zapperSetting == 0 && zapperLightGunGame);
+}
 #ifndef __DJGPP__
 static int windowScale = 3;
 static bool fullscreen = false;
@@ -121,6 +150,8 @@ public:
         SDL_UnlockAudio();
         delete old;
         paused = false;
+        zapperLightGunGame = isLightGunGame(path);
+        engine->enableZapper(zapperWanted());
         memset(renderBuffer16, 0, sizeof(renderBuffer16));
 #ifndef __DJGPP__
         size_t slash = path.find_last_of("/\\");
@@ -145,6 +176,16 @@ public:
         return ok;
     }
     void quit() override { running = false; }
+
+    int zapperSetting() override { return ::zapperSetting; }
+    void setZapperSetting(int v) override
+    {
+        ::zapperSetting = v;
+        settings.setInt("input", "zapper", v);
+        saveSettings();
+        if (smbEngine) smbEngine->enableZapper(zapperWanted());
+    }
+    bool zapperActive() override { return smbEngine && zapperWanted(); }
 
 #ifdef __DJGPP__
     int videoModeCount() override { return dos_mode_count(); }
@@ -220,6 +261,8 @@ static bool initialize()
     Configuration::initialize(CONFIG_FILE_NAME);
     settings.loadFromFile(SDL_SETTINGS_FILE);
     input.load(settings);
+    zapperSetting = settings.getInt("input", "zapper", 0);
+    if (zapperSetting < 0 || zapperSetting > 2) zapperSetting = 0;
 
     // Initialize SDL with joystick support
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0)
@@ -390,6 +433,52 @@ static void hotkey(int sc, bool ctrl, bool shift)
 #endif
 }
 
+// Left button in the game (the GUI didn't take it): the Zapper's trigger
+static void zapperButton(const GuiEvent& ge)
+{
+    if (ge.button != 1) return;
+    if (ge.type == GuiEvent::MouseDown) {
+        mouseLeftDown = true;
+        triggerHold = 3;   // a quick click still holds the trigger for a few frames
+    } else {
+        mouseLeftDown = false;
+    }
+}
+
+// Aim and trigger for this frame
+static void updateZapper(bool playing)
+{
+    if (!smbEngine || !smbEngine->isZapperEnabled()) return;
+    bool onPicture = mousePicX >= 0 && mousePicX < RENDER_WIDTH && mousePicY >= 0 && mousePicY < RENDER_HEIGHT;
+    bool trigger = playing && (mouseLeftDown || triggerHold > 0);
+    if (triggerHold > 0) triggerHold--;
+    smbEngine->setZapperState(onPicture ? mousePicX : -1, onPicture ? mousePicY : -1, trigger);
+}
+
+// Crosshair over the picture (only on what is shown, not what the Zapper sees)
+static void drawCrosshair(uint16_t* buf)
+{
+    if (!smbEngine || !smbEngine->isZapperEnabled()) return;
+    int cx = mousePicX, cy = mousePicY;
+    if (cx < 0 || cx >= RENDER_WIDTH || cy < 0 || cy >= RENDER_HEIGHT) return;
+    const uint16_t red = 0xF800, black = 0x0000;
+    auto put = [&](int x, int y, uint16_t c) {
+        if (x >= 0 && x < RENDER_WIDTH && y >= 0 && y < RENDER_HEIGHT) buf[y * RENDER_WIDTH + x] = c;
+    };
+    for (int d = 2; d <= 6; d++) {
+        // black edges first, so the red shows on light backgrounds too
+        put(cx - d, cy - 1, black); put(cx - d, cy + 1, black);
+        put(cx + d, cy - 1, black); put(cx + d, cy + 1, black);
+        put(cx - 1, cy - d, black); put(cx + 1, cy - d, black);
+        put(cx - 1, cy + d, black); put(cx + 1, cy + d, black);
+    }
+    for (int d = 2; d <= 6; d++) {
+        put(cx - d, cy, red); put(cx + d, cy, red);
+        put(cx, cy - d, red); put(cx, cy + d, red);
+    }
+    put(cx, cy, red);
+}
+
 static void handleEvent(const SDL_Event& event, uint32_t now)
 {
     GuiEvent ge;
@@ -425,6 +514,7 @@ static void handleEvent(const SDL_Event& event, uint32_t now)
     case SDL_EVENT_MOUSE_MOTION:
         ge.type = GuiEvent::MouseMove;
         mouseToPicture(event.motion.x, event.motion.y, &ge.x, &ge.y);
+        mousePicX = ge.x; mousePicY = ge.y;
         gui.handle(ge, now);
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -432,7 +522,9 @@ static void handleEvent(const SDL_Event& event, uint32_t now)
         ge.type = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? GuiEvent::MouseDown : GuiEvent::MouseUp;
         ge.button = event.button.button;
         mouseToPicture(event.button.x, event.button.y, &ge.x, &ge.y);
-        gui.handle(ge, now);
+        mousePicX = ge.x; mousePicY = ge.y;
+        if (!gui.handle(ge, now)) zapperButton(ge);
+        else if (ge.type == GuiEvent::MouseUp && ge.button == 1) mouseLeftDown = false;
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
         float mx, my;
@@ -451,6 +543,7 @@ static void handleEvent(const SDL_Event& event, uint32_t now)
     case SDL_MOUSEMOTION:
         ge.type = GuiEvent::MouseMove;
         mouseToPicture((float)event.motion.x, (float)event.motion.y, &ge.x, &ge.y);
+        mousePicX = ge.x; mousePicY = ge.y;
         gui.handle(ge, now);
         break;
     case SDL_MOUSEBUTTONDOWN:
@@ -458,7 +551,9 @@ static void handleEvent(const SDL_Event& event, uint32_t now)
         ge.type = event.type == SDL_MOUSEBUTTONDOWN ? GuiEvent::MouseDown : GuiEvent::MouseUp;
         ge.button = event.button.button;
         mouseToPicture((float)event.button.x, (float)event.button.y, &ge.x, &ge.y);
-        gui.handle(ge, now);
+        mousePicX = ge.x; mousePicY = ge.y;
+        if (!gui.handle(ge, now)) zapperButton(ge);
+        else if (ge.type == GuiEvent::MouseUp && ge.button == 1) mouseLeftDown = false;
         break;
     case SDL_MOUSEWHEEL:
         // position: the GUI keeps the last one from the motion events
@@ -517,9 +612,15 @@ static void mainLoop()
                 c2.setButtonState(PLAYER_2, (ControllerButton)b, p2[b]);
             }
 
+            updateZapper(true);
             smbEngine->update();
             smbEngine->render16(renderBuffer16);
         }
+        else if (smbEngine)
+        {
+            updateZapper(false);   // menus up or paused: trigger released
+        }
+        gui.setZapperMode(smbEngine && smbEngine->isZapperEnabled());
 
         gui.setPausedLabel(paused && smbEngine && !gui.active());
         if (gui.visible(now))
@@ -529,7 +630,14 @@ static void mainLoop()
             dos_visible_lines(RENDER_HEIGHT, &y0, &y1);
 #endif
             memcpy(guiBuffer16, renderBuffer16, sizeof(guiBuffer16));
+            if (!gui.active()) drawCrosshair(guiBuffer16);
             gui.draw(guiBuffer16, RENDER_WIDTH, RENDER_HEIGHT, y0, y1, now);
+            present(guiBuffer16);
+        }
+        else if (smbEngine && smbEngine->isZapperEnabled())
+        {
+            memcpy(guiBuffer16, renderBuffer16, sizeof(guiBuffer16));
+            drawCrosshair(guiBuffer16);
             present(guiBuffer16);
         }
         else

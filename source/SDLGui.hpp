@@ -51,6 +51,12 @@ public:
     virtual InputConfig& input() = 0;
     virtual void inputChanged() = 0;        // save, reopen joysticks
 
+    // Zapper (light gun) in port 2: 0 = auto (known light-gun games),
+    // 1 = on, 2 = off; zapperActive: in use for the game that is loaded
+    virtual int zapperSetting() { return 0; }
+    virtual void setZapperSetting(int) {}
+    virtual bool zapperActive() { return false; }
+
     virtual std::string gameDirectory() = 0; // where the game browser starts
     virtual void setGameDirectory(const std::string& dir) = 0;
 };
@@ -84,6 +90,11 @@ public:
     // "Paused" label while the game is paused with the menus closed
     void setPausedLabel(bool on) { pausedLabel = on; }
 
+    // Zapper in use: the mouse aims, so moving it doesn't bring up the menu
+    // bar and the left button is the trigger (right click still opens the
+    // menus)
+    void setZapperMode(bool on) { zapperMode = on; }
+
     GuiHost& host;
 
 private:
@@ -102,6 +113,7 @@ private:
     uint32_t lastMouseMove = 0;
     bool mouseSeen = false;
     bool pausedLabel = false;
+    bool zapperMode = false;
     int top = 0, bottom = 240;  // visible lines
     int width = 256;
 };
