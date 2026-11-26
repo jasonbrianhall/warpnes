@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdio>
 #include <iostream>
+#include <functional>
 
 #ifdef __DJGPP__
 #include <dos.h>
@@ -383,6 +384,142 @@ private:
     Envelope envelope;
 };
 
+/**
+ * Delta modulation channel: plays 1-bit delta-encoded samples fetched from
+ * CPU memory ($C000-$FFFF), or a 7-bit level written directly to $4011.
+ */
+static const uint16_t dmcRateTable[] = {
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
+};
+
+class DMC
+{
+    friend class APU;
+public:
+    void writeControl(uint8_t value)
+    {
+        irqEnable = (value & 0x80) != 0;
+        loop = (value & 0x40) != 0;
+        period = dmcRateTable[value & 0x0f];
+        if (!irqEnable)
+            irqFlag = false;
+    }
+
+    void writeLevel(uint8_t value) { level = value & 0x7f; }
+    void writeAddress(uint8_t value) { sampleAddress = 0xC000 + (uint16_t)value * 64; }
+    void writeLength(uint8_t value) { sampleLength = (uint16_t)value * 16 + 1; }
+
+    void setEnabled(bool enable)
+    {
+        irqFlag = false;
+        if (!enable)
+        {
+            bytesRemaining = 0;
+        }
+        else
+        {
+            if (bytesRemaining == 0)
+                restart();
+            fetch();
+        }
+    }
+
+    // Run n CPU cycles and return the sum of the output level over them.
+    uint32_t advance(uint32_t n)
+    {
+        uint32_t sum = 0;
+        while (n > 0)
+        {
+            uint32_t k = (n < countdown) ? n : countdown;
+            sum += k * level;
+            countdown -= k;
+            n -= k;
+            if (countdown == 0)
+            {
+                countdown = period;
+                clockOutput();
+            }
+        }
+        return sum;
+    }
+
+    uint8_t output() const { return level; }
+
+private:
+    void restart()
+    {
+        currentAddress = sampleAddress;
+        bytesRemaining = sampleLength;
+    }
+
+    // Memory reader: refill the one-byte sample buffer when it is empty
+    void fetch()
+    {
+        if (bufferFull || bytesRemaining == 0)
+            return;
+        sampleBuffer = read ? read(currentAddress) : 0;
+        bufferFull = true;
+        currentAddress = (currentAddress == 0xFFFF) ? 0x8000 : currentAddress + 1;
+        if (--bytesRemaining == 0)
+        {
+            if (loop)
+                restart();
+            else if (irqEnable)
+                irqFlag = true;
+        }
+    }
+
+    // Output unit: one delta bit per timer period
+    void clockOutput()
+    {
+        if (!silence)
+        {
+            if (shiftRegister & 1)
+            {
+                if (level <= 125) level += 2;
+            }
+            else
+            {
+                if (level >= 2) level -= 2;
+            }
+            shiftRegister >>= 1;
+        }
+
+        if (--bitsRemaining == 0)
+        {
+            bitsRemaining = 8;
+            if (!bufferFull)
+            {
+                silence = true;
+            }
+            else
+            {
+                silence = false;
+                shiftRegister = sampleBuffer;
+                bufferFull = false;
+                fetch();
+            }
+        }
+    }
+
+    std::function<uint8_t(uint16_t)> read;
+    bool irqEnable = false;
+    bool irqFlag = false;
+    bool loop = false;
+    uint16_t period = 428;
+    uint32_t countdown = 428;
+    uint8_t level = 0;
+    uint16_t sampleAddress = 0xC000;
+    uint16_t sampleLength = 1;
+    uint16_t currentAddress = 0xC000;
+    uint16_t bytesRemaining = 0;
+    uint8_t sampleBuffer = 0;
+    bool bufferFull = false;
+    uint8_t shiftRegister = 0;
+    uint8_t bitsRemaining = 8;
+    bool silence = true;
+};
+
 APU::APU()
 {
     readPos = 0;
@@ -392,10 +529,13 @@ APU::APU()
 
     frameStep = 0;
     fiveStepMode = false;
+    frameIrqInhibit = false;
+    frameIrqFlag = false;
+    sequencerCycle = 0;
 
     cycleRemainder = 0.0;
     sampleClock = 0.0;
-    pulse1Sum = pulse2Sum = triangleSum = noiseSum = 0;
+    pulse1Sum = pulse2Sum = triangleSum = noiseSum = dmcSum = 0;
     sumCycles = 0;
 
     filterRate = 0;
@@ -417,6 +557,7 @@ APU::APU()
     pulse2 = new Pulse(2);
     triangle = new Triangle;
     noise = new Noise;
+    dmc = new DMC;
 
     gameAudio = new AllegroMIDIAudioSystem(this);
 }
@@ -428,6 +569,12 @@ APU::~APU()
     delete pulse2;
     delete triangle;
     delete noise;
+    delete dmc;
+}
+
+void APU::setMemoryReader(std::function<uint8_t(uint16_t)> reader)
+{
+    dmc->read = std::move(reader);
 }
 
 static inline float lookup(const float* table, float index)
@@ -448,8 +595,8 @@ float APU::mixAverage()
         return 0.0f;
     float inv = 1.0f / (float)sumCycles;
     float pulse = (float)(pulse1Sum + pulse2Sum) * inv;
-    float tnd = (float)(3 * triangleSum + 2 * noiseSum) * inv;
-    pulse1Sum = pulse2Sum = triangleSum = noiseSum = 0;
+    float tnd = (float)(3 * triangleSum + 2 * noiseSum + dmcSum) * inv;
+    pulse1Sum = pulse2Sum = triangleSum = noiseSum = dmcSum = 0;
     sumCycles = 0;
     return lookup(pulseTable, pulse) + lookup(tndTable, tnd);
 }
@@ -521,35 +668,69 @@ void APU::clockHalfFrame()
     noise->stepLength();
 }
 
-void APU::clockFrameSequencer()
+// Frame sequencer steps in CPU cycles after a reset ($4017 write)
+//   4-step: Q, Q+H, Q, Q+H(+IRQ), period 29830
+//   5-step: Q, Q+H, Q, -, Q+H,     period 37282
+static const uint32_t seqSteps4[] = {7457, 14913, 22371, 29829, 29830};
+static const uint32_t seqSteps5[] = {7457, 14913, 22371, 29829, 37281, 37282};
+
+uint32_t APU::cyclesToSequencerEvent() const
 {
-    frameStep++;
+    const uint32_t* steps = fiveStepMode ? seqSteps5 : seqSteps4;
+    return steps[frameStep] - sequencerCycle;
+}
+
+void APU::sequencerEvent()
+{
     if (!fiveStepMode)
     {
-        // 4-step: quarter on 1,2,3,4; half on 2,4
-        clockQuarterFrame();
-        if (frameStep == 2 || frameStep == 4)
+        switch (frameStep)
+        {
+        case 0: case 2: clockQuarterFrame(); break;
+        case 1: clockQuarterFrame(); clockHalfFrame(); break;
+        case 3:
+            clockQuarterFrame();
             clockHalfFrame();
-        if (frameStep >= 4)
+            if (!frameIrqInhibit) frameIrqFlag = true;
+            break;
+        default: break;
+        }
+        if (++frameStep == 5)
+        {
             frameStep = 0;
+            sequencerCycle = 0;
+        }
     }
     else
     {
-        // 5-step: quarter on 1,2,3,5; half on 2,5; step 4 does nothing
-        if (frameStep != 4)
-            clockQuarterFrame();
-        if (frameStep == 2 || frameStep == 5)
-            clockHalfFrame();
-        if (frameStep >= 5)
+        switch (frameStep)
+        {
+        case 0: case 2: clockQuarterFrame(); break;
+        case 1: case 4: clockQuarterFrame(); clockHalfFrame(); break;
+        default: break;
+        }
+        if (++frameStep == 6)
+        {
             frameStep = 0;
+            sequencerCycle = 0;
+        }
     }
 }
 
-void APU::stepFrame()
+double APU::effectiveClock() const
 {
-    double frameRate = frameRateOverride > 0.0 ? frameRateOverride : (double)Configuration::getFrameRate();
+    // Audio is produced in step with emulated time. If the frontend runs at a
+    // different frame rate than the real NES (60.0988 Hz), scale so the
+    // number of samples matches real time: one frame is 29780.5 CPU cycles.
+    double fps = frameRateOverride > 0.0 ? frameRateOverride : (double)Configuration::getFrameRate();
+    if (fps <= 0.0) fps = 60.0988;
+    return 29780.5 * fps;
+}
+
+void APU::run(uint32_t cycles)
+{
     int audioRate = Configuration::getAudioFrequency();
-    if (frameRate <= 0 || audioRate <= 0)
+    if (audioRate <= 0 || cycles == 0)
         return;
 
     if (audioRate != filterRate)
@@ -561,35 +742,25 @@ void APU::stepFrame()
         lpCoeff = dt / (lpRC + dt);
         filterRate = audioRate;
     }
-
-    double cyclesPerSample = CPU_CLOCK / audioRate;
-    double exactCycles = CPU_CLOCK / frameRate + cycleRemainder;
-    uint32_t cycles = (uint32_t)exactCycles;
-    cycleRemainder = exactCycles - cycles;
+    double cyclesPerSample = effectiveClock() / audioRate;
 
 #ifndef __DJGPP__
     std::lock_guard<std::mutex> lock(bufferMutex);
 #endif
 
-    // Walk the frame from event to event: the next output sample, or the
-    // next frame-sequencer clock (every quarter frame, ~240 Hz). The
-    // channels integrate their output over each stretch in between.
-    uint32_t quarterLength = cycles / 4;
-    uint32_t nextQuarter = quarterLength;
-    int quartersDone = 0;
-    uint32_t pos = 0;
-
-    while (pos < cycles)
+    // Walk from event to event: the next output sample or the next
+    // frame-sequencer step. The channels integrate their output over each
+    // stretch in between.
+    while (cycles > 0)
     {
-        // sampleClock = CPU cycles still needed for the next sample
         uint32_t toSample = (uint32_t)sampleClock;
         if ((double)toSample < sampleClock) toSample++;
         if (toSample == 0) toSample = 1;
 
-        uint32_t end = pos + toSample;
-        if (quartersDone < 4 && nextQuarter < end) end = nextQuarter;
-        if (end > cycles) end = cycles;
-        uint32_t n = end - pos;
+        uint32_t n = cycles;
+        if (toSample < n) n = toSample;
+        uint32_t toSeq = cyclesToSequencerEvent();
+        if (toSeq < n) n = toSeq;
 
         if (n > 0)
         {
@@ -597,9 +768,11 @@ void APU::stepFrame()
             pulse2Sum += pulse2->advance(n);
             triangleSum += triangle->advance(n);
             noiseSum += noise->advance(n);
+            dmcSum += dmc->advance(n);
             sumCycles += n;
             sampleClock -= n;
-            pos = end;
+            sequencerCycle += n;
+            cycles -= n;
         }
 
         if (sampleClock <= 0.0)
@@ -608,13 +781,19 @@ void APU::stepFrame()
             sampleClock += cyclesPerSample;
         }
 
-        if (quartersDone < 4 && pos == nextQuarter)
-        {
-            clockFrameSequencer();
-            quartersDone++;
-            nextQuarter = (quartersDone == 3) ? cycles : nextQuarter + quarterLength;
-        }
+        if (cyclesToSequencerEvent() == 0)
+            sequencerEvent();
     }
+}
+
+void APU::stepFrame()
+{
+    // Legacy whole-frame stepping (for callers that don't track CPU cycles)
+    double exactCycles = effectiveClock() / (frameRateOverride > 0.0 ? frameRateOverride
+                                             : (double)Configuration::getFrameRate()) + cycleRemainder;
+    uint32_t cycles = (uint32_t)exactCycles;
+    cycleRemainder = exactCycles - cycles;
+    run(cycles);
 }
 
 void APU::writeControl(uint8_t value)
@@ -628,15 +807,21 @@ void APU::writeControl(uint8_t value)
     if (!pulse2->enabled) pulse2->lengthValue = 0;
     if (!triangle->enabled) triangle->lengthValue = 0;
     if (!noise->enabled) noise->lengthValue = 0;
+
+    dmc->setEnabled((value & 0x10) != 0);
 }
 
 void APU::writeFrameCounter(uint8_t value)
 {
     // A write resets the frame sequencer. In 5-step mode (bit 7 set) it also
-    // immediately clocks the quarter- and half-frame units. SMB writes $FF
-    // here at the start of every sound-engine update.
+    // immediately clocks the quarter- and half-frame units. Bit 6 inhibits
+    // (and clears) the frame interrupt.
     fiveStepMode = (value & 0x80) != 0;
+    frameIrqInhibit = (value & 0x40) != 0;
+    if (frameIrqInhibit)
+        frameIrqFlag = false;
     frameStep = 0;
+    sequencerCycle = 0;
     if (fiveStepMode)
     {
         clockQuarterFrame();
@@ -650,6 +835,9 @@ void APU::writeRegister(uint16_t address, uint8_t value)
     if (gameAudio)
         gameAudio->interceptAPURegister(address, value);
 
+#ifndef __DJGPP__
+    std::lock_guard<std::mutex> lock(bufferMutex);
+#endif
     switch (address)
     {
     case 0x4000: pulse1->writeControl(value); break;
@@ -666,6 +854,10 @@ void APU::writeRegister(uint16_t address, uint8_t value)
     case 0x400c: noise->writeControl(value); break;
     case 0x400e: noise->writePeriod(value); break;
     case 0x400f: noise->writeLength(value); break;
+    case 0x4010: dmc->writeControl(value); break;
+    case 0x4011: dmc->writeLevel(value); break;
+    case 0x4012: dmc->writeAddress(value); break;
+    case 0x4013: dmc->writeLength(value); break;
     case 0x4015: writeControl(value); break;
     case 0x4017: writeFrameCounter(value); break;
     default: break;
@@ -674,11 +866,18 @@ void APU::writeRegister(uint16_t address, uint8_t value)
 
 uint8_t APU::readStatus()
 {
+#ifndef __DJGPP__
+    std::lock_guard<std::mutex> lock(bufferMutex);
+#endif
     uint8_t status = 0;
     if (pulse1->lengthValue > 0) status |= 0x01;
     if (pulse2->lengthValue > 0) status |= 0x02;
     if (triangle->lengthValue > 0) status |= 0x04;
     if (noise->lengthValue > 0) status |= 0x08;
+    if (dmc->bytesRemaining > 0) status |= 0x10;
+    if (frameIrqFlag) status |= 0x40;
+    if (dmc->irqFlag) status |= 0x80;
+    frameIrqFlag = false;  // reading clears the frame interrupt flag
     return status;
 }
 

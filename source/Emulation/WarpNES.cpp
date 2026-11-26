@@ -62,6 +62,7 @@ WarpNES::WarpNES()
 
   // Create components - they'll get CHR data when ROM is loaded
   apu = new APU();
+  apu->setMemoryReader([this](uint16_t address) { return readByte(address); });
   ppu = new PPU(*this);
 
   controller1 = new Controller();
@@ -948,10 +949,20 @@ void WarpNES::updateCycleAccurate() {
   ppu->setVBlankFlag(false);
   ppu->setSprite0Hit(false);
 
-  // Audio frame advance
-  if (Configuration::getAudioEnabled()) {
-    apu->stepFrame();
+  // Bring audio up to the end of this frame
+  syncAPU();
+}
+
+// Run the APU up to the current CPU cycle. Called before every APU register
+// access so writes land at the right point in the audio stream.
+void WarpNES::syncAPU() {
+  if (totalCycles < apuCycle) {
+    apuCycle = totalCycles;  // counter was reset (reset / state load)
   }
+  uint64_t delta = totalCycles - apuCycle;
+  apuCycle = totalCycles;
+  if (delta > 120000) delta = 120000;  // don't burst after a jump in time
+  apu->run((uint32_t)delta);
 }
 
 bool WarpNES::isPixelBright(uint16_t pixelColor) {
@@ -2109,6 +2120,7 @@ uint8_t WarpNES::readByte(uint16_t address) {
 
     switch (address) {
     case 0x4015:
+      syncAPU();
       return apu->readStatus();
     case 0x4016:
       return controller1->readByte(PLAYER_1);
@@ -2311,6 +2323,7 @@ void WarpNES::writeByte(uint16_t address, uint8_t value) {
             break;
 
         default:
+            syncAPU();
             apu->writeRegister(address, value);
             break;
         }

@@ -2,6 +2,7 @@
 #define APU_HPP
 
 #include <cstdint>
+#include <functional>
 
 #ifndef __DJGPP__
 #include <mutex>
@@ -12,6 +13,7 @@
 class Pulse;
 class Triangle;
 class Noise;
+class DMC;
 class AllegroMIDIAudioSystem; // FM-synthesis alternative output (WarpNES)
 
 /**
@@ -29,6 +31,18 @@ public:
      * Step the APU by one video frame (1/frameRate seconds of NES time).
      */
     void stepFrame();
+
+    /**
+     * Advance the APU by a number of CPU cycles. WarpNES calls this before
+     * every APU register access and at the end of each frame, so register
+     * writes take effect at the right point in the audio.
+     */
+    void run(uint32_t cpuCycles);
+
+    /**
+     * Memory read used by the DMC channel to fetch sample bytes.
+     */
+    void setMemoryReader(std::function<uint8_t(uint16_t)> reader);
 
     /**
      * Output audio samples to the provided buffer. Always fills all
@@ -86,8 +100,11 @@ private:
 #endif
 
     // Frame sequencer
-    int frameStep;              /**< Current step of the frame sequencer */
+    int frameStep;              /**< Next step of the frame sequencer */
     bool fiveStepMode;          /**< $4017 bit 7 */
+    bool frameIrqInhibit;       /**< $4017 bit 6 */
+    bool frameIrqFlag;          /**< $4015 bit 6 (flag only; no CPU IRQ is raised) */
+    uint32_t sequencerCycle;    /**< CPU cycles since the sequencer was reset */
 
     // Timing / resampling
     double cycleRemainder;      /**< Fractional CPU cycles carried between frames */
@@ -96,6 +113,7 @@ private:
     uint32_t pulse2Sum;
     uint32_t triangleSum;
     uint32_t noiseSum;
+    uint32_t dmcSum;
     uint32_t sumCycles;         /**< CPU cycles covered by the sums */
 
     // Output filters (approximation of the NES's analog output stage)
@@ -110,6 +128,7 @@ private:
     Pulse* pulse2;
     Triangle* triangle;
     Noise* noise;
+    DMC* dmc;
 
     float pulseTable[32];
     float tndTable[204];
@@ -119,7 +138,9 @@ private:
 
     void clockQuarterFrame();
     void clockHalfFrame();
-    void clockFrameSequencer();
+    uint32_t cyclesToSequencerEvent() const;
+    void sequencerEvent();
+    double effectiveClock() const;
     void writeControl(uint8_t value);
     void writeFrameCounter(uint8_t value);
 };

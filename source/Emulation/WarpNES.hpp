@@ -156,6 +156,8 @@ private:
   uint16_t regPC;
   uint8_t regP; // Processor status: NV-BDIZC
   uint64_t totalCycles;
+  uint64_t apuCycle = 0;     // CPU cycle the APU has been run up to
+  void syncAPU();
   int extraCycles = 0;       // branch-taken / page-cross penalties for the current instruction
   bool pageCrossed = false;  // set by indexed addressing modes
   uint64_t frameCycles;
