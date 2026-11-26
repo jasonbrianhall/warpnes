@@ -437,6 +437,15 @@ int PPU::findSprite0HitX(int scanline)
     return -1;
 }
 
+// PPUCTRL value in effect at an absolute dot of the current frame.
+uint8_t PPU::ctrlAtDot(int absDot) const
+{
+    for (auto it = ctrlTimeline.rbegin(); it != ctrlTimeline.rend(); ++it) {
+        if (it->first <= absDot) return it->second;
+    }
+    return frameStartCtrl;
+}
+
 // Increment the vertical part of v at the end of a rendered scanline.
 void PPU::scrollIncrementY()
 {
@@ -469,8 +478,8 @@ void PPU::renderBackgroundScanline(int scanline)
     uint16_t v = lineV[scanline];
     int fx = lineFineX[scanline];
     int fineY = (v >> 12) & 0x07;
-    uint16_t patternTable = (scanlineCtrl[scanline] & 0x10) ? 0x1000 : 0x0000;
     bool clipLeft = !(ppuMask & 0x02);
+    bool ctrlChanges = !ctrlTimeline.empty();
     bool exAttr = engine.mmc5ExtendedAttributes();
     engine.setMMC5SpriteFetch(false);
 
@@ -481,6 +490,17 @@ void PPU::renderBackgroundScanline(int scanline)
         uint8_t attrByte = readByte(atAddr);
         int shift = ((v >> 4) & 0x04) | (v & 0x02);
         uint8_t paletteIndex = (attrByte >> shift) & 0x03;
+
+        // Pattern table in effect when the real PPU fetches this tile: tiles
+        // 0-1 at the end of the previous line (dots 321-336), tile n>=2 at
+        // dot (n-2)*8+5 of this line.
+        uint8_t ctrl = scanlineCtrl[scanline];
+        if (ctrlChanges) {
+            int fetchDot = (tile < 2) ? (scanline - 1) * 341 + 325 + tile * 8
+                                      : scanline * 341 + (tile - 2) * 8 + 5;
+            ctrl = ctrlAtDot(fetchDot);
+        }
+        uint16_t patternTable = (ctrl & 0x10) ? 0x1000 : 0x0000;
 
         uint8_t patternLo, patternHi;
         if (exAttr) {
@@ -597,6 +617,10 @@ void PPU::writeRegister(uint16_t address, uint8_t value)
     {
     // PPUCTRL
     case 0x2000:
+        if (currentScanline < 240 || currentScanline == 261) {
+            int line = (currentScanline == 261) ? -1 : currentScanline;
+            ctrlTimeline.push_back({line * 341 + currentCycle + writeDotOffset, value});
+        }
         ppuCtrl = value;
         tempAddress = (tempAddress & ~0x0C00) | ((value & 0x03) << 10);
         break;
@@ -968,6 +992,10 @@ void PPU::stepCycle(int scanline, int cycle, int mapper) {
 
     // Pre-render scanline (261)
     if (scanline == 261) {
+        if (cycle == 0) {
+            ctrlTimeline.clear();
+            frameStartCtrl = ppuCtrl;
+        }
         if (renderingOn) {
             if (cycle == 256) scrollIncrementY();
             if (cycle == 257) scrollCopyX();

@@ -109,6 +109,7 @@ public:
     // Frame state tracking
     bool isInVBlank() const { return inVBlank; }
     int getCurrentScanline() const { return currentScanline; }
+    void setWriteDotOffset(int dots) { writeDotOffset = dots; }
     int getCurrentCycle() const { return currentCycle; }
     bool isFrameComplete() const { return frameComplete; }
     void resetFrame() { frameComplete = false; currentRenderScanline = 0; }
@@ -185,6 +186,13 @@ private:
     uint16_t tempAddress;    /**< Loopy "t": scroll/address latch written by $2000/$2005/$2006. */
     uint8_t fineX;           /**< Loopy "x": fine X scroll (0-7). */
     uint16_t lineV[240];     /**< v at the start of each visible scanline. */
+    // $2000 writes during the frame, as (absolute dot, value), so the
+    // background pattern table can change mid-scanline (Marble Madness).
+    // Absolute dot = line * 341 + dot, with the pre-render line as line -1.
+    std::vector<std::pair<int, uint8_t>> ctrlTimeline;
+    uint8_t frameStartCtrl = 0;
+    int writeDotOffset = 0;
+    uint8_t ctrlAtDot(int absDot) const;
     uint8_t lineFineX[240];  /**< fine X used for each visible scanline. */
     void renderBackgroundScanline(int scanline);
     void scrollIncrementY();

@@ -1182,6 +1182,9 @@ void WarpNES::executeInstruction() {
   uint8_t cycles = instructionCycles[opcode];
   extraCycles = 0;
   pageCrossed = false;
+  // Register writes happen on the instruction's last cycle; tell the PPU how
+  // many dots after "now" that is so mid-scanline writes land precisely.
+  ppu->setWriteDotOffset(cycles > 0 ? (cycles - 1) * 3 : 0);
 
   //printf("Opcode %i\n", opcode);
 
@@ -2022,8 +2025,8 @@ void WarpNES::executeInstruction() {
   case 0x7C:
   case 0xDC:
   case 0xFC:
-    regPC += 2;
-    break; // NOP absolute,X
+    (void)addrAbsoluteX();  // NOP absolute,X (operand fetch sets page-cross penalty)
+    break;
 
   default:
     std::cerr << "Unknown opcode: $" << std::hex << (int)opcode << " at PC=$"
