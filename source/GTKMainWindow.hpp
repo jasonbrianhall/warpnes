@@ -1,31 +1,30 @@
-#ifndef GTK3MAINWINDOW_HPP
-#define GTK3MAINWINDOW_HPP
+#ifndef GTKMAINWINDOW_HPP
+#define GTKMAINWINDOW_HPP
+
+// GTK4 frontend for WarpNES.
+//
+// Frames are uploaded as a GdkTexture and drawn by the GSK renderer
+// (OpenGL/Vulkan when available), so scaling is GPU-accelerated without a
+// separate SDL window or Cairo path. SDL is used only for audio and gamepads.
 
 #include <gtk/gtk.h>
 #include <SDL2/SDL.h>
-#include <cairo.h>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <string>
 #include <unordered_map>
-#include <chrono>
-#include <thread>
 #include <vector>
+#include <functional>
 #include "Emulation/ControllerSDL.hpp"
 #include "Emulation/PPU.hpp"
 #include "Emulation/GameGenie.hpp"
 
+#if !GTK_CHECK_VERSION(4, 10, 0)
+#error "WarpNES GTK frontend requires GTK 4.10 or newer"
+#endif
 
-// Forward declarations
 class WarpNES;
-class Controller;
-
-// Rendering backend enum
-enum class RenderBackend {
-    SDL_HARDWARE,    // Hardware-accelerated SDL
-    CAIRO_SOFTWARE, // Software Cairo/2D rendering
-    AUTO            // Auto-detect best option
-};
 
 enum class FilterType {
     NONE,
@@ -39,66 +38,47 @@ enum class FilterType {
     SUPER_4XSAI
 };
 
-class GTK3MainWindow {
+class GTKMainWindow {
 public:
-    GTK3MainWindow();
-    ~GTK3MainWindow();
-    
-    // Main interface
-    bool initialize();
-    void run(const char* rom_filename);
-    void shutdown();
+    GTKMainWindow();
+    ~GTKMainWindow();
+
+    // Runs the application; returns the process exit status.
+    int run(int argc, char* argv[], const char* rom_filename);
+
     PPU* getPPU() { return engine ? engine->getPPU() : nullptr; }
-    
-    // Rendering backend control
-    void setRenderBackend(RenderBackend backend);
-    RenderBackend getRenderBackend() const;
-    bool switchRenderBackend(RenderBackend new_backend);
     void setFilter(FilterType filter);
     FilterType getFilter() const { return current_filter; }
-    
+
+    // Called by the NES view widget
+    void snapshot_view(GtkWidget* widget, GtkSnapshot* snapshot);
+
+    struct Rect { int x, y, w, h; };
 
 private:
-    // Rendering backend state
-    RenderBackend current_backend;
-    RenderBackend preferred_backend;
-    bool backend_switching_enabled;
-
+    GtkApplication* app;
     GameGenie* gameGenie;
-    
-    // GTK widgets
+
+    // Widgets
     GtkWidget* window;
     GtkWidget* main_vbox;
-    GtkWidget* drawing_area;  // Unified drawing area for both backends
+    GtkWidget* view;          // NesView: draws the current frame texture
     GtkWidget* menubar;
-    GtkWidget* status_bar;
-    bool force_texture_recreation;
-    
-    // SDL components (only used when SDL backend is active)
-    SDL_Window* sdl_window;
-    SDL_Renderer* sdl_renderer;
-    SDL_Texture* sdl_texture;
-    bool sdl_initialized;
-    
-    // Cairo components (only used when Cairo backend is active)
-    cairo_surface_t* cairo_surface;
-    cairo_t* cairo_context;
-    uint32_t* cairo_buffer;  // RGBA buffer for Cairo
-    bool cairo_initialized;
-    
-    // Shared framebuffer (converted from NES RGB565 to appropriate format)
+    GtkWidget* status_label;
+
+    // Frame data
     uint16_t* nes_framebuffer;    // Raw NES data (RGB565)
-    uint32_t* rgba_framebuffer;   // Converted RGBA data
-    int framebuffer_width;
-    int framebuffer_height;
-    
+    uint32_t* rgba_framebuffer;   // Converted 0xAARRGGBB
+    GdkTexture* frame_texture;
+    int texture_width;
+    int texture_height;
+
     // Resolution and scaling
     struct Resolution {
         int width;
         int height;
         const char* name;
     };
-    
     static const Resolution PRESET_RESOLUTIONS[];
     static const int NUM_PRESET_RESOLUTIONS;
 
@@ -108,23 +88,25 @@ private:
     bool use_custom_resolution;
     bool maintain_aspect_ratio;
     bool integer_scaling;
-    
+
     // Game state
     WarpNES* engine;
     bool game_running;
     bool game_paused;
-    
-    // Input handling
+    std::string pending_rom;
+
+    // Timing (driven by the GTK frame clock)
+    guint tick_id;
+    gint64 last_frame_time;
+    gint64 time_accumulator;
+
+    // Input
     std::unordered_map<guint, bool> key_states;
-    
-    // Timing
-    guint frame_timer_id;
-    
-    // Status messages
-    char status_message[256];
-    guint status_message_id;
-    
-    // Key mappings
+    // Keys pressed since the last emulated frame. A tap shorter than one
+    // frame (press+release between frames) still reaches the game this way.
+    std::unordered_map<guint, bool> key_taps;
+    bool joystick_initialized;
+
     struct KeyMappings {
         guint up = GDK_KEY_Up;
         guint down = GDK_KEY_Down;
@@ -136,98 +118,85 @@ private:
         guint select = GDK_KEY_space;
     } player1_keys, player2_keys;
 
-    // Widget creation and setup
+    // Setup
+    static void on_activate(GtkApplication* app, gpointer user_data);
     void create_widgets();
     void create_menubar();
-    void setup_drawing_area();
-    
-    // Backend initialization and cleanup
-    bool init_sdl_backend();
-    bool init_cairo_backend();
-    void cleanup_sdl_backend();
-    void cleanup_cairo_backend();
-    bool detect_best_backend();
-    
+    void init_audio();
+    void init_gamepads();
+
+    // ROM handling
+    bool load_rom(const char* filename);
+    void start_frame_loop();
+    void stop_frame_loop();
+    void shutdown();
+
     // Resolution management
     void apply_resolution(int width, int height);
-    void calculate_render_rect(int source_width, int source_height, 
-                              int target_width, int target_height, 
-                              SDL_Rect& dest_rect);
-    
-    // Audio callback
+    void calculate_render_rect(int source_width, int source_height,
+                               int target_width, int target_height, Rect& dest_rect);
+
+    // Audio
     static void audio_callback(void* userdata, uint8_t* buffer, int len);
-    
-    // Rendering - unified interface
-    void render_frame();
-    void render_frame_sdl();
-    void render_frame_cairo();
-    void convert_nes_to_rgba();  // Convert RGB565 to RGBA32
-    
-    // Cairo-specific rendering callbacks
-    static gboolean on_cairo_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
-    static gboolean on_cairo_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data);
-    
-    // Game loop and timing
-    static gboolean frame_update_callback(gpointer user_data);
-    
-    // Input handling
-    static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
-    static gboolean on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
-    void process_input();
+
+    // Rendering
+    static gboolean tick_callback(GtkWidget* widget, GdkFrameClock* clock, gpointer user_data);
+    void present_frame();
+    void convert_nes_to_rgba();
+
+    // Input
+    static gboolean on_key_pressed(GtkEventControllerKey* controller, guint keyval,
+                                   guint keycode, GdkModifierType state, gpointer user_data);
+    static void on_key_released(GtkEventControllerKey* controller, guint keyval,
+                                guint keycode, GdkModifierType state, gpointer user_data);
+    static void on_window_active_changed(GObject* object, GParamSpec* pspec, gpointer user_data);
+    void poll_gamepads();
     void update_controller_state();
-    
-    // Menu callbacks
-    static void on_file_open(GtkMenuItem* item, gpointer user_data);
-    static void on_file_quit(GtkMenuItem* item, gpointer user_data);
-    static void on_game_reset(GtkMenuItem* item, gpointer user_data);
-    static void on_game_pause(GtkMenuItem* item, gpointer user_data);
-    static void on_options_controls(GtkMenuItem* item, gpointer user_data);
-    static void on_options_video(GtkMenuItem* item, gpointer user_data);
-    static void on_options_resolution(GtkMenuItem* item, gpointer user_data);
-    static void on_options_rendering(GtkMenuItem* item, gpointer user_data);  // NEW
-    static void on_help_about(GtkMenuItem* item, gpointer user_data);
-    
-    // Dialog functions
+    void toggle_fullscreen();
+    void handle_save_state_key(guint keyval, bool shift);
+
+    // Actions (menu items)
+    static void action_open(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_quit(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_reset(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_pause(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_game_genie(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_controls(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_resolution(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_filters(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_fullscreen(GSimpleAction*, GVariant*, gpointer user_data);
+    static void action_about(GSimpleAction*, GVariant*, gpointer user_data);
+    static gboolean on_close_request(GtkWindow* window, gpointer user_data);
+
+    // Dialogs
+    void show_message(const char* heading, const char* detail = nullptr);
     void show_controls_dialog();
-    void show_video_options_dialog();
     void show_resolution_dialog();
-    void show_rendering_dialog();  // NEW
+    void show_filters_dialog();
     void show_about_dialog();
-    
-    // Window callbacks
-    static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data);
-    static void on_window_destroy(GtkWidget* widget, gpointer user_data);
-    static gboolean on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data);
-    
-    // Utility functions
+    void show_game_genie_dialog();
+    void load_game_genie_codes_file(std::function<void()> on_done);
+    void save_game_genie_codes_file();
+
+    // Config
     void set_status_message(const char* message);
     void load_key_mappings();
     void save_key_mappings();
     void load_video_settings();
     void save_video_settings();
-    const char* backend_to_string(RenderBackend backend);
-    RenderBackend string_to_backend(const char* str);
-    void handle_sdl_events();
-    void handle_sdl_key_event(SDL_Event* event);
 
+    // Filters
     FilterType current_filter;
-    SDL_Texture* filtered_texture;
     uint32_t* filter_buffer;
     int filter_scale;
-    
-    // Filter implementations
+
     void apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height);
     void apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height);
     void apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height);
-    void apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height);  // NEW
-    void apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height);          // NEW
-    
-    void update_filter_texture();
+    void apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height);
+    void apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height);
     uint32_t rgb565_to_rgb888(uint16_t color);
-    static void on_options_filters(GtkMenuItem* item, gpointer user_data);
-    void show_filters_dialog();
-    
-    // NTSC filter helper functions
+
     struct NTSCSettings {
         float hue = 0.0f;
         float saturation = 0.0f;
@@ -240,7 +209,7 @@ private:
         float fringing = 0.0f;
         float bleed = 0.0f;
     } ntsc_settings;
-    
+
     void init_ntsc_filter();
     uint32_t apply_ntsc_artifacts(uint32_t color, int x, int y);
     uint32_t blend_colors(uint32_t color1, uint32_t color2, float ratio);
@@ -250,33 +219,23 @@ private:
     uint32_t mix_colors(uint32_t c1, uint32_t c2, float ratio);
     bool colors_equal(uint32_t c1, uint32_t c2);
 
-    static void on_game_genie_codes(GtkMenuItem* item, gpointer user_data);
-    void show_game_genie_dialog();
-    void load_game_genie_codes_file();
-    void save_game_genie_codes_file();
-
-static void on_add_game_genie_code(GtkWidget* widget, gpointer user_data);
-static void on_load_game_genie_file(GtkWidget* widget, gpointer user_data);
-static void on_save_game_genie_file(GtkWidget* widget, gpointer user_data);
-static void on_clear_game_genie_codes(GtkWidget* widget, gpointer user_data);
-static void on_remove_game_genie_code(GtkWidget* widget, gpointer user_data);
-static void on_toggle_game_genie_code(GtkCellRendererToggle* renderer, gchar* path_str, gpointer user_data);
-static void on_game_genie_dialog_destroy(GtkWidget* widget, gpointer user_data);
-static void refresh_codes_list(GtkListStore* store, GameGenie* gg, GtkWidget* info_label);
-
-// Game Genie dialog data structure
-struct GameGenieDialogData {
-    GTK3MainWindow* window;
-    GtkWidget* code_entry;
-    GtkWidget* desc_entry;
-    GtkWidget* tree_view;
-    GtkListStore* list_store;
-    GtkWidget* info_label;
-    GameGenie* game_genie;
+    // Game Genie dialog
+    struct GameGenieDialogData {
+        GTKMainWindow* window;
+        GtkWidget* dialog;
+        GtkWidget* code_entry;
+        GtkWidget* desc_entry;
+        GtkWidget* list_box;
+        GtkWidget* info_label;
+        GameGenie* game_genie;
+    };
+    static void refresh_codes_list(GameGenieDialogData* data);
+    static void on_add_game_genie_code(GtkButton* button, gpointer user_data);
+    static void on_load_game_genie_file(GtkButton* button, gpointer user_data);
+    static void on_save_game_genie_file(GtkButton* button, gpointer user_data);
+    static void on_remove_game_genie_code(GtkButton* button, gpointer user_data);
+    static void on_clear_game_genie_codes(GtkButton* button, gpointer user_data);
+    static void on_toggle_game_genie_code(GtkCheckButton* check, gpointer user_data);
 };
 
-
-
-};
-
-#endif // GTK3MAINWINDOW_HPP
+#endif // GTKMAINWINDOW_HPP

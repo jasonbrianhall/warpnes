@@ -419,15 +419,17 @@ static void mainLoop(const char* romFilename)
         // Handle keyboard input
         const Uint8* keys = SDL_GetKeyboardState(NULL);
 
-        // Get current joystick states (preserve what processJoystickEvent set)
-        bool joyA = controller1.getButtonState(BUTTON_A);
-        bool joyB = controller1.getButtonState(BUTTON_B);
-        bool joySelect = controller1.getButtonState(BUTTON_SELECT);
-        bool joyStart = controller1.getButtonState(BUTTON_START);
-        bool joyUp = controller1.getButtonState(BUTTON_UP);
-        bool joyDown = controller1.getButtonState(BUTTON_DOWN);
-        bool joyLeft = controller1.getButtonState(BUTTON_LEFT);
-        bool joyRight = controller1.getButtonState(BUTTON_RIGHT);
+        // Joystick-only states. Do NOT read getButtonState() here: it also
+        // contains last frame's keyboard state, so ORing it back in made every
+        // key latch on forever (e.g. Punch-Out!! punched once and never again).
+        bool joyA = controller1.getJoystickButtonState(PLAYER_1, BUTTON_A);
+        bool joyB = controller1.getJoystickButtonState(PLAYER_1, BUTTON_B);
+        bool joySelect = controller1.getJoystickButtonState(PLAYER_1, BUTTON_SELECT);
+        bool joyStart = controller1.getJoystickButtonState(PLAYER_1, BUTTON_START);
+        bool joyUp = controller1.getJoystickButtonState(PLAYER_1, BUTTON_UP);
+        bool joyDown = controller1.getJoystickButtonState(PLAYER_1, BUTTON_DOWN);
+        bool joyLeft = controller1.getJoystickButtonState(PLAYER_1, BUTTON_LEFT);
+        bool joyRight = controller1.getJoystickButtonState(PLAYER_1, BUTTON_RIGHT);
 
         // Combine keyboard and joystick input (OR logic - either input works)
         controller1.setButtonState(BUTTON_A, keys[SDL_SCANCODE_X] || joyA);
@@ -439,14 +441,14 @@ static void mainLoop(const char* romFilename)
         controller1.setButtonState(BUTTON_LEFT, keys[SDL_SCANCODE_LEFT] || joyLeft);
         controller1.setButtonState(BUTTON_RIGHT, keys[SDL_SCANCODE_RIGHT] || joyRight);
 
-        bool joy2A = controller2.getButtonState(BUTTON_A);
-        bool joy2B = controller2.getButtonState(BUTTON_B);
-        bool joy2Select = controller2.getButtonState(BUTTON_SELECT);
-        bool joy2Start = controller2.getButtonState(BUTTON_START);
-        bool joy2Up = controller2.getButtonState(BUTTON_UP);
-        bool joy2Down = controller2.getButtonState(BUTTON_DOWN);
-        bool joy2Left = controller2.getButtonState(BUTTON_LEFT);
-        bool joy2Right = controller2.getButtonState(BUTTON_RIGHT);
+        bool joy2A = controller2.getJoystickButtonState(PLAYER_1, BUTTON_A);
+        bool joy2B = controller2.getJoystickButtonState(PLAYER_1, BUTTON_B);
+        bool joy2Select = controller2.getJoystickButtonState(PLAYER_1, BUTTON_SELECT);
+        bool joy2Start = controller2.getJoystickButtonState(PLAYER_1, BUTTON_START);
+        bool joy2Up = controller2.getJoystickButtonState(PLAYER_1, BUTTON_UP);
+        bool joy2Down = controller2.getJoystickButtonState(PLAYER_1, BUTTON_DOWN);
+        bool joy2Left = controller2.getJoystickButtonState(PLAYER_1, BUTTON_LEFT);
+        bool joy2Right = controller2.getJoystickButtonState(PLAYER_1, BUTTON_RIGHT);
 
         // Controller 2 keyboard mapping (using different keys)
         controller2.setButtonState(BUTTON_A, keys[SDL_SCANCODE_K] || joy2A);          // K for A

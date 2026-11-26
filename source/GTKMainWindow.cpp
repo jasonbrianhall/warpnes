@@ -1,5 +1,6 @@
 #include <SDL2/SDL.h>
 #include <algorithm>
+#include <cmath>
 #include "GTKMainWindow.hpp"
 #include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
@@ -7,7 +8,103 @@
 #include "Configuration.hpp"
 #include "Constants.hpp"
 
-const GTK3MainWindow::Resolution GTK3MainWindow::PRESET_RESOLUTIONS[] = {
+// NES runs at ~60.0988 frames per second (NTSC)
+static const gint64 NES_FRAME_US = 16639;
+
+// ---------------------------------------------------------------------------
+// NesView: minimal GtkWidget that draws the current frame texture. Drawing
+// goes through GtkSnapshot, so GSK scales the texture on the GPU.
+// ---------------------------------------------------------------------------
+struct NesView {
+    GtkWidget parent_instance;
+    GTKMainWindow* owner;
+};
+struct NesViewClass {
+    GtkWidgetClass parent_class;
+};
+G_DEFINE_TYPE(NesView, nes_view, GTK_TYPE_WIDGET)
+
+static void nes_view_snapshot(GtkWidget* widget, GtkSnapshot* snapshot) {
+    NesView* self = reinterpret_cast<NesView*>(widget);
+    if (self->owner) {
+        self->owner->snapshot_view(widget, snapshot);
+    }
+}
+
+static void nes_view_class_init(NesViewClass* klass) {
+    GTK_WIDGET_CLASS(klass)->snapshot = nes_view_snapshot;
+}
+
+static void nes_view_init(NesView* self) {
+    self->owner = nullptr;
+    gtk_widget_set_focusable(GTK_WIDGET(self), TRUE);
+}
+
+static GtkWidget* nes_view_new(GTKMainWindow* owner) {
+    NesView* view = static_cast<NesView*>(g_object_new(nes_view_get_type(), nullptr));
+    view->owner = owner;
+    return GTK_WIDGET(view);
+}
+
+// ---------------------------------------------------------------------------
+// Small dialog helper: modal window with a content box and a button row.
+// ---------------------------------------------------------------------------
+static GtkWidget* make_dialog(GtkWindow* parent, const char* title,
+                              GtkWidget** content, GtkWidget** buttons) {
+    GtkWidget* dialog = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(dialog), title);
+    gtk_window_set_transient_for(GTK_WINDOW(dialog), parent);
+    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(dialog), TRUE);
+
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_top(vbox, 16);
+    gtk_widget_set_margin_bottom(vbox, 16);
+    gtk_widget_set_margin_start(vbox, 16);
+    gtk_widget_set_margin_end(vbox, 16);
+    gtk_window_set_child(GTK_WINDOW(dialog), vbox);
+
+    *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_vexpand(*content, TRUE);
+    gtk_box_append(GTK_BOX(vbox), *content);
+
+    *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(*buttons, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(vbox), *buttons);
+    return dialog;
+}
+
+static GtkWidget* add_button(GtkWidget* button_box, const char* label, GCallback cb, gpointer data) {
+    GtkWidget* button = gtk_button_new_with_mnemonic(label);
+    g_signal_connect(button, "clicked", cb, data);
+    gtk_box_append(GTK_BOX(button_box), button);
+    return button;
+}
+
+static GtkWidget* framed(const char* title, GtkWidget** inner) {
+    GtkWidget* frame = gtk_frame_new(title);
+    *inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_top(*inner, 8);
+    gtk_widget_set_margin_bottom(*inner, 8);
+    gtk_widget_set_margin_start(*inner, 8);
+    gtk_widget_set_margin_end(*inner, 8);
+    gtk_frame_set_child(GTK_FRAME(frame), *inner);
+    return frame;
+}
+
+static void close_dialog_cb(GtkButton* button, gpointer) {
+    gtk_window_destroy(GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(button))));
+}
+
+template <typename T>
+static void attach_data(GtkWidget* dialog, T* data) {
+    g_object_set_data_full(G_OBJECT(dialog), "dialog-data", data,
+                           [](gpointer p) { delete static_cast<T*>(p); });
+}
+
+// ---------------------------------------------------------------------------
+
+const GTKMainWindow::Resolution GTKMainWindow::PRESET_RESOLUTIONS[] = {
     {256, 240, "1x Native (256x240)"},
     {512, 480, "2x Native (512x480)"},
     {768, 720, "3x Native (768x720)"},
@@ -23,35 +120,23 @@ const GTK3MainWindow::Resolution GTK3MainWindow::PRESET_RESOLUTIONS[] = {
     {3840, 2160, "4K UHD (3840x2160)"}
 };
 
-const int GTK3MainWindow::NUM_PRESET_RESOLUTIONS = sizeof(PRESET_RESOLUTIONS) / sizeof(PRESET_RESOLUTIONS[0]);
+const int GTKMainWindow::NUM_PRESET_RESOLUTIONS = sizeof(PRESET_RESOLUTIONS) / sizeof(PRESET_RESOLUTIONS[0]);
 
-GTK3MainWindow::GTK3MainWindow() 
-    : window(nullptr), drawing_area(nullptr), engine(nullptr), 
-      game_running(false), game_paused(false),
-      frame_timer_id(0), status_message_id(0),
-      // SDL backend
-      sdl_window(nullptr), sdl_renderer(nullptr), sdl_texture(nullptr), sdl_initialized(false),
-      // Cairo backend  
-      cairo_surface(nullptr), cairo_context(nullptr), cairo_buffer(nullptr), cairo_initialized(false),
-      // Shared framebuffer
-      nes_framebuffer(nullptr), rgba_framebuffer(nullptr), framebuffer_width(256), framebuffer_height(240),
-      // Rendering backend - CHANGED: Make Cairo the default
-      current_backend(RenderBackend::CAIRO_SOFTWARE), preferred_backend(RenderBackend::CAIRO_SOFTWARE), backend_switching_enabled(true),
-      // Resolution settings - CHANGED: Enable integer scaling (pixel perfect) by default
+GTKMainWindow::GTKMainWindow()
+    : app(nullptr), gameGenie(nullptr),
+      window(nullptr), main_vbox(nullptr), view(nullptr), menubar(nullptr), status_label(nullptr),
+      nes_framebuffer(nullptr), rgba_framebuffer(nullptr), frame_texture(nullptr),
+      texture_width(256), texture_height(240),
       current_resolution_index(0), custom_width(800), custom_height(600),
       use_custom_resolution(false), maintain_aspect_ratio(true), integer_scaling(true),
-      force_texture_recreation(false),
-      gameGenie(nullptr),
-      // Filter settings
-      current_filter(FilterType::NONE), filtered_texture(nullptr), filter_buffer(nullptr), filter_scale(1)
+      engine(nullptr), game_running(false), game_paused(false),
+      tick_id(0), last_frame_time(0), time_accumulator(0),
+      joystick_initialized(false),
+      current_filter(FilterType::NONE), filter_buffer(nullptr), filter_scale(1)
 {
-    strcpy(status_message, "Ready");
-    
-    // Allocate shared framebuffers
-    nes_framebuffer = new uint16_t[256 * 240];
-    rgba_framebuffer = new uint32_t[256 * 240];
-    
-    // Initialize Player 1 default keys
+    nes_framebuffer = new uint16_t[256 * 240]();
+    rgba_framebuffer = new uint32_t[256 * 240]();
+
     player1_keys.up = GDK_KEY_Up;
     player1_keys.down = GDK_KEY_Down;
     player1_keys.left = GDK_KEY_Left;
@@ -60,8 +145,7 @@ GTK3MainWindow::GTK3MainWindow()
     player1_keys.button_b = GDK_KEY_z;
     player1_keys.start = GDK_KEY_bracketright;
     player1_keys.select = GDK_KEY_bracketleft;
-    
-    // Initialize Player 2 default keys
+
     player2_keys.up = GDK_KEY_w;
     player2_keys.down = GDK_KEY_s;
     player2_keys.left = GDK_KEY_a;
@@ -71,1585 +155,1157 @@ GTK3MainWindow::GTK3MainWindow()
     player2_keys.start = GDK_KEY_i;
     player2_keys.select = GDK_KEY_u;
 }
-GTK3MainWindow::~GTK3MainWindow() {
+
+GTKMainWindow::~GTKMainWindow() {
     shutdown();
+    if (frame_texture) g_object_unref(frame_texture);
+    if (app) g_object_unref(app);
     delete[] nes_framebuffer;
     delete[] rgba_framebuffer;
     delete[] filter_buffer;
-    delete gameGenie;
 }
 
-bool GTK3MainWindow::initialize() {
-    // Initialize GTK
-    gtk_init(nullptr, nullptr);
-    
-    create_widgets();
-    load_key_mappings();
-    load_video_settings();
-    
-    // CHANGED: Always start with Cairo backend as default
-    // Initialize Cairo backend first instead of auto-detecting
-    if (current_backend == RenderBackend::AUTO || current_backend == RenderBackend::CAIRO_SOFTWARE) {
-        if (!init_cairo_backend()) {
-            printf("ERROR: Could not initialize Cairo backend, trying SDL fallback\n");
-            if (!init_sdl_backend()) {
-                printf("ERROR: Could not initialize any rendering backend\n");
-                return false;
-            } else {
-                current_backend = RenderBackend::SDL_HARDWARE;
-            }
-        } else {
-            current_backend = RenderBackend::CAIRO_SOFTWARE;
-            printf("SUCCESS: Using Cairo software rendering (default)\n");
-        }
-    } else if (current_backend == RenderBackend::SDL_HARDWARE) {
-        // Only initialize SDL if explicitly requested
-        if (!switchRenderBackend(preferred_backend)) {
-            printf("ERROR: Could not initialize preferred rendering backend\n");
-            return false;
-        }
-    }
-    
-    // Initialize audio
-    if (Configuration::getAudioEnabled()) {
-        SDL_Init(SDL_INIT_AUDIO);
-        SDL_AudioSpec desiredSpec;
-        desiredSpec.freq = Configuration::getAudioFrequency();
-        desiredSpec.format = AUDIO_S8;
-        desiredSpec.channels = 1;
-        desiredSpec.samples = 2048;
-        desiredSpec.callback = audio_callback;
-        desiredSpec.userdata = this;
+// ---------------------------------------------------------------------------
+// Application lifecycle
+// ---------------------------------------------------------------------------
+int GTKMainWindow::run(int argc, char* argv[], const char* rom_filename) {
+    if (rom_filename) pending_rom = rom_filename;
 
-        SDL_AudioSpec obtainedSpec;
-        if (SDL_OpenAudio(&desiredSpec, &obtainedSpec) < 0) {
-            printf("WARNING: Could not open audio: %s\n", SDL_GetError());
-        } else {
-            SDL_PauseAudio(0);
-            printf("Audio initialized successfully\n");
-        }
+    app = gtk_application_new("io.github.jasonbrianhall.warpnes", G_APPLICATION_NON_UNIQUE);
+    g_signal_connect(app, "activate", G_CALLBACK(on_activate), this);
+
+    // Arguments are parsed by main(); don't let GApplication try to "open" the ROM.
+    char* app_argv[] = { argc > 0 ? argv[0] : (char*)"warpnes-gtk", nullptr };
+    return g_application_run(G_APPLICATION(app), 1, app_argv);
+}
+
+void GTKMainWindow::on_activate(GtkApplication*, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    if (self->window) {
+        gtk_window_present(GTK_WINDOW(self->window));
+        return;
     }
-    
-    // Apply initial resolution and show window
-    if (use_custom_resolution) {
-        apply_resolution(custom_width, custom_height);
+
+    self->load_key_mappings();
+    self->load_video_settings();
+    self->create_widgets();
+    self->init_audio();
+
+    gtk_window_maximize(GTK_WINDOW(self->window));
+    gtk_window_present(GTK_WINDOW(self->window));
+    gtk_widget_grab_focus(self->view);
+
+    self->set_status_message("WarpNES - Load a ROM to begin (File > Open ROM)");
+
+    if (!self->pending_rom.empty()) {
+        self->load_rom(self->pending_rom.c_str());
+    }
+}
+
+void GTKMainWindow::init_audio() {
+    if (!Configuration::getAudioEnabled()) return;
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        printf("WARNING: Could not init SDL audio: %s\n", SDL_GetError());
+        return;
+    }
+    SDL_AudioSpec desiredSpec;
+    SDL_zero(desiredSpec);
+    desiredSpec.freq = Configuration::getAudioFrequency();
+    desiredSpec.format = AUDIO_S8;
+    desiredSpec.channels = 1;
+    desiredSpec.samples = 2048;
+    desiredSpec.callback = audio_callback;
+    desiredSpec.userdata = this;
+
+    SDL_AudioSpec obtainedSpec;
+    if (SDL_OpenAudio(&desiredSpec, &obtainedSpec) < 0) {
+        printf("WARNING: Could not open audio: %s\n", SDL_GetError());
     } else {
-        apply_resolution(PRESET_RESOLUTIONS[current_resolution_index].width,
-                        PRESET_RESOLUTIONS[current_resolution_index].height);
-    }
-    
-    gtk_widget_show_all(window);
-    gtk_widget_grab_focus(window);
-    
-    char status_msg[256];
-    snprintf(status_msg, sizeof(status_msg), "WarpNES GTK3 (%s) - Pixel Perfect Mode - Load a ROM to begin", 
-             backend_to_string(current_backend));
-    set_status_message(status_msg);
-    
-    return true;
-}
-
-// Rendering backend control functions
-void GTK3MainWindow::setRenderBackend(RenderBackend backend) {
-    preferred_backend = backend;
-}
-
-RenderBackend GTK3MainWindow::getRenderBackend() const {
-    return current_backend;
-}
-
-bool GTK3MainWindow::detect_best_backend() {
-    printf("=== Auto-detecting best rendering backend ===\n");
-    
-    // Make sure widgets are shown before trying SDL
-    gtk_widget_show_all(window);
-    
-    // Process pending events to ensure widgets are realized
-    while (gtk_events_pending()) {
-        gtk_main_iteration();
-    }
-    
-    // Small delay to ensure window is fully created
-    g_usleep(100000);  // 100ms delay
-    
-    // Try SDL first (hardware acceleration preferred)
-    printf("Testing SDL backend\n");
-    if (init_sdl_backend()) {
-        current_backend = RenderBackend::SDL_HARDWARE;
-        printf("SUCCESS: Using SDL hardware-accelerated rendering\n");
-        return true;
-    }
-    
-    printf("SDL backend failed, falling back to Cairo\n");
-    
-    // Fall back to Cairo
-    if (init_cairo_backend()) {
-        current_backend = RenderBackend::CAIRO_SOFTWARE;
-        printf("SUCCESS: Using Cairo software rendering\n");
-        return true;
-    }
-    
-    printf("ERROR: No rendering backend could be initialized\n");
-    return false;
-}
-
-
-bool GTK3MainWindow::switchRenderBackend(RenderBackend new_backend) {
-    if (new_backend == current_backend) {
-        return true;
-    }
-    
-    printf("=== Switching rendering backend to %s ===\n", backend_to_string(new_backend));
-    
-    // Clean up current backend
-    if (current_backend == RenderBackend::SDL_HARDWARE) {
-        cleanup_sdl_backend();
-    } else if (current_backend == RenderBackend::CAIRO_SOFTWARE) {
-        cleanup_cairo_backend();
-    }
-    
-    // Initialize new backend
-    bool success = false;
-    if (new_backend == RenderBackend::SDL_HARDWARE) {
-        success = init_sdl_backend();
-    } else if (new_backend == RenderBackend::CAIRO_SOFTWARE) {
-        success = init_cairo_backend();
-    } else if (new_backend == RenderBackend::AUTO) {
-        return detect_best_backend();
-    }
-    
-    if (success) {
-        current_backend = new_backend;
-        printf("SUCCESS: Switched to %s rendering\n", backend_to_string(new_backend));
-        
-        char status_msg[256];
-        snprintf(status_msg, sizeof(status_msg), "Switched to %s rendering", 
-                 backend_to_string(current_backend));
-        set_status_message(status_msg);
-        
-        return true;
-    } else {
-        printf("ERROR: Failed to switch to %s rendering\n", backend_to_string(new_backend));
-        if (!detect_best_backend()) {
-            printf("CRITICAL: No rendering backend available\n");
-            return false;
-        }
-        return true;
+        SDL_PauseAudio(0);
+        printf("Audio initialized successfully\n");
     }
 }
 
-// Audio callback function
-void GTK3MainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(userdata);
-    if (window && window->engine) {
-        window->engine->audioCallback(buffer, len);
+void GTKMainWindow::audio_callback(void* userdata, uint8_t* buffer, int len) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(userdata);
+    if (self && self->engine && self->game_running && !self->game_paused) {
+        self->engine->audioCallback(buffer, len);
     } else {
         memset(buffer, 0, len);
     }
 }
 
-void GTK3MainWindow::create_widgets() {
-    // Create main window
-    window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+void GTKMainWindow::init_gamepads() {
+    joystick_initialized = false;
+    if (!engine) return;
+    joystick_initialized = engine->getController1().initJoystick();
+    if (joystick_initialized) {
+        printf("Gamepad initialized\n");
+    }
+}
+
+bool GTKMainWindow::load_rom(const char* filename) {
+    // Keep the audio thread out of the engine while it is replaced
+    SDL_LockAudio();
+    game_running = false;
+    delete gameGenie;
+    gameGenie = nullptr;
+    delete engine;
+    engine = new WarpNES();
+    bool ok = engine->loadROM(filename);
+    if (ok) {
+        engine->reset();
+    } else {
+        delete engine;
+        engine = nullptr;
+    }
+    SDL_UnlockAudio();
+
+    if (!ok) {
+        set_status_message("Failed to load ROM file");
+        show_message("Failed to load ROM", filename);
+        return false;
+    }
+
+    key_states.clear();
+    key_taps.clear();
+    init_gamepads();
+
+    gameGenie = new GameGenie(engine);
+    size_t codesLoaded = 0;
+    if (gameGenie->loadCodesFromFile(engine->getROMBaseName() + ".gg")) {
+        codesLoaded = gameGenie->getEnabledCodeCount();
+    }
+
+    game_paused = false;
+    last_frame_time = 0;
+    time_accumulator = 0;
+    game_running = true;
+
+    char status_msg[512];
+    if (codesLoaded > 0) {
+        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s - Auto-loaded %zu Game Genie codes",
+                 filename, codesLoaded);
+    } else {
+        snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
+    }
+    set_status_message(status_msg);
+    start_frame_loop();
+    return true;
+}
+
+void GTKMainWindow::start_frame_loop() {
+    if (!tick_id && view) {
+        tick_id = gtk_widget_add_tick_callback(view, tick_callback, this, nullptr);
+    }
+}
+
+void GTKMainWindow::stop_frame_loop() {
+    if (tick_id && view) {
+        gtk_widget_remove_tick_callback(view, tick_id);
+    }
+    tick_id = 0;
+}
+
+void GTKMainWindow::shutdown() {
+    stop_frame_loop();
+    if (window) {
+        save_key_mappings();
+        save_video_settings();
+    }
+
+    SDL_LockAudio();
+    game_running = false;
+    delete gameGenie;
+    gameGenie = nullptr;
+    delete engine;
+    engine = nullptr;
+    SDL_UnlockAudio();
+
+    if (SDL_WasInit(SDL_INIT_AUDIO)) {
+        SDL_CloseAudio();
+    }
+    SDL_Quit();
+}
+
+// ---------------------------------------------------------------------------
+// Widgets
+// ---------------------------------------------------------------------------
+void GTKMainWindow::create_widgets() {
+    window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(window), "WarpNES");
-    gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
-    gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
-    
-    // CHANGED: Maximize the window by default instead of setting specific size
-    gtk_window_maximize(GTK_WINDOW(window));
-    
-    // Set focus and connect key events
-    gtk_widget_set_can_focus(window, TRUE);
-    gtk_widget_set_focus_on_click(window, TRUE);
-    
-    // Connect window signals
-    g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete), this);
-    g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), this);
-    g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), this);
-    g_signal_connect(window, "key-release-event", G_CALLBACK(on_key_release), this);
-    g_signal_connect(window, "configure-event", G_CALLBACK(on_window_configure), this);
-    
-    // Create main vertical box
+    gtk_window_set_default_size(GTK_WINDOW(window), 1024, 1000);
+    g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), this);
+    g_signal_connect(window, "notify::is-active", G_CALLBACK(on_window_active_changed), this);
+    g_signal_connect(window, "notify::fullscreened", G_CALLBACK(+[](GObject* obj, GParamSpec*, gpointer data) {
+        GTKMainWindow* self = static_cast<GTKMainWindow*>(data);
+        bool fs = gtk_window_is_fullscreen(GTK_WINDOW(obj));
+        gtk_widget_set_visible(self->menubar, !fs);
+        gtk_widget_set_visible(self->status_label, !fs);
+    }), this);
+
+    // Keyboard: capture phase so game keys work regardless of focused child
+    GtkEventController* keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key_pressed), this);
+    g_signal_connect(keys, "key-released", G_CALLBACK(on_key_released), this);
+    gtk_widget_add_controller(window, keys);
+
     main_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(window), main_vbox);
-    
-    // Create menubar
+    gtk_window_set_child(GTK_WINDOW(window), main_vbox);
+
     create_menubar();
-    gtk_box_pack_start(GTK_BOX(main_vbox), menubar, FALSE, FALSE, 0);
-    
-    // Create unified drawing area
-    setup_drawing_area();
-    gtk_box_pack_start(GTK_BOX(main_vbox), drawing_area, TRUE, TRUE, 0);
-    
-    // Create status bar
-    status_bar = gtk_statusbar_new();
-    gtk_box_pack_start(GTK_BOX(main_vbox), status_bar, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(main_vbox), menubar);
+
+    view = nes_view_new(this);
+    gtk_widget_set_size_request(view, 256, 240);
+    gtk_widget_set_hexpand(view, TRUE);
+    gtk_widget_set_vexpand(view, TRUE);
+    gtk_box_append(GTK_BOX(main_vbox), view);
+
+    status_label = gtk_label_new("Ready");
+    gtk_label_set_xalign(GTK_LABEL(status_label), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(status_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_widget_set_margin_start(status_label, 6);
+    gtk_widget_set_margin_end(status_label, 6);
+    gtk_widget_set_margin_top(status_label, 2);
+    gtk_widget_set_margin_bottom(status_label, 2);
+    gtk_box_append(GTK_BOX(main_vbox), status_label);
 }
 
-gboolean GTK3MainWindow::on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
-    GTK3MainWindow* window_obj = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (!window_obj->drawing_area) {
-        return FALSE;
-    }
-    
-    static int last_event_width = 0;
-    static int last_event_height = 0;
-    
-    if (abs(event->width - last_event_width) < 5 && abs(event->height - last_event_height) < 5) {
-        return FALSE;
-    }
-    
-    last_event_width = event->width;
-    last_event_height = event->height;
-    
-    window_obj->force_texture_recreation = true;
-    
-    if (window_obj->drawing_area) {
-        gtk_widget_queue_draw(window_obj->drawing_area);
-    }
-    
-    return FALSE;
+void GTKMainWindow::create_menubar() {
+    static const GActionEntry entries[] = {
+        {"open", action_open, nullptr, nullptr, nullptr, {0}},
+        {"quit", action_quit, nullptr, nullptr, nullptr, {0}},
+        {"reset", action_reset, nullptr, nullptr, nullptr, {0}},
+        {"pause", action_pause, nullptr, nullptr, nullptr, {0}},
+        {"game-genie", action_game_genie, nullptr, nullptr, nullptr, {0}},
+        {"controls", action_controls, nullptr, nullptr, nullptr, {0}},
+        {"resolution", action_resolution, nullptr, nullptr, nullptr, {0}},
+        {"filters", action_filters, nullptr, nullptr, nullptr, {0}},
+        {"fullscreen", action_fullscreen, nullptr, nullptr, nullptr, {0}},
+        {"about", action_about, nullptr, nullptr, nullptr, {0}},
+    };
+    g_action_map_add_action_entries(G_ACTION_MAP(window), entries, G_N_ELEMENTS(entries), this);
+
+    const char* open_accels[] = {"<Control>o", nullptr};
+    const char* quit_accels[] = {"<Control>q", nullptr};
+    const char* reset_accels[] = {"<Control>r", nullptr};
+    const char* pause_accels[] = {"Pause", "<Control>p", nullptr};
+    const char* fullscreen_accels[] = {"F11", nullptr};
+    gtk_application_set_accels_for_action(app, "win.open", open_accels);
+    gtk_application_set_accels_for_action(app, "win.quit", quit_accels);
+    gtk_application_set_accels_for_action(app, "win.reset", reset_accels);
+    gtk_application_set_accels_for_action(app, "win.pause", pause_accels);
+    gtk_application_set_accels_for_action(app, "win.fullscreen", fullscreen_accels);
+
+    GMenu* bar = g_menu_new();
+
+    GMenu* file_menu = g_menu_new();
+    g_menu_append(file_menu, "_Open ROM…", "win.open");
+    g_menu_append(file_menu, "_Quit", "win.quit");
+    g_menu_append_submenu(bar, "_File", G_MENU_MODEL(file_menu));
+
+    GMenu* game_menu = g_menu_new();
+    g_menu_append(game_menu, "_Reset", "win.reset");
+    g_menu_append(game_menu, "_Pause", "win.pause");
+    GMenu* game_section = g_menu_new();
+    g_menu_append(game_section, "_Game Genie Codes…", "win.game-genie");
+    g_menu_append_section(game_menu, nullptr, G_MENU_MODEL(game_section));
+    g_menu_append_submenu(bar, "_Game", G_MENU_MODEL(game_menu));
+
+    GMenu* options_menu = g_menu_new();
+    g_menu_append(options_menu, "_Controls…", "win.controls");
+    g_menu_append(options_menu, "_Resolution…", "win.resolution");
+    g_menu_append(options_menu, "_Filters…", "win.filters");
+    g_menu_append(options_menu, "F_ullscreen", "win.fullscreen");
+    g_menu_append_submenu(bar, "_Options", G_MENU_MODEL(options_menu));
+
+    GMenu* help_menu = g_menu_new();
+    g_menu_append(help_menu, "_About", "win.about");
+    g_menu_append_submenu(bar, "_Help", G_MENU_MODEL(help_menu));
+
+    menubar = gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(bar));
+
+    g_object_unref(file_menu);
+    g_object_unref(game_section);
+    g_object_unref(game_menu);
+    g_object_unref(options_menu);
+    g_object_unref(help_menu);
+    g_object_unref(bar);
 }
 
-void GTK3MainWindow::create_menubar() {
-    menubar = gtk_menu_bar_new();
-    
-    // File menu
-    GtkWidget* file_menu = gtk_menu_new();
-    GtkWidget* file_item = gtk_menu_item_new_with_label("File");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
-    
-    GtkWidget* open_item = gtk_menu_item_new_with_label("Open ROM");
-    g_signal_connect(open_item, "activate", G_CALLBACK(on_file_open), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), open_item);
-    
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), gtk_separator_menu_item_new());
-    
-    GtkWidget* quit_item = gtk_menu_item_new_with_label("Quit");
-    g_signal_connect(quit_item, "activate", G_CALLBACK(on_file_quit), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), quit_item);
-    
-    // Game menu
-    GtkWidget* game_menu = gtk_menu_new();
-    GtkWidget* game_item = gtk_menu_item_new_with_label("Game");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(game_item), game_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), game_item);
-    
-    GtkWidget* reset_item = gtk_menu_item_new_with_label("Reset");
-    g_signal_connect(reset_item, "activate", G_CALLBACK(on_game_reset), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), reset_item);
-    
-    GtkWidget* pause_item = gtk_menu_item_new_with_label("Pause");
-    g_signal_connect(pause_item, "activate", G_CALLBACK(on_game_pause), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), pause_item);
-    
-    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), gtk_separator_menu_item_new());
-    
-    GtkWidget* game_genie_item = gtk_menu_item_new_with_label("Game Genie Codes");
-    g_signal_connect(game_genie_item, "activate", G_CALLBACK(on_game_genie_codes), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(game_menu), game_genie_item);
-    
-    // Options menu
-    GtkWidget* options_menu = gtk_menu_new();
-    GtkWidget* options_item = gtk_menu_item_new_with_label("Options");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(options_item), options_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), options_item);
-    
-    GtkWidget* controls_item = gtk_menu_item_new_with_label("Controls");
-    g_signal_connect(controls_item, "activate", G_CALLBACK(on_options_controls), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), controls_item);
-    
-    GtkWidget* video_item = gtk_menu_item_new_with_label("Video");
-    g_signal_connect(video_item, "activate", G_CALLBACK(on_options_video), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), video_item);
-    
-    GtkWidget* resolution_item = gtk_menu_item_new_with_label("Resolution");
-    g_signal_connect(resolution_item, "activate", G_CALLBACK(on_options_resolution), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), resolution_item);
-    
-    GtkWidget* rendering_item = gtk_menu_item_new_with_label("Rendering");
-    g_signal_connect(rendering_item, "activate", G_CALLBACK(on_options_rendering), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), rendering_item);
-    
-    GtkWidget* filters_item = gtk_menu_item_new_with_label("Filters");
-    g_signal_connect(filters_item, "activate", G_CALLBACK(on_options_filters), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(options_menu), filters_item);
-    
-    // Help menu
-    GtkWidget* help_menu = gtk_menu_new();
-    GtkWidget* help_item = gtk_menu_item_new_with_label("Help");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_item), help_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_item);
-    
-    GtkWidget* about_item = gtk_menu_item_new_with_label("About");
-    g_signal_connect(about_item, "activate", G_CALLBACK(on_help_about), this);
-    gtk_menu_shell_append(GTK_MENU_SHELL(help_menu), about_item);
+void GTKMainWindow::set_status_message(const char* message) {
+    if (status_label) {
+        gtk_label_set_text(GTK_LABEL(status_label), message);
+    }
 }
 
-void GTK3MainWindow::on_options_filters(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_filters_dialog();
+void GTKMainWindow::show_message(const char* heading, const char* detail) {
+    GtkAlertDialog* alert = gtk_alert_dialog_new("%s", heading);
+    if (detail) gtk_alert_dialog_set_detail(alert, detail);
+    gtk_alert_dialog_show(alert, window ? GTK_WINDOW(window) : nullptr);
+    g_object_unref(alert);
 }
 
-void GTK3MainWindow::show_filters_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Video Filters",
-                                                   GTK_WINDOW(window),
-                                                   GTK_DIALOG_MODAL,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_OK", GTK_RESPONSE_OK,
-                                                   nullptr);
-    
-    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(content_area), vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 20);
-    
-    // Current filter info
-    char current_text[128];
-    const char* current_name = 
-        (current_filter == FilterType::NONE) ? "None" :
-        (current_filter == FilterType::SCALE2X) ? "Scale2x" :
-        (current_filter == FilterType::HQ2X) ? "hq2x" :
-        (current_filter == FilterType::HQ3X) ? "hq3x" :
-        (current_filter == FilterType::CRT_SCANLINES) ? "CRT Scanlines" :
-        (current_filter == FilterType::NTSC) ? "NTSC Composite" :
-        (current_filter == FilterType::SUPER_4XSAI) ? "Super 4xSaI" : "Unknown";
-    snprintf(current_text, sizeof(current_text), "Current filter: %s", current_name);
-    GtkWidget* current_label = gtk_label_new(current_text);
-    gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 0);
-    
-    // Filter selection
-    GSList* group = nullptr;
-    
-    GtkWidget* none_radio = gtk_radio_button_new_with_label(group, "None (fastest)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(none_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), none_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* scale2x_radio = gtk_radio_button_new_with_label(group, "Scale2x (pixel-perfect)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(scale2x_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), scale2x_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* hq2x_radio = gtk_radio_button_new_with_label(group, "hq2x (smooth)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(hq2x_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), hq2x_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* hq3x_radio = gtk_radio_button_new_with_label(group, "hq3x (3x smooth)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(hq3x_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), hq3x_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* sai_radio = gtk_radio_button_new_with_label(group, "Super 4xSaI (premium 4x smooth)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(sai_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), sai_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* crt_radio = gtk_radio_button_new_with_label(group, "CRT Scanlines (retro CRT effect)");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(crt_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), crt_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* ntsc_radio = gtk_radio_button_new_with_label(group, "NTSC Composite (authentic TV look)");
-    gtk_box_pack_start(GTK_BOX(vbox), ntsc_radio, FALSE, FALSE, 0);
-    
-    // Set current selection
-    switch (current_filter) {
-        case FilterType::NONE:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(none_radio), TRUE);
-            break;
-        case FilterType::SCALE2X:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(scale2x_radio), TRUE);
-            break;
-        case FilterType::HQ2X:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq2x_radio), TRUE);
-            break;
-        case FilterType::HQ3X:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(hq3x_radio), TRUE);
-            break;
-        case FilterType::SUPER_4XSAI:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sai_radio), TRUE);
-            break;
-        case FilterType::CRT_SCANLINES:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(crt_radio), TRUE);
-            break;
-        case FilterType::NTSC:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ntsc_radio), TRUE);
-            break;
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+gboolean GTKMainWindow::tick_callback(GtkWidget*, GdkFrameClock* clock, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    gint64 now = gdk_frame_clock_get_frame_time(clock);
+
+    if (!self->game_running || !self->engine) {
+        self->last_frame_time = now;
+        return G_SOURCE_CONTINUE;
     }
-    
-    // Note for SDL only
-    if (current_backend != RenderBackend::SDL_HARDWARE) {
-        GtkWidget* note_label = gtk_label_new("Note: Filters only work with SDL rendering backend");
-        gtk_box_pack_start(GTK_BOX(vbox), note_label, FALSE, FALSE, 0);
+
+    self->poll_gamepads();
+
+    if (self->game_paused || self->last_frame_time == 0) {
+        self->last_frame_time = now;
+        self->time_accumulator = 0;
+        return G_SOURCE_CONTINUE;
     }
-    
-    gtk_widget_show_all(dialog);
-    
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        FilterType new_filter = FilterType::NONE;
-        
-        if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(none_radio))) {
-            new_filter = FilterType::NONE;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scale2x_radio))) {
-            new_filter = FilterType::SCALE2X;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq2x_radio))) {
-            new_filter = FilterType::HQ2X;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(hq3x_radio))) {
-            new_filter = FilterType::HQ3X;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(sai_radio))) {
-            new_filter = FilterType::SUPER_4XSAI;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(crt_radio))) {
-            new_filter = FilterType::CRT_SCANLINES;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ntsc_radio))) {
-            new_filter = FilterType::NTSC;
+
+    // Run the emulator at NES speed independent of the display refresh rate
+    self->time_accumulator += now - self->last_frame_time;
+    self->last_frame_time = now;
+    if (self->time_accumulator > 250000) {
+        // Stalled (window hidden, debugger, ...): don't try to catch up
+        self->time_accumulator = NES_FRAME_US;
+    }
+
+    int frames = 0;
+    while (self->time_accumulator >= NES_FRAME_US && frames < 4) {
+        self->update_controller_state();
+        self->key_taps.clear();
+        self->engine->update();
+        self->time_accumulator -= NES_FRAME_US;
+        frames++;
+    }
+
+    if (frames > 0) {
+        self->present_frame();
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+void GTKMainWindow::present_frame() {
+    if (!engine) return;
+    engine->render16(nes_framebuffer);
+
+    uint32_t* pixels = rgba_framebuffer;
+    int width = 256;
+    int height = 240;
+
+    bool filtered = false;
+    if (current_filter != FilterType::NONE && filter_buffer) {
+        filtered = true;
+        switch (current_filter) {
+            case FilterType::SCALE2X:       apply_scale2x_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::HQ2X:          apply_hq2x_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::HQ3X:          apply_hq3x_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::CRT_SCANLINES: apply_crt_scanlines_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::NTSC:          apply_ntsc_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            case FilterType::SUPER_4XSAI:   apply_4xsai_filter(nes_framebuffer, filter_buffer, 256, 240); break;
+            default:                        filtered = false; break;
         }
-        
-        setFilter(new_filter);
     }
-    
-    gtk_widget_destroy(dialog);
+
+    if (filtered) {
+        pixels = filter_buffer;
+        width = 256 * filter_scale;
+        height = 240 * filter_scale;
+        // Filters don't all guarantee an opaque alpha channel
+        for (int i = 0; i < width * height; i++) pixels[i] |= 0xFF000000u;
+    } else {
+        convert_nes_to_rgba();
+    }
+
+    // 0xAARRGGBB in native endianness == GDK_MEMORY_DEFAULT
+    GBytes* bytes = g_bytes_new(pixels, (gsize)width * height * 4);
+    GdkTexture* texture = gdk_memory_texture_new(width, height, GDK_MEMORY_DEFAULT, bytes, (gsize)width * 4);
+    g_bytes_unref(bytes);
+
+    if (frame_texture) g_object_unref(frame_texture);
+    frame_texture = texture;
+    texture_width = width;
+    texture_height = height;
+    gtk_widget_queue_draw(view);
 }
-void GTK3MainWindow::apply_resolution(int width, int height) {
-    printf("Applying resolution: %dx%d\n", width, height);
-    
-    gtk_window_resize(GTK_WINDOW(window), width, height);
-    gtk_widget_set_size_request(drawing_area, width, height);
-    
-    force_texture_recreation = true;
-    gtk_widget_queue_draw(drawing_area);
-    
+
+void GTKMainWindow::convert_nes_to_rgba() {
+    for (int i = 0; i < 256 * 240; i++) {
+        rgba_framebuffer[i] = rgb565_to_rgb888(nes_framebuffer[i]);
+    }
+}
+
+void GTKMainWindow::snapshot_view(GtkWidget* widget, GtkSnapshot* snapshot) {
+    int width = gtk_widget_get_width(widget);
+    int height = gtk_widget_get_height(widget);
+
+    GdkRGBA black = {0.0f, 0.0f, 0.0f, 1.0f};
+    graphene_rect_t area = GRAPHENE_RECT_INIT(0.0f, 0.0f, (float)width, (float)height);
+    gtk_snapshot_append_color(snapshot, &black, &area);
+
+    if (!frame_texture || !game_running) return;
+
+    // Lay out by NES resolution so filters (2x/3x/4x textures) keep the same size
+    Rect dest;
+    calculate_render_rect(256, 240, width, height, dest);
+    graphene_rect_t bounds = GRAPHENE_RECT_INIT((float)dest.x, (float)dest.y, (float)dest.w, (float)dest.h);
+    gtk_snapshot_append_scaled_texture(snapshot, frame_texture,
+                                       integer_scaling ? GSK_SCALING_FILTER_NEAREST : GSK_SCALING_FILTER_LINEAR,
+                                       &bounds);
+}
+
+void GTKMainWindow::calculate_render_rect(int source_width, int source_height,
+                                          int target_width, int target_height, Rect& dest_rect) {
+    if (!maintain_aspect_ratio) {
+        dest_rect = {0, 0, target_width, target_height};
+        return;
+    }
+
+    float source_aspect = (float)source_width / (float)source_height;
+
+    if (integer_scaling) {
+        int scale_x = target_width / source_width;
+        int scale_y = target_height / source_height;
+        int scale = std::max(1, std::min(scale_x, scale_y));
+        dest_rect.w = source_width * scale;
+        dest_rect.h = source_height * scale;
+    } else if ((int)(target_width / source_aspect) <= target_height) {
+        dest_rect.w = target_width;
+        dest_rect.h = (int)(target_width / source_aspect);
+    } else {
+        dest_rect.w = (int)(target_height * source_aspect);
+        dest_rect.h = target_height;
+    }
+    dest_rect.x = (target_width - dest_rect.w) / 2;
+    dest_rect.y = (target_height - dest_rect.h) / 2;
+}
+
+void GTKMainWindow::apply_resolution(int width, int height) {
+    if (gtk_window_is_fullscreen(GTK_WINDOW(window))) {
+        gtk_window_unfullscreen(GTK_WINDOW(window));
+    }
+    gtk_window_unmaximize(GTK_WINDOW(window));
+
+    // Size the window so the game area (not the whole window) gets width x height
+    int menu_h = 0, status_h = 0, unused = 0;
+    gtk_widget_measure(menubar, GTK_ORIENTATION_VERTICAL, -1, &unused, &menu_h, nullptr, nullptr);
+    gtk_widget_measure(status_label, GTK_ORIENTATION_VERTICAL, -1, &unused, &status_h, nullptr, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(window), width, height + menu_h + status_h);
+
     char status_msg[256];
     snprintf(status_msg, sizeof(status_msg), "Resolution changed to %dx%d", width, height);
     set_status_message(status_msg);
 }
 
-void GTK3MainWindow::calculate_render_rect(int source_width, int source_height, 
-                                          int target_width, int target_height, 
-                                          SDL_Rect& dest_rect) {
-    if (!maintain_aspect_ratio) {
-        dest_rect.x = 0;
-        dest_rect.y = 0;
-        dest_rect.w = target_width;
-        dest_rect.h = target_height;
-        return;
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+gboolean GTKMainWindow::on_key_pressed(GtkEventControllerKey*, guint keyval, guint,
+                                       GdkModifierType state, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    guint key = gdk_keyval_to_lower(keyval);
+
+    if (key == GDK_KEY_Escape && gtk_window_is_fullscreen(GTK_WINDOW(self->window))) {
+        gtk_window_unfullscreen(GTK_WINDOW(self->window));
+        return TRUE;
     }
-    
-    float source_aspect = (float)source_width / (float)source_height;
-    
-    if (integer_scaling) {
-        int scale_x = target_width / source_width;
-        int scale_y = target_height / source_height;
-        int scale = (scale_x < scale_y) ? scale_x : scale_y;
-        
-        if (scale < 1) scale = 1;
-        
-        dest_rect.w = source_width * scale;
-        dest_rect.h = source_height * scale;
-        dest_rect.x = (target_width - dest_rect.w) / 2;
-        dest_rect.y = (target_height - dest_rect.h) / 2;
-    } else {
-        int scale_x_pixels = target_width;
-        int scale_y_pixels = (int)(target_width / source_aspect);
-        
-        int scale_y_pixels_alt = target_height;
-        int scale_x_pixels_alt = (int)(target_height * source_aspect);
-        
-        if (scale_y_pixels <= target_height) {
-            dest_rect.w = scale_x_pixels;
-            dest_rect.h = scale_y_pixels;
-            dest_rect.x = 0;
-            dest_rect.y = (target_height - dest_rect.h) / 2;
-        } else {
-            dest_rect.w = scale_x_pixels_alt;
-            dest_rect.h = scale_y_pixels_alt;
-            dest_rect.x = (target_width - dest_rect.w) / 2;
-            dest_rect.y = 0;
+
+    if (key >= GDK_KEY_F5 && key <= GDK_KEY_F9) {
+        self->handle_save_state_key(key, (state & GDK_SHIFT_MASK) != 0);
+        return TRUE;
+    }
+
+    // Leave Ctrl/Alt shortcuts to the menu accelerators
+    if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK)) {
+        return FALSE;
+    }
+
+    const KeyMappings* maps[] = {&self->player1_keys, &self->player2_keys};
+    for (const KeyMappings* m : maps) {
+        if (key == m->up || key == m->down || key == m->left || key == m->right ||
+            key == m->button_a || key == m->button_b || key == m->start || key == m->select) {
+            self->key_states[key] = true;
+            self->key_taps[key] = true;
+            return TRUE;  // Don't let arrow keys etc. move focus around
         }
     }
+    return FALSE;
 }
 
-void GTK3MainWindow::setup_drawing_area() {
-    drawing_area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(drawing_area, 256, 240);
-    gtk_widget_set_can_focus(drawing_area, TRUE);
-    
-    // Replace the deprecated function with CSS styling
-    GtkCssProvider* css_provider = gtk_css_provider_new();
-    const char* css_data = "drawingarea { background-color: black; }";
-    
-    gtk_css_provider_load_from_data(css_provider, css_data, -1, NULL);
-    
-    GtkStyleContext* style_context = gtk_widget_get_style_context(drawing_area);
-    gtk_style_context_add_provider(style_context, 
-                                  GTK_STYLE_PROVIDER(css_provider),
-                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    
-    g_object_unref(css_provider);
+void GTKMainWindow::on_key_released(GtkEventControllerKey*, guint keyval, guint,
+                                    GdkModifierType, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    self->key_states[gdk_keyval_to_lower(keyval)] = false;
 }
 
-// Backend initialization
-bool GTK3MainWindow::init_sdl_backend() {
-    printf("Initializing SDL backend\n");
-    if (!engine) {
-        return false;
-    }
-    
-    if (sdl_initialized) {
-        return true;
-    }
-    
-    // Initialize SDL video subsystem
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        printf("ERROR: SDL_Init failed: %s\n", SDL_GetError());
-        return false;
-    }
-    
-    // Get current display mode to get screen size
-    SDL_DisplayMode display_mode;
-    if (SDL_GetCurrentDisplayMode(0, &display_mode) != 0) {
-        printf("WARNING: Could not get display mode, using defaults: %s\n", SDL_GetError());
-        display_mode.w = 1920;
-        display_mode.h = 1080;
-    }
-    
-    // Create standalone SDL window at full screen size
-    sdl_window = SDL_CreateWindow("WarpNES SDL",
-                                 SDL_WINDOWPOS_CENTERED,
-                                 SDL_WINDOWPOS_CENTERED,
-                                 display_mode.w, display_mode.h,
-                                 SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-    
-    if (!sdl_window) {
-        printf("ERROR: SDL_CreateWindow failed: %s\n", SDL_GetError());
-        SDL_Quit();
-        return false;
-    }
-    
-    // Create renderer with VSync
-    sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 
-                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    
-    if (!sdl_renderer) {
-        printf("Hardware renderer failed, trying software: %s\n", SDL_GetError());
-        sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_SOFTWARE);
-        
-        if (!sdl_renderer) {
-            printf("ERROR: SDL_CreateRenderer failed: %s\n", SDL_GetError());
-            SDL_DestroyWindow(sdl_window);
-            sdl_window = nullptr;
-            SDL_Quit();
-            return false;
-        }
-    }
-    
-    // Create texture for NES framebuffer
-    sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGB565, 
-                                   SDL_TEXTUREACCESS_STREAMING, 256, 240);
-    if (!sdl_texture) {
-        printf("ERROR: SDL_CreateTexture failed: %s\n", SDL_GetError());
-        cleanup_sdl_backend();
-        return false;
-    }
-    
-    printf("SDL backend initialized successfully\n");
-    printf("Note: Use the GTK window to close the application\n");
-    sdl_initialized = true;
-    return true;
-}
-
-void GTK3MainWindow::handle_sdl_key_event(SDL_Event* event) {
-    // Convert SDL keys to our key state system
-    guint gdk_key = 0;
-    
-    // Check for Shift modifier
-    bool shift_pressed = (event->key.keysym.mod & KMOD_SHIFT) != 0;
-    
-    switch (event->key.keysym.sym) {
-        case SDLK_UP:
-            gdk_key = GDK_KEY_Up;
-            break;
-        case SDLK_DOWN:
-            gdk_key = GDK_KEY_Down;
-            break;
-        case SDLK_LEFT:
-            gdk_key = GDK_KEY_Left;
-            break;
-        case SDLK_RIGHT:
-            gdk_key = GDK_KEY_Right;
-            break;
-        case SDLK_x:
-            gdk_key = GDK_KEY_x;
-            break;
-        case SDLK_z:
-            gdk_key = GDK_KEY_z;
-            break;
-        case SDLK_RIGHTBRACKET:
-            gdk_key = GDK_KEY_bracketright;
-            break;
-        case SDLK_LEFTBRACKET:
-            gdk_key = GDK_KEY_bracketleft;
-            break;
-        case SDLK_w:
-            gdk_key = GDK_KEY_w;
-            break;
-        case SDLK_s:
-            gdk_key = GDK_KEY_s;
-            break;
-        case SDLK_a:
-            gdk_key = GDK_KEY_a;
-            break;
-        case SDLK_d:
-            gdk_key = GDK_KEY_d;
-            break;
-        case SDLK_j:
-            gdk_key = GDK_KEY_j;
-            break;
-        case SDLK_k:
-            gdk_key = GDK_KEY_k;
-            break;
-        case SDLK_i:
-            gdk_key = GDK_KEY_i;
-            break;
-        case SDLK_u:
-            gdk_key = GDK_KEY_u;
-            break;
-        
-        // F5-F9 keys with save/load functionality
-        case SDLK_F5:
-        case SDLK_F6:
-        case SDLK_F7:
-        case SDLK_F8:
-        case SDLK_F9:
-            if (event->type == SDL_KEYDOWN && engine) {
-                std::string romBase = engine->getROMBaseName();
-                
-                if (!romBase.empty()) {
-                    std::string filename;
-                    int slot = 0;
-                    
-                    switch (event->key.keysym.sym) {
-                        case SDLK_F5:
-                            slot = 1;
-                            filename = romBase + ".slot1.sav";
-                            break;
-                        case SDLK_F6:
-                            slot = 2;
-                            filename = romBase + ".slot2.sav";
-                            break;
-                        case SDLK_F7:
-                            slot = 3;
-                            filename = romBase + ".slot3.sav";
-                            break;
-                        case SDLK_F8:
-                            slot = 4;
-                            filename = romBase + ".slot4.sav";
-                            break;
-                        case SDLK_F9:
-                            slot = 5;
-                            filename = romBase + ".slot5.sav";
-                            break;
-                    }
-                    
-                    if (shift_pressed) {
-                        // Shift+F[5-9] - Load State
-                        if (engine->loadState(filename)) {
-                            char msg[64];
-                            sprintf(msg, "State %d loaded", slot);
-                            set_status_message(msg);
-                        } else {
-                            char msg[64];
-                            sprintf(msg, "Failed to load state %d", slot);
-                            set_status_message(msg);
-                        }
-                    } else {
-                        // F[5-9] - Save State
-                        engine->saveState(filename);
-                        char msg[64];
-                        sprintf(msg, "State %d saved", slot);
-                        set_status_message(msg);
-                    }
-                } else {
-                    set_status_message("No ROM loaded");
-                }
-            }
-            return; // Don't process as regular key
-            
-        case SDLK_F11:
-            if (event->type == SDL_KEYDOWN) {
-                static bool fullscreen = false;
-                if (fullscreen) {
-                    SDL_SetWindowFullscreen(sdl_window, 0);
-                    fullscreen = false;
-                } else {
-                    SDL_SetWindowFullscreen(sdl_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-                    fullscreen = true;
-                }
-            }
-            return;
-        default:
-            return; // Unknown key
-    }
-    
-    if (gdk_key != 0) {
-        key_states[gdk_key] = (event->type == SDL_KEYDOWN);
+void GTKMainWindow::on_window_active_changed(GObject* object, GParamSpec*, gpointer user_data) {
+    // Key releases aren't delivered while another window has focus; drop all
+    // held keys so nothing stays stuck after alt-tab or a dialog.
+    if (!gtk_window_is_active(GTK_WINDOW(object))) {
+        GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+        self->key_states.clear();
+        self->key_taps.clear();
     }
 }
 
-void GTK3MainWindow::handle_sdl_events() {
-    if (!sdl_initialized) return;
-    
+void GTKMainWindow::poll_gamepads() {
+    if (!joystick_initialized || !engine) return;
+
+    Controller& controller1 = engine->getController1();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
-            case SDL_QUIT:
-                // Switch to Cairo backend when SDL window is closed
-                printf("SDL window closed by user - switching to Cairo backend\n");
-                switchRenderBackend(RenderBackend::CAIRO_SOFTWARE);
-                set_status_message("Switched to Cairo rendering (SDL window was closed)");
-                break;
-            case SDL_WINDOWEVENT:
-                if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
-                    // Switch to Cairo backend when SDL window is closed
-                    printf("SDL window close event - switching to Cairo backend\n");
-                    switchRenderBackend(RenderBackend::CAIRO_SOFTWARE);
-                    set_status_message("Switched to Cairo rendering (SDL window was closed)");
-                }
-                break;
-            case SDL_KEYDOWN:
-            case SDL_KEYUP:
-                // Convert SDL keys to GDK keys and handle
-                handle_sdl_key_event(&event);
-                break;
-        }
-    }
-}
-
-bool GTK3MainWindow::init_cairo_backend() {
-    printf("Initializing Cairo backend\n");
-    
-    if (cairo_initialized) {
-        return true;
-    }
-    
-    g_signal_connect(drawing_area, "draw", G_CALLBACK(on_cairo_draw), this);
-    g_signal_connect(drawing_area, "configure-event", G_CALLBACK(on_cairo_configure), this);
-    
-    cairo_initialized = true;
-    return true;
-}
-
-void GTK3MainWindow::cleanup_sdl_backend() {
-    if (!sdl_initialized) return;
-    
-    printf("Cleaning up SDL backend\n");
-    
-    if (filtered_texture) {
-        SDL_DestroyTexture(filtered_texture);
-        filtered_texture = nullptr;
-    }
-    
-    if (sdl_texture) {
-        SDL_DestroyTexture(sdl_texture);
-        sdl_texture = nullptr;
-    }
-    
-    if (sdl_renderer) {
-        SDL_DestroyRenderer(sdl_renderer);
-        sdl_renderer = nullptr;
-    }
-    
-    if (sdl_window) {
-        SDL_DestroyWindow(sdl_window);
-        sdl_window = nullptr;
-    }
-    
-    if (!Configuration::getAudioEnabled()) {
-        SDL_Quit();
-    } else {
-        SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    }
-    
-    sdl_initialized = false;
-}
-
-void GTK3MainWindow::cleanup_cairo_backend() {
-    if (!cairo_initialized) return;
-    
-    printf("Cleaning up Cairo backend\n");
-    
-    if (cairo_context) {
-        cairo_destroy(cairo_context);
-        cairo_context = nullptr;
-    }
-    
-    if (cairo_surface) {
-        cairo_surface_destroy(cairo_surface);
-        cairo_surface = nullptr;
-    }
-    
-    g_signal_handlers_disconnect_by_func(drawing_area, (gpointer)on_cairo_draw, this);
-    g_signal_handlers_disconnect_by_func(drawing_area, (gpointer)on_cairo_configure, this);
-    
-    cairo_initialized = false;
-}
-
-// Rendering functions
-void GTK3MainWindow::render_frame() {
-    if (!game_running || !engine) return;
-    
-    engine->render16(nes_framebuffer);
-    
-    if (current_backend == RenderBackend::SDL_HARDWARE) {
-        render_frame_sdl();
-    } else if (current_backend == RenderBackend::CAIRO_SOFTWARE) {
-        render_frame_cairo();
-    }
-}
-
-void GTK3MainWindow::render_frame_sdl() {
-    if (!sdl_renderer || !sdl_texture) return;
-    
-    handle_sdl_events();
-    
-    SDL_Texture* render_texture = sdl_texture;
-    int source_width = 256;
-    int source_height = 240;
-    
-    // Apply filtering if enabled
-    if (current_filter != FilterType::NONE && filter_buffer) {
-        switch (current_filter) {
-            case FilterType::SCALE2X:
-                apply_scale2x_filter(nes_framebuffer, filter_buffer, 256, 240);
-                break;
-            case FilterType::HQ2X:
-                apply_hq2x_filter(nes_framebuffer, filter_buffer, 256, 240);
-                break;
-            case FilterType::HQ3X:
-                apply_hq3x_filter(nes_framebuffer, filter_buffer, 256, 240);
-                break;
-            case FilterType::CRT_SCANLINES:
-                apply_crt_scanlines_filter(nes_framebuffer, filter_buffer, 256, 240);
-                break;
-            case FilterType::NTSC:
-                apply_ntsc_filter(nes_framebuffer, filter_buffer, 256, 240);
-                break;
-            case FilterType::SUPER_4XSAI:  // ADD THIS CASE
-                apply_4xsai_filter(nes_framebuffer, filter_buffer, 256, 240);
+            case SDL_JOYAXISMOTION:
+            case SDL_JOYHATMOTION:
+            case SDL_JOYBUTTONDOWN:
+            case SDL_JOYBUTTONUP:
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_CONTROLLERBUTTONUP:
+            case SDL_CONTROLLERAXISMOTION:
+                controller1.processJoystickEvent(event);
                 break;
             default:
                 break;
         }
-        
-        update_filter_texture();
-        render_texture = filtered_texture;
-        source_width = 256 * filter_scale;
-        source_height = 240 * filter_scale;
-    } else {
-        // Update original texture
-        void* pixels;
-        int pitch;
-        if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) == 0) {
-            memcpy(pixels, nes_framebuffer, 256 * 240 * sizeof(uint16_t));
-            SDL_UnlockTexture(sdl_texture);
-        }
     }
-    
-    // Clear and render
-    SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(sdl_renderer);
-    
-    int window_width, window_height;
-    SDL_GetWindowSize(sdl_window, &window_width, &window_height);
-    
-    SDL_Rect dest_rect;
-    calculate_render_rect(source_width, source_height, window_width, window_height, dest_rect);
-    
-    SDL_RenderCopy(sdl_renderer, render_texture, NULL, &dest_rect);
-    SDL_RenderPresent(sdl_renderer);
+    controller1.updateJoystickState();
 }
 
-
-void GTK3MainWindow::render_frame_cairo() {
-    gtk_widget_queue_draw(drawing_area);
-}
-
-void GTK3MainWindow::convert_nes_to_rgba() {
-    for (int i = 0; i < 256 * 240; i++) {
-        uint16_t rgb565 = nes_framebuffer[i];
-        
-        // Extract RGB components
-        uint8_t r = (rgb565 >> 11) & 0x1F;
-        uint8_t g = (rgb565 >> 5) & 0x3F;
-        uint8_t b = rgb565 & 0x1F;
-        
-        // Convert to 8-bit with proper rounding
-        r = (r * 255 + 15) / 31;  // Add half of divisor for rounding
-        g = (g * 255 + 31) / 63;  // Add half of divisor for rounding
-        b = (b * 255 + 15) / 31;  // Add half of divisor for rounding
-        
-        // Cairo on little-endian systems expects BGRA format
-        // Format: 0xAARRGGBB on little-endian becomes BB GG RR AA in memory
-        #if G_BYTE_ORDER == G_LITTLE_ENDIAN
-            rgba_framebuffer[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;  // ARGB32
-        #else
-            rgba_framebuffer[i] = (b << 24) | (g << 16) | (r << 8) | 0xFF;  // BGRA
-        #endif
-    }
-}
-
-gboolean GTK3MainWindow::on_cairo_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
-    GTK3MainWindow* window_obj = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (!window_obj->game_running || !window_obj->engine) {
-        cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-        cairo_paint(cr);
-        return TRUE;
-    }
-    
-    window_obj->convert_nes_to_rgba();
-    
-    // Try CAIRO_FORMAT_ARGB32 first, then RGB24 if colors look wrong
-    cairo_surface_t* surface = cairo_image_surface_create_for_data(
-        (unsigned char*)window_obj->rgba_framebuffer,
-        CAIRO_FORMAT_ARGB32,  // Try this format
-        256, 240,
-        256 * 4
-    );
-    
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-        return TRUE;
-    }
-    
-    int widget_width = gtk_widget_get_allocated_width(widget);
-    int widget_height = gtk_widget_get_allocated_height(widget);
-    
-    double scale_x = (double)widget_width / 256.0;
-    double scale_y = (double)widget_height / 240.0;
-    
-    if (window_obj->maintain_aspect_ratio) {
-        double scale = (scale_x < scale_y) ? scale_x : scale_y;
-        scale_x = scale_y = scale;
-    }
-    
-    double offset_x = (widget_width - 256 * scale_x) / 2.0;
-    double offset_y = (widget_height - 240 * scale_y) / 2.0;
-    
-    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-    cairo_paint(cr);
-    
-    cairo_save(cr);
-    cairo_translate(cr, offset_x, offset_y);
-    cairo_scale(cr, scale_x, scale_y);
-    
-    cairo_pattern_t* pattern = cairo_pattern_create_for_surface(surface);
-    if (window_obj->integer_scaling) {
-        cairo_pattern_set_filter(pattern, CAIRO_FILTER_NEAREST);
-    } else {
-        cairo_pattern_set_filter(pattern, CAIRO_FILTER_BILINEAR);
-    }
-    
-    cairo_set_source(cr, pattern);
-    cairo_paint(cr);
-    cairo_pattern_destroy(pattern);
-    cairo_restore(cr);
-    
-    cairo_surface_destroy(surface);
-    return TRUE;
-}
-
-gboolean GTK3MainWindow::on_cairo_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
-    return FALSE;
-}
-
-// Game loop and timing
-gboolean GTK3MainWindow::frame_update_callback(gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (!window->game_running || !window->engine) {
-        window->frame_timer_id = 0;
-        return G_SOURCE_REMOVE;
-    }
-    
-    if (!window->game_paused) {
-        window->process_input();
-        window->engine->update();
-        window->render_frame();
-    }
-    
-    return G_SOURCE_CONTINUE;
-}
-
-void GTK3MainWindow::process_input() {
+void GTKMainWindow::update_controller_state() {
     if (!engine) return;
-    update_controller_state();
-}
 
-void GTK3MainWindow::update_controller_state() {
-    if (!engine) return;
-    
     Controller& controller1 = engine->getController1();
     Controller& controller2 = engine->getController2();
-    
-    controller1.setButtonState(PLAYER_1, BUTTON_UP, key_states[player1_keys.up]);
-    controller1.setButtonState(PLAYER_1, BUTTON_DOWN, key_states[player1_keys.down]);
-    controller1.setButtonState(PLAYER_1, BUTTON_LEFT, key_states[player1_keys.left]);
-    controller1.setButtonState(PLAYER_1, BUTTON_RIGHT, key_states[player1_keys.right]);
-    controller1.setButtonState(PLAYER_1, BUTTON_A, key_states[player1_keys.button_a]);
-    controller1.setButtonState(PLAYER_1, BUTTON_B, key_states[player1_keys.button_b]);
-    controller1.setButtonState(PLAYER_1, BUTTON_START, key_states[player1_keys.start]);
-    controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key_states[player1_keys.select]);
-    
-    controller2.setButtonState(PLAYER_2, BUTTON_UP, key_states[player2_keys.up]);
-    controller2.setButtonState(PLAYER_2, BUTTON_DOWN, key_states[player2_keys.down]);
-    controller2.setButtonState(PLAYER_2, BUTTON_LEFT, key_states[player2_keys.left]);
-    controller2.setButtonState(PLAYER_2, BUTTON_RIGHT, key_states[player2_keys.right]);
-    controller2.setButtonState(PLAYER_2, BUTTON_A, key_states[player2_keys.button_a]);
-    controller2.setButtonState(PLAYER_2, BUTTON_B, key_states[player2_keys.button_b]);
-    controller2.setButtonState(PLAYER_2, BUTTON_START, key_states[player2_keys.start]);
-    controller2.setButtonState(PLAYER_2, BUTTON_SELECT, key_states[player2_keys.select]);
+
+    auto key = [this](guint k) {
+        auto it = key_states.find(k);
+        if (it != key_states.end() && it->second) return true;
+        auto tap = key_taps.find(k);
+        return tap != key_taps.end() && tap->second;
+    };
+    // Gamepads are tracked separately from the keyboard so neither latches the other
+    auto pad = [&](Player p, ControllerButton b) {
+        return joystick_initialized && controller1.getJoystickButtonState(p, b);
+    };
+
+    controller1.setButtonState(PLAYER_1, BUTTON_UP,     key(player1_keys.up)       || pad(PLAYER_1, BUTTON_UP));
+    controller1.setButtonState(PLAYER_1, BUTTON_DOWN,   key(player1_keys.down)     || pad(PLAYER_1, BUTTON_DOWN));
+    controller1.setButtonState(PLAYER_1, BUTTON_LEFT,   key(player1_keys.left)     || pad(PLAYER_1, BUTTON_LEFT));
+    controller1.setButtonState(PLAYER_1, BUTTON_RIGHT,  key(player1_keys.right)    || pad(PLAYER_1, BUTTON_RIGHT));
+    controller1.setButtonState(PLAYER_1, BUTTON_A,      key(player1_keys.button_a) || pad(PLAYER_1, BUTTON_A));
+    controller1.setButtonState(PLAYER_1, BUTTON_B,      key(player1_keys.button_b) || pad(PLAYER_1, BUTTON_B));
+    controller1.setButtonState(PLAYER_1, BUTTON_START,  key(player1_keys.start)    || pad(PLAYER_1, BUTTON_START));
+    controller1.setButtonState(PLAYER_1, BUTTON_SELECT, key(player1_keys.select)   || pad(PLAYER_1, BUTTON_SELECT));
+
+    controller2.setButtonState(PLAYER_2, BUTTON_UP,     key(player2_keys.up)       || pad(PLAYER_2, BUTTON_UP));
+    controller2.setButtonState(PLAYER_2, BUTTON_DOWN,   key(player2_keys.down)     || pad(PLAYER_2, BUTTON_DOWN));
+    controller2.setButtonState(PLAYER_2, BUTTON_LEFT,   key(player2_keys.left)     || pad(PLAYER_2, BUTTON_LEFT));
+    controller2.setButtonState(PLAYER_2, BUTTON_RIGHT,  key(player2_keys.right)    || pad(PLAYER_2, BUTTON_RIGHT));
+    controller2.setButtonState(PLAYER_2, BUTTON_A,      key(player2_keys.button_a) || pad(PLAYER_2, BUTTON_A));
+    controller2.setButtonState(PLAYER_2, BUTTON_B,      key(player2_keys.button_b) || pad(PLAYER_2, BUTTON_B));
+    controller2.setButtonState(PLAYER_2, BUTTON_START,  key(player2_keys.start)    || pad(PLAYER_2, BUTTON_START));
+    controller2.setButtonState(PLAYER_2, BUTTON_SELECT, key(player2_keys.select)   || pad(PLAYER_2, BUTTON_SELECT));
 }
 
-void GTK3MainWindow::run(const char* rom_filename) {
-    if (rom_filename && !engine) {
-        engine = new WarpNES();
-        
-        if (!engine->loadROM(rom_filename)) {
-            set_status_message("Failed to load ROM file");
-            delete engine;
-            engine = nullptr;
-            gtk_main();
-            return;
-        }
-        
-        engine->reset();
-        game_running = true;
-        game_paused = false;
-        
-        if (preferred_backend == RenderBackend::SDL_HARDWARE && 
-            current_backend == RenderBackend::CAIRO_SOFTWARE) {
-            
-            printf("ROM loaded - user prefers SDL, attempting switch\n");
-            if (switchRenderBackend(RenderBackend::SDL_HARDWARE)) {
-                printf("Successfully switched to SDL backend after ROM load\n");
-            } else {
-                printf("SDL backend failed, staying with Cairo (default)\n");
-            }
-        }
-        
-        gameGenie = new GameGenie(engine);
-        
-        std::string codesFile = engine->getROMBaseName() + ".gg";
-        size_t codesLoaded = 0;
-        if (gameGenie->loadCodesFromFile(codesFile)) {
-            codesLoaded = gameGenie->getEnabledCodeCount();
-        }
-        
-        char status_msg[512];
-        if (codesLoaded > 0) {
-            snprintf(status_msg, sizeof(status_msg), 
-                     "ROM loaded: %s - Auto-loaded %zu Game Genie codes - Pixel Perfect Mode", 
-                     rom_filename, codesLoaded);
-        } else {
-            snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s - Pixel Perfect Mode", rom_filename);
-        }
-        set_status_message(status_msg);
-        
-        if (!frame_timer_id) {
-            printf("Starting game timer\n");
-            frame_timer_id = g_timeout_add(17, frame_update_callback, this);
-        }
+void GTKMainWindow::toggle_fullscreen() {
+    if (gtk_window_is_fullscreen(GTK_WINDOW(window))) {
+        gtk_window_unfullscreen(GTK_WINDOW(window));
+    } else {
+        gtk_window_fullscreen(GTK_WINDOW(window));
     }
-    
-    gtk_main();
 }
 
-void GTK3MainWindow::shutdown() {
-    game_running = false;
-    
-    if (frame_timer_id) {
-        g_source_remove(frame_timer_id);
-        frame_timer_id = 0;
+void GTKMainWindow::handle_save_state_key(guint keyval, bool shift) {
+    if (!engine || engine->getROMBaseName().empty()) {
+        set_status_message("No ROM loaded");
+        return;
     }
-    
-    if (engine) {
-        delete engine;
-        engine = nullptr;
+    int slot = (int)(keyval - GDK_KEY_F5) + 1;  // F5..F9 -> 1..5
+    std::string filename = engine->getROMBaseName() + ".slot" + std::to_string(slot) + ".sav";
+
+    char msg[64];
+    if (shift) {
+        bool ok = engine->loadState(filename);
+        snprintf(msg, sizeof(msg), ok ? "State %d loaded" : "Failed to load state %d", slot);
+    } else {
+        engine->saveState(filename);
+        snprintf(msg, sizeof(msg), "State %d saved", slot);
     }
-    
-    SDL_CloseAudio();
-    cleanup_sdl_backend();
-    cleanup_cairo_backend();
-    save_key_mappings();
-    save_video_settings();
+    set_status_message(msg);
 }
 
-gboolean GTK3MainWindow::on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->key_states[event->keyval] = true;
-    
-    // Check for Shift modifier
-    bool shift_pressed = (event->state & GDK_SHIFT_MASK) != 0;
-    
-    // Handle F11 for fullscreen toggle
-    if (event->keyval == GDK_KEY_F11) {
-        static bool is_fullscreen = false;
-        if (is_fullscreen) {
-            gtk_window_unfullscreen(GTK_WINDOW(window->window));
-            is_fullscreen = false;
-        } else {
-            gtk_window_fullscreen(GTK_WINDOW(window->window));
-            is_fullscreen = true;
-        }
-        return TRUE; // Event handled
-    }
-    
-    // Handle F5-F9 for save/load states
-    if (window->engine) {
-        std::string romBase = window->engine->getROMBaseName();
-        
-        if (!romBase.empty()) {
-            std::string filename;
-            int slot = 0;
-            bool handled = false;
-            
-            switch (event->keyval) {
-                case GDK_KEY_F5:
-                    slot = 1;
-                    filename = romBase + ".slot1.sav";
-                    handled = true;
-                    break;
-                case GDK_KEY_F6:
-                    slot = 2;
-                    filename = romBase + ".slot2.sav";
-                    handled = true;
-                    break;
-                case GDK_KEY_F7:
-                    slot = 3;
-                    filename = romBase + ".slot3.sav";
-                    handled = true;
-                    break;
-                case GDK_KEY_F8:
-                    slot = 4;
-                    filename = romBase + ".slot4.sav";
-                    handled = true;
-                    break;
-                case GDK_KEY_F9:
-                    slot = 5;
-                    filename = romBase + ".slot5.sav";
-                    handled = true;
-                    break;
-            }
-            
-            if (handled) {
-                if (shift_pressed) {
-                    // Shift+F[5-9] - Load State
-                    if (window->engine->loadState(filename)) {
-                        char msg[64];
-                        sprintf(msg, "State %d loaded", slot);
-                        window->set_status_message(msg);
-                    } else {
-                        char msg[64];
-                        sprintf(msg, "Failed to load state %d", slot);
-                        window->set_status_message(msg);
-                    }
-                } else {
-                    // F[5-9] - Save State
-                    window->engine->saveState(filename);
-                    char msg[64];
-                    sprintf(msg, "State %d saved", slot);
-                    window->set_status_message(msg);
-                }
-                return TRUE; // Event handled
-            }
-        } else {
-            // Handle F5-F9 when no ROM is loaded
-            if (event->keyval >= GDK_KEY_F5 && event->keyval <= GDK_KEY_F9) {
-                window->set_status_message("No ROM loaded");
-                return TRUE;
-            }
-        }
-    }
-    
-    return FALSE; // Event not handled, continue propagation
-}
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+void GTKMainWindow::action_open(GSimpleAction*, GVariant*, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
 
-gboolean GTK3MainWindow::on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->key_states[event->keyval] = false;
-    return FALSE;
-}
+    GtkFileDialog* dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, "Open ROM File");
 
-gboolean GTK3MainWindow::on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->shutdown();
-    return FALSE;
-}
-
-void GTK3MainWindow::on_window_destroy(GtkWidget* widget, gpointer user_data) {
-    gtk_main_quit();
-}
-
-// Menu callbacks
-void GTK3MainWindow::on_file_open(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    GtkWidget* dialog = gtk_file_chooser_dialog_new("Open ROM File",
-                                                   GTK_WINDOW(window->window),
-                                                   GTK_FILE_CHOOSER_ACTION_OPEN,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_Open", GTK_RESPONSE_ACCEPT,
-                                                   nullptr);
-    
     GtkFileFilter* filter = gtk_file_filter_new();
     gtk_file_filter_set_name(filter, "NES ROM Files");
     gtk_file_filter_add_pattern(filter, "*.nes");
     gtk_file_filter_add_pattern(filter, "*.NES");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
-    
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        
-        if (window->game_running) {
-            window->game_running = false;
-            if (window->frame_timer_id) {
-                g_source_remove(window->frame_timer_id);
-                window->frame_timer_id = 0;
+    GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    g_list_store_append(filters, filter);
+    gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+    g_object_unref(filter);
+    g_object_unref(filters);
+
+    gtk_file_dialog_open(dialog, GTK_WINDOW(self->window), nullptr,
+        [](GObject* source, GAsyncResult* result, gpointer data) {
+            GTKMainWindow* self = static_cast<GTKMainWindow*>(data);
+            GFile* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, nullptr);
+            if (file) {
+                char* path = g_file_get_path(file);
+                if (path) {
+                    self->load_rom(path);
+                    g_free(path);
+                }
+                g_object_unref(file);
             }
-        }
-        
-        if (window->engine) {
-            delete window->engine;
-            window->engine = nullptr;
-        }
-        
-        window->engine = new WarpNES();
-        
-        if (!window->engine->loadROM(filename)) {
-            window->set_status_message("Failed to load ROM file");
-            delete window->engine;
-            window->engine = nullptr;
-        } else {
-            window->engine->reset();
-            window->game_running = true;
-            window->game_paused = false;
-            char status_msg[512];
-            snprintf(status_msg, sizeof(status_msg), "ROM loaded: %s", filename);
-            window->set_status_message(status_msg);
-            
-            if (!window->frame_timer_id) {
-                printf("Starting game timer from file open\n");
-                window->frame_timer_id = g_timeout_add(17, frame_update_callback, window);
-            }
-        }
-        
-        g_free(filename);
-    }
-    
-    gtk_widget_destroy(dialog);
+        }, self);
+    g_object_unref(dialog);
 }
 
-void GTK3MainWindow::on_file_quit(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->shutdown();
-    gtk_main_quit();
+void GTKMainWindow::action_quit(GSimpleAction*, GVariant*, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    gtk_window_close(GTK_WINDOW(self->window));
 }
 
-void GTK3MainWindow::on_game_reset(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (window->engine) {
-        window->engine->reset();
-        window->set_status_message("Game reset");
+gboolean GTKMainWindow::on_close_request(GtkWindow*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->shutdown();
+    return FALSE;  // Let the window close; the app exits with its last window
+}
+
+void GTKMainWindow::action_reset(GSimpleAction*, GVariant*, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    if (self->engine) {
+        self->engine->reset();
+        self->set_status_message("Game reset");
     }
 }
 
-void GTK3MainWindow::on_game_pause(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    
-    if (window->game_running) {
-        window->game_paused = !window->game_paused;
-        window->set_status_message(window->game_paused ? "Game paused" : "Game resumed");
+void GTKMainWindow::action_pause(GSimpleAction*, GVariant*, gpointer user_data) {
+    GTKMainWindow* self = static_cast<GTKMainWindow*>(user_data);
+    if (self->game_running) {
+        self->game_paused = !self->game_paused;
+        self->set_status_message(self->game_paused ? "Game paused" : "Game resumed");
     }
 }
 
-void GTK3MainWindow::on_options_controls(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_controls_dialog();
+void GTKMainWindow::action_game_genie(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_game_genie_dialog();
 }
 
-void GTK3MainWindow::on_options_video(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_video_options_dialog();
+void GTKMainWindow::action_controls(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_controls_dialog();
 }
 
-void GTK3MainWindow::on_options_resolution(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_resolution_dialog();
+void GTKMainWindow::action_resolution(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_resolution_dialog();
 }
 
-void GTK3MainWindow::on_options_rendering(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_rendering_dialog();
+void GTKMainWindow::action_filters(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_filters_dialog();
 }
 
-void GTK3MainWindow::on_help_about(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_about_dialog();
+void GTKMainWindow::action_fullscreen(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->toggle_fullscreen();
 }
 
-// Dialog implementations
-void GTK3MainWindow::show_controls_dialog() {
-    GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                              GTK_DIALOG_MODAL,
-                                              GTK_MESSAGE_INFO,
-                                              GTK_BUTTONS_OK,
-                                              "Controls:\nPlayer 1: Arrow keys, X/Z, ]/[ (Start/Select)\nPlayer 2: WASD, J/K, I/U (Start/Select)\nF11: Fullscreen");
-    
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+void GTKMainWindow::action_about(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GTKMainWindow*>(user_data)->show_about_dialog();
 }
 
-void GTK3MainWindow::show_video_options_dialog() {
-    GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                              GTK_DIALOG_MODAL,
-                                              GTK_MESSAGE_INFO,
-                                              GTK_BUTTONS_OK,
-                                              "Video Options:\nF11 - Toggle fullscreen\nUse Options > Rendering to switch backends");
-    
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+void GTKMainWindow::show_controls_dialog() {
+    show_message("Controls",
+                 "Player 1: Arrow keys, X (A), Z (B), ] (Start), [ (Select)\n"
+                 "Player 2: WASD, K (A), J (B), I (Start), U (Select)\n"
+                 "Gamepads are detected when a ROM is loaded.\n\n"
+                 "F5-F9: Save state 1-5    Shift+F5-F9: Load state 1-5\n"
+                 "F11: Fullscreen (Esc to leave)\n"
+                 "Ctrl+O: Open ROM    Ctrl+R: Reset    Ctrl+P / Pause: Pause");
 }
 
-void GTK3MainWindow::show_rendering_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Rendering Backend",
-                                                   GTK_WINDOW(window),
-                                                   GTK_DIALOG_MODAL,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_OK", GTK_RESPONSE_OK,
-                                                   nullptr);
-    
-    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(content_area), vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 20);
-    
-    // Current backend
-    char current_text[128];
-    snprintf(current_text, sizeof(current_text), "Current: %s", backend_to_string(current_backend));
-    GtkWidget* current_label = gtk_label_new(current_text);
-    gtk_box_pack_start(GTK_BOX(vbox), current_label, FALSE, FALSE, 0);
-    
-    // Backend selection
-    GSList* group = nullptr;
-    
-    GtkWidget* auto_radio = gtk_radio_button_new_with_label(group, "Auto-detect");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(auto_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), auto_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* sdl_radio = gtk_radio_button_new_with_label(group, "SDL Hardware");
-    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(sdl_radio));
-    gtk_box_pack_start(GTK_BOX(vbox), sdl_radio, FALSE, FALSE, 0);
-    
-    GtkWidget* cairo_radio = gtk_radio_button_new_with_label(group, "Cairo Software");
-    gtk_box_pack_start(GTK_BOX(vbox), cairo_radio, FALSE, FALSE, 0);
-    
-    // Set current selection
-    switch (preferred_backend) {
-        case RenderBackend::AUTO:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(auto_radio), TRUE);
-            break;
-        case RenderBackend::SDL_HARDWARE:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sdl_radio), TRUE);
-            break;
-        case RenderBackend::CAIRO_SOFTWARE:
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(cairo_radio), TRUE);
-            break;
+void GTKMainWindow::show_about_dialog() {
+    const char* authors[] = {"Jason Hall", nullptr};
+    gtk_show_about_dialog(GTK_WINDOW(window),
+                          "program-name", "WarpNES",
+                          "version", "1.0",
+                          "comments", "A Beta NES emulator that emulates some commercial games.",
+                          "copyright", "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall",
+                          "authors", authors,
+                          nullptr);
+}
+
+void GTKMainWindow::show_filters_dialog() {
+    struct FiltersData {
+        GTKMainWindow* self;
+        std::vector<std::pair<GtkWidget*, FilterType>> options;
+    };
+
+    GtkWidget *content, *buttons;
+    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Video Filters", &content, &buttons);
+    FiltersData* data = new FiltersData{this, {}};
+    attach_data(dialog, data);
+
+    static const struct { FilterType type; const char* label; } choices[] = {
+        {FilterType::NONE, "None (fastest)"},
+        {FilterType::SCALE2X, "Scale2x (pixel-perfect)"},
+        {FilterType::HQ2X, "hq2x (smooth)"},
+        {FilterType::HQ3X, "hq3x (3x smooth)"},
+        {FilterType::SUPER_4XSAI, "Super 4xSaI (premium 4x smooth)"},
+        {FilterType::CRT_SCANLINES, "CRT Scanlines (retro CRT effect)"},
+        {FilterType::NTSC, "NTSC Composite (authentic TV look)"},
+    };
+
+    GtkWidget* group = nullptr;
+    for (const auto& c : choices) {
+        GtkWidget* radio = gtk_check_button_new_with_label(c.label);
+        if (group) gtk_check_button_set_group(GTK_CHECK_BUTTON(radio), GTK_CHECK_BUTTON(group));
+        else group = radio;
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(radio), c.type == current_filter);
+        gtk_box_append(GTK_BOX(content), radio);
+        data->options.push_back({radio, c.type});
     }
-    
-    gtk_widget_show_all(dialog);
-    
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        RenderBackend new_backend = RenderBackend::AUTO;
-        
-        if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(auto_radio))) {
-            new_backend = RenderBackend::AUTO;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(sdl_radio))) {
-            new_backend = RenderBackend::SDL_HARDWARE;
-        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(cairo_radio))) {
-            new_backend = RenderBackend::CAIRO_SOFTWARE;
+
+    add_button(buttons, "_Cancel", G_CALLBACK(close_dialog_cb), nullptr);
+    GtkWidget* ok = add_button(buttons, "_OK", G_CALLBACK(+[](GtkButton* b, gpointer d) {
+        FiltersData* data = static_cast<FiltersData*>(d);
+        for (const auto& opt : data->options) {
+            if (gtk_check_button_get_active(GTK_CHECK_BUTTON(opt.first))) {
+                data->self->setFilter(opt.second);
+                break;
+            }
         }
-        
-        if (new_backend != current_backend) {
-            bool was_running = game_running;
-            if (was_running) {
-                game_running = false;
-            }
-            
-            if (switchRenderBackend(new_backend)) {
-                char msg[256];
-                snprintf(msg, sizeof(msg), "Switched to %s", backend_to_string(current_backend));
-                set_status_message(msg);
-            }
-            
-            if (was_running) {
-                game_running = true;
-            }
-            
-            gtk_widget_queue_draw(drawing_area);
-        }
-        
-        preferred_backend = new_backend;
-        save_video_settings();
-    }
-    
-    gtk_widget_destroy(dialog);
+        close_dialog_cb(b, nullptr);
+    }), data);
+    gtk_window_set_default_widget(GTK_WINDOW(dialog), ok);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
-void GTK3MainWindow::show_about_dialog() {
-    GtkWidget* dialog = gtk_about_dialog_new();
-    
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "WarpNES GTK3");
-    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.0");
-    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), 
-                                 "A Beta NES emulator that emulates some commercial games.");
-    gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), 
-                                  "Original Nintendo games © Nintendo\nWarpNES Emulator © 2025 Jason Hall");
-    
-    const gchar* authors[] = {"Jason Hall", nullptr};
-    gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
-    
-    gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(window));
-    
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-}
+void GTKMainWindow::show_resolution_dialog() {
+    struct ResolutionData {
+        GTKMainWindow* self;
+        std::vector<GtkWidget*> presets;
+        GtkWidget* custom_radio;
+        GtkWidget* width_spin;
+        GtkWidget* height_spin;
+        GtkWidget* aspect_check;
+        GtkWidget* integer_check;
+    };
 
-void GTK3MainWindow::show_resolution_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Resolution Settings",
-                                                   GTK_WINDOW(window),
-                                                   GTK_DIALOG_MODAL,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_Apply", GTK_RESPONSE_APPLY,
-                                                   "_OK", GTK_RESPONSE_OK,
-                                                   nullptr);
-    
-    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(content_area), vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
-    
-    GtkWidget* preset_frame = gtk_frame_new("Preset Resolutions");
-    gtk_box_pack_start(GTK_BOX(vbox), preset_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* preset_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(preset_frame), preset_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(preset_vbox), 10);
-    
-    GSList* resolution_group = nullptr;
-    GtkWidget* preset_radios[NUM_PRESET_RESOLUTIONS];
-    
+    GtkWidget *content, *buttons;
+    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Resolution Settings", &content, &buttons);
+    ResolutionData* data = new ResolutionData{this, {}, nullptr, nullptr, nullptr, nullptr, nullptr};
+    attach_data(dialog, data);
+
+    GtkWidget* preset_box;
+    gtk_box_append(GTK_BOX(content), framed("Preset Resolutions", &preset_box));
+    GtkWidget* group = nullptr;
     for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
-        preset_radios[i] = gtk_radio_button_new_with_label(resolution_group, 
-                                                          PRESET_RESOLUTIONS[i].name);
-        resolution_group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(preset_radios[i]));
-        gtk_box_pack_start(GTK_BOX(preset_vbox), preset_radios[i], FALSE, FALSE, 0);
-        
-        if (i == current_resolution_index && !use_custom_resolution) {
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(preset_radios[i]), TRUE);
-        }
+        GtkWidget* radio = gtk_check_button_new_with_label(PRESET_RESOLUTIONS[i].name);
+        if (group) gtk_check_button_set_group(GTK_CHECK_BUTTON(radio), GTK_CHECK_BUTTON(group));
+        else group = radio;
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(radio), i == current_resolution_index && !use_custom_resolution);
+        gtk_box_append(GTK_BOX(preset_box), radio);
+        data->presets.push_back(radio);
     }
-    
-    GtkWidget* custom_frame = gtk_frame_new("Custom Resolution");
-    gtk_box_pack_start(GTK_BOX(vbox), custom_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* custom_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(custom_frame), custom_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(custom_vbox), 10);
-    
-    GtkWidget* custom_radio = gtk_radio_button_new_with_label(resolution_group, "Custom:");
-    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_radio, FALSE, FALSE, 0);
-    
-    if (use_custom_resolution) {
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(custom_radio), TRUE);
-    }
-    
-    GtkWidget* custom_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_box_pack_start(GTK_BOX(custom_vbox), custom_hbox, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Width:"), FALSE, FALSE, 0);
-    GtkWidget* width_spin = gtk_spin_button_new_with_range(256, 7680, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(width_spin), custom_width);
-    gtk_box_pack_start(GTK_BOX(custom_hbox), width_spin, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(custom_hbox), gtk_label_new("Height:"), FALSE, FALSE, 0);
-    GtkWidget* height_spin = gtk_spin_button_new_with_range(240, 4320, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(height_spin), custom_height);
-    gtk_box_pack_start(GTK_BOX(custom_hbox), height_spin, FALSE, FALSE, 0);
-    
-    GtkWidget* scaling_frame = gtk_frame_new("Scaling Options");
-    gtk_box_pack_start(GTK_BOX(vbox), scaling_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* scaling_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(scaling_frame), scaling_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(scaling_vbox), 10);
-    
-    GtkWidget* aspect_check = gtk_check_button_new_with_label("Maintain aspect ratio");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(aspect_check), maintain_aspect_ratio);
-    gtk_box_pack_start(GTK_BOX(scaling_vbox), aspect_check, FALSE, FALSE, 0);
-    
-    GtkWidget* integer_check = gtk_check_button_new_with_label("Integer scaling (pixel-perfect)");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(integer_check), integer_scaling);
-    gtk_box_pack_start(GTK_BOX(scaling_vbox), integer_check, FALSE, FALSE, 0);
-    
-    gtk_widget_show_all(dialog);
-    
-    gint result;
-    do {
-        result = gtk_dialog_run(GTK_DIALOG(dialog));
-        
-        if (result == GTK_RESPONSE_APPLY || result == GTK_RESPONSE_OK) {
-            maintain_aspect_ratio = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(aspect_check));
-            integer_scaling = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(integer_check));
-            
-            if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(custom_radio))) {
-                use_custom_resolution = true;
-                custom_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(width_spin));
-                custom_height = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(height_spin));
-                apply_resolution(custom_width, custom_height);
-            } else {
-                use_custom_resolution = false;
-                for (int i = 0; i < NUM_PRESET_RESOLUTIONS; i++) {
-                    if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(preset_radios[i]))) {
-                        current_resolution_index = i;
-                        apply_resolution(PRESET_RESOLUTIONS[i].width, PRESET_RESOLUTIONS[i].height);
-                        break;
-                    }
+
+    GtkWidget* custom_box;
+    gtk_box_append(GTK_BOX(content), framed("Custom Resolution", &custom_box));
+    data->custom_radio = gtk_check_button_new_with_label("Custom:");
+    gtk_check_button_set_group(GTK_CHECK_BUTTON(data->custom_radio), GTK_CHECK_BUTTON(group));
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(data->custom_radio), use_custom_resolution);
+    gtk_box_append(GTK_BOX(custom_box), data->custom_radio);
+
+    GtkWidget* size_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(custom_box), size_row);
+    gtk_box_append(GTK_BOX(size_row), gtk_label_new("Width:"));
+    data->width_spin = gtk_spin_button_new_with_range(256, 7680, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(data->width_spin), custom_width);
+    gtk_box_append(GTK_BOX(size_row), data->width_spin);
+    gtk_box_append(GTK_BOX(size_row), gtk_label_new("Height:"));
+    data->height_spin = gtk_spin_button_new_with_range(240, 4320, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(data->height_spin), custom_height);
+    gtk_box_append(GTK_BOX(size_row), data->height_spin);
+
+    GtkWidget* scaling_box;
+    gtk_box_append(GTK_BOX(content), framed("Scaling Options", &scaling_box));
+    data->aspect_check = gtk_check_button_new_with_label("Maintain aspect ratio");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(data->aspect_check), maintain_aspect_ratio);
+    gtk_box_append(GTK_BOX(scaling_box), data->aspect_check);
+    data->integer_check = gtk_check_button_new_with_label("Integer scaling (pixel-perfect)");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(data->integer_check), integer_scaling);
+    gtk_box_append(GTK_BOX(scaling_box), data->integer_check);
+
+    auto apply = +[](ResolutionData* d) {
+        GTKMainWindow* self = d->self;
+        self->maintain_aspect_ratio = gtk_check_button_get_active(GTK_CHECK_BUTTON(d->aspect_check));
+        self->integer_scaling = gtk_check_button_get_active(GTK_CHECK_BUTTON(d->integer_check));
+        if (gtk_check_button_get_active(GTK_CHECK_BUTTON(d->custom_radio))) {
+            self->use_custom_resolution = true;
+            self->custom_width = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(d->width_spin));
+            self->custom_height = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(d->height_spin));
+            self->apply_resolution(self->custom_width, self->custom_height);
+        } else {
+            self->use_custom_resolution = false;
+            for (int i = 0; i < (int)d->presets.size(); i++) {
+                if (gtk_check_button_get_active(GTK_CHECK_BUTTON(d->presets[i]))) {
+                    self->current_resolution_index = i;
+                    self->apply_resolution(PRESET_RESOLUTIONS[i].width, PRESET_RESOLUTIONS[i].height);
+                    break;
                 }
             }
-            
-            save_video_settings();
         }
-    } while (result == GTK_RESPONSE_APPLY);
-    
-    gtk_widget_destroy(dialog);
+        self->save_video_settings();
+        gtk_widget_queue_draw(self->view);
+    };
+    static void (*apply_fn)(ResolutionData*) = apply;
+
+    add_button(buttons, "_Cancel", G_CALLBACK(close_dialog_cb), nullptr);
+    add_button(buttons, "_Apply", G_CALLBACK(+[](GtkButton*, gpointer d) {
+        apply_fn(static_cast<ResolutionData*>(d));
+    }), data);
+    GtkWidget* ok = add_button(buttons, "_OK", G_CALLBACK(+[](GtkButton* b, gpointer d) {
+        apply_fn(static_cast<ResolutionData*>(d));
+        close_dialog_cb(b, nullptr);
+    }), data);
+    gtk_window_set_default_widget(GTK_WINDOW(dialog), ok);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
-// Configuration file handling
-void GTK3MainWindow::load_key_mappings() {
-    FILE* file = fopen("gtk3_controls.cfg", "r");
-    if (!file) {
-        file = fopen("controls.cfg", "r");
-        if (!file) return;
+// ---------------------------------------------------------------------------
+// Game Genie
+// ---------------------------------------------------------------------------
+void GTKMainWindow::show_game_genie_dialog() {
+    if (!engine || !engine->isROMLoaded()) {
+        show_message("No ROM loaded", "Please load a ROM first.");
+        return;
     }
-    
+    if (!gameGenie) {
+        gameGenie = new GameGenie(engine);
+        gameGenie->loadCodesFromFile(engine->getROMBaseName() + ".gg");
+    }
+
+    GtkWidget *content, *buttons;
+    GtkWidget* dialog = make_dialog(GTK_WINDOW(window), "Game Genie Codes", &content, &buttons);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 650, 450);
+
+    GameGenieDialogData* data = new GameGenieDialogData{};
+    data->window = this;
+    data->dialog = dialog;
+    data->game_genie = gameGenie;
+    attach_data(dialog, data);
+
+    std::string title = "Game Genie Codes for: " + engine->getROMBaseName();
+    gtk_box_append(GTK_BOX(content), gtk_label_new(title.c_str()));
+    data->info_label = gtk_label_new("");
+    gtk_box_append(GTK_BOX(content), data->info_label);
+
+    GtkWidget* entry_box;
+    gtk_box_append(GTK_BOX(content), framed("Add New Code", &entry_box));
+
+    GtkWidget* code_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append(GTK_BOX(entry_box), code_row);
+    gtk_box_append(GTK_BOX(code_row), gtk_label_new("Code:"));
+    data->code_entry = gtk_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(data->code_entry), 8);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(data->code_entry), "SXIOPO (6 or 8 letters)");
+    gtk_widget_set_hexpand(data->code_entry, TRUE);
+    gtk_box_append(GTK_BOX(code_row), data->code_entry);
+
+    GtkWidget* desc_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append(GTK_BOX(entry_box), desc_row);
+    gtk_box_append(GTK_BOX(desc_row), gtk_label_new("Description:"));
+    data->desc_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(data->desc_entry), "What does this code do?");
+    gtk_widget_set_hexpand(data->desc_entry, TRUE);
+    gtk_box_append(GTK_BOX(desc_row), data->desc_entry);
+
+    GtkWidget* add = gtk_button_new_with_label("Add Code");
+    g_signal_connect(add, "clicked", G_CALLBACK(on_add_game_genie_code), data);
+    gtk_box_append(GTK_BOX(entry_box), add);
+    // Enter in either entry adds the code
+    g_signal_connect_swapped(data->code_entry, "activate", G_CALLBACK(gtk_widget_activate), add);
+    g_signal_connect_swapped(data->desc_entry, "activate", G_CALLBACK(gtk_widget_activate), add);
+
+    GtkWidget* list_frame_box;
+    GtkWidget* list_frame = framed("Codes", &list_frame_box);
+    gtk_widget_set_vexpand(list_frame, TRUE);
+    gtk_box_append(GTK_BOX(content), list_frame);
+    GtkWidget* scrolled = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scrolled, TRUE);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_box_append(GTK_BOX(list_frame_box), scrolled);
+    data->list_box = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(data->list_box), GTK_SELECTION_SINGLE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), data->list_box);
+
+    refresh_codes_list(data);
+
+    GtkWidget* actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(content), actions);
+    add_button(actions, "Load from File", G_CALLBACK(on_load_game_genie_file), data);
+    add_button(actions, "Save to File", G_CALLBACK(on_save_game_genie_file), data);
+    add_button(actions, "Remove Selected", G_CALLBACK(on_remove_game_genie_code), data);
+    add_button(actions, "Clear All", G_CALLBACK(on_clear_game_genie_codes), data);
+
+    add_button(buttons, "_Close", G_CALLBACK(close_dialog_cb), nullptr);
+    gtk_window_present(GTK_WINDOW(dialog));
+}
+
+void GTKMainWindow::refresh_codes_list(GameGenieDialogData* data) {
+    GtkWidget* child;
+    while ((child = gtk_widget_get_first_child(data->list_box)) != nullptr) {
+        gtk_list_box_remove(GTK_LIST_BOX(data->list_box), child);
+    }
+
+    GameGenie* gg = data->game_genie;
+    for (size_t i = 0; i < gg->getCodeCount(); i++) {
+        GameGenie::CodeInfo info = gg->getCodeInfo(i);
+
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+        gtk_widget_set_margin_top(row, 2);
+        gtk_widget_set_margin_bottom(row, 2);
+
+        GtkWidget* check = gtk_check_button_new();
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(check), info.enabled);
+        g_object_set_data(G_OBJECT(check), "code-index", GINT_TO_POINTER((int)i));
+        g_signal_connect(check, "toggled", G_CALLBACK(on_toggle_game_genie_code), data);
+        gtk_box_append(GTK_BOX(row), check);
+
+        GtkWidget* code = gtk_label_new(info.code.c_str());
+        gtk_label_set_width_chars(GTK_LABEL(code), 10);
+        gtk_label_set_xalign(GTK_LABEL(code), 0.0f);
+        gtk_box_append(GTK_BOX(row), code);
+
+        GtkWidget* desc = gtk_label_new(info.description.c_str());
+        gtk_label_set_xalign(GTK_LABEL(desc), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(desc), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_hexpand(desc, TRUE);
+        gtk_box_append(GTK_BOX(row), desc);
+
+        char addr_str[16];
+        snprintf(addr_str, sizeof(addr_str), "$%04X", info.address);
+        gtk_box_append(GTK_BOX(row), gtk_label_new(addr_str));
+
+        gtk_list_box_append(GTK_LIST_BOX(data->list_box), row);
+        g_object_set_data(G_OBJECT(gtk_widget_get_parent(row)), "code-index", GINT_TO_POINTER((int)i));
+    }
+
+    char info_text[128];
+    snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)",
+             gg->getCodeCount(), gg->getEnabledCodeCount());
+    gtk_label_set_text(GTK_LABEL(data->info_label), info_text);
+}
+
+void GTKMainWindow::on_add_game_genie_code(GtkButton*, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    std::string code = gtk_editable_get_text(GTK_EDITABLE(data->code_entry));
+    std::string desc = gtk_editable_get_text(GTK_EDITABLE(data->desc_entry));
+
+    GtkWindow* parent = GTK_WINDOW(data->dialog);
+    if (code.empty()) {
+        GtkAlertDialog* alert = gtk_alert_dialog_new("Please enter a Game Genie code.");
+        gtk_alert_dialog_show(alert, parent);
+        g_object_unref(alert);
+        return;
+    }
+
+    if (data->game_genie->addCode(code, desc.empty() ? "User entered code" : desc)) {
+        gtk_editable_set_text(GTK_EDITABLE(data->code_entry), "");
+        gtk_editable_set_text(GTK_EDITABLE(data->desc_entry), "");
+        refresh_codes_list(data);
+        data->window->set_status_message(("Added Game Genie code: " + code).c_str());
+    } else {
+        GtkAlertDialog* alert = gtk_alert_dialog_new("Invalid Game Genie code format.");
+        gtk_alert_dialog_set_detail(alert, "Codes must be 6 or 8 letters using only: "
+                                           "A P Z L G I T Y E O X U K S V N");
+        gtk_alert_dialog_show(alert, parent);
+        g_object_unref(alert);
+    }
+}
+
+void GTKMainWindow::on_toggle_game_genie_code(GtkCheckButton* check, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(check), "code-index"));
+    bool want = gtk_check_button_get_active(check);
+    if (data->game_genie->isCodeEnabled(index) != want) {
+        data->game_genie->toggleCode(index);
+    }
+
+    char info_text[128];
+    snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)",
+             data->game_genie->getCodeCount(), data->game_genie->getEnabledCodeCount());
+    gtk_label_set_text(GTK_LABEL(data->info_label), info_text);
+
+    GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
+    std::string msg = "Code " + info.code + (want ? " enabled" : " disabled");
+    data->window->set_status_message(msg.c_str());
+}
+
+// Ask a yes/no question on top of `parent`, then run `on_yes`.
+static void confirm(GtkWindow* parent, const std::string& heading, const char* confirm_label,
+                    std::function<void()> on_yes) {
+    GtkAlertDialog* alert = gtk_alert_dialog_new("%s", heading.c_str());
+    const char* labels[] = {"_Cancel", confirm_label, nullptr};
+    gtk_alert_dialog_set_buttons(alert, labels);
+    gtk_alert_dialog_set_cancel_button(alert, 0);
+    gtk_alert_dialog_set_default_button(alert, 1);
+    auto* fn = new std::function<void()>(std::move(on_yes));
+    gtk_alert_dialog_choose(alert, parent, nullptr,
+        [](GObject* source, GAsyncResult* result, gpointer d) {
+            auto* fn = static_cast<std::function<void()>*>(d);
+            int choice = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, nullptr);
+            if (choice == 1) (*fn)();
+            delete fn;
+        }, fn);
+    g_object_unref(alert);
+}
+
+void GTKMainWindow::on_remove_game_genie_code(GtkButton*, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    GtkListBoxRow* row = gtk_list_box_get_selected_row(GTK_LIST_BOX(data->list_box));
+    if (!row) {
+        GtkAlertDialog* alert = gtk_alert_dialog_new("Please select a code to remove.");
+        gtk_alert_dialog_show(alert, GTK_WINDOW(data->dialog));
+        g_object_unref(alert);
+        return;
+    }
+
+    int index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "code-index"));
+    GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
+    confirm(GTK_WINDOW(data->dialog), "Remove Game Genie code " + info.code + " - " + info.description + "?",
+            "_Remove", [data, index]() {
+        data->game_genie->removeCodeByIndex(index);
+        refresh_codes_list(data);
+        data->window->set_status_message("Game Genie code removed");
+    });
+}
+
+void GTKMainWindow::on_clear_game_genie_codes(GtkButton*, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    if (data->game_genie->getCodeCount() == 0) {
+        GtkAlertDialog* alert = gtk_alert_dialog_new("No codes to clear.");
+        gtk_alert_dialog_show(alert, GTK_WINDOW(data->dialog));
+        g_object_unref(alert);
+        return;
+    }
+
+    confirm(GTK_WINDOW(data->dialog),
+            "Clear all " + std::to_string(data->game_genie->getCodeCount()) +
+            " Game Genie codes? This cannot be undone.",
+            "C_lear All", [data]() {
+        data->game_genie->clearAllCodes();
+        refresh_codes_list(data);
+        data->window->set_status_message("All Game Genie codes cleared");
+    });
+}
+
+void GTKMainWindow::on_load_game_genie_file(GtkButton*, gpointer user_data) {
+    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
+    data->window->load_game_genie_codes_file([data]() { refresh_codes_list(data); });
+}
+
+void GTKMainWindow::on_save_game_genie_file(GtkButton*, gpointer user_data) {
+    static_cast<GameGenieDialogData*>(user_data)->window->save_game_genie_codes_file();
+}
+
+static GtkFileDialog* make_gg_file_dialog(const char* title) {
+    GtkFileDialog* dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, title);
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "Game Genie Files (*.gg)");
+    gtk_file_filter_add_pattern(filter, "*.gg");
+    GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    g_list_store_append(filters, filter);
+    gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+    g_object_unref(filter);
+    g_object_unref(filters);
+    return dialog;
+}
+
+void GTKMainWindow::load_game_genie_codes_file(std::function<void()> on_done) {
+    if (!gameGenie) return;
+
+    struct LoadRequest { GTKMainWindow* self; std::function<void()> on_done; };
+    GtkFileDialog* dialog = make_gg_file_dialog("Load Game Genie Codes");
+    gtk_file_dialog_open(dialog, GTK_WINDOW(window), nullptr,
+        [](GObject* source, GAsyncResult* result, gpointer d) {
+            LoadRequest* req = static_cast<LoadRequest*>(d);
+            GFile* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, nullptr);
+            if (file && req->self->gameGenie) {
+                char* path = g_file_get_path(file);
+                if (path && req->self->gameGenie->loadCodesFromFile(path)) {
+                    req->self->set_status_message((std::string("Loaded Game Genie codes from ") + path).c_str());
+                    if (req->on_done) req->on_done();
+                } else {
+                    req->self->show_message("Failed to load Game Genie codes file.");
+                }
+                g_free(path);
+            }
+            if (file) g_object_unref(file);
+            delete req;
+        }, new LoadRequest{this, std::move(on_done)});
+    g_object_unref(dialog);
+}
+
+void GTKMainWindow::save_game_genie_codes_file() {
+    if (!gameGenie) return;
+
+    GtkFileDialog* dialog = make_gg_file_dialog("Save Game Genie Codes");
+    if (engine && engine->isROMLoaded()) {
+        std::string defaultName = engine->getROMBaseName() + ".gg";
+        gtk_file_dialog_set_initial_name(dialog, defaultName.c_str());
+    }
+    gtk_file_dialog_save(dialog, GTK_WINDOW(window), nullptr,
+        [](GObject* source, GAsyncResult* result, gpointer d) {
+            GTKMainWindow* self = static_cast<GTKMainWindow*>(d);
+            GFile* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, nullptr);
+            if (!file) return;
+            char* path = g_file_get_path(file);
+            if (path && self->gameGenie && self->gameGenie->saveCodesToFile(path)) {
+                self->set_status_message((std::string("Saved Game Genie codes to ") + path).c_str());
+            } else {
+                self->show_message("Failed to save Game Genie codes file.");
+            }
+            g_free(path);
+            g_object_unref(file);
+        }, this);
+    g_object_unref(dialog);
+}
+
+// ---------------------------------------------------------------------------
+// Configuration files
+// ---------------------------------------------------------------------------
+void GTKMainWindow::load_key_mappings() {
+    // gtk3_controls.cfg is read for compatibility with the old GTK3 frontend
+    FILE* file = fopen("gtk_controls.cfg", "r");
+    if (!file) file = fopen("gtk3_controls.cfg", "r");
+    if (!file) file = fopen("controls.cfg", "r");
+    if (!file) return;
+
     char line[256];
     while (fgets(line, sizeof(line), file)) {
         if (line[0] == '#' || line[0] == '\n') continue;
-        
+
         char key_name[64];
         guint keyval;
         if (sscanf(line, "%63[^=]=%u", key_name, &keyval) == 2) {
+            keyval = gdk_keyval_to_lower(keyval);
             if (strcmp(key_name, "P1_UP") == 0) player1_keys.up = keyval;
             else if (strcmp(key_name, "P1_DOWN") == 0) player1_keys.down = keyval;
             else if (strcmp(key_name, "P1_LEFT") == 0) player1_keys.left = keyval;
@@ -1668,14 +1324,13 @@ void GTK3MainWindow::load_key_mappings() {
             else if (strcmp(key_name, "P2_SELECT") == 0) player2_keys.select = keyval;
         }
     }
-    
     fclose(file);
 }
 
-void GTK3MainWindow::save_key_mappings() {
-    FILE* file = fopen("gtk3_controls.cfg", "w");
+void GTKMainWindow::save_key_mappings() {
+    FILE* file = fopen("gtk_controls.cfg", "w");
     if (!file) return;
-    
+
     fprintf(file, "P1_UP=%u\n", player1_keys.up);
     fprintf(file, "P1_DOWN=%u\n", player1_keys.down);
     fprintf(file, "P1_LEFT=%u\n", player1_keys.left);
@@ -1692,24 +1347,21 @@ void GTK3MainWindow::save_key_mappings() {
     fprintf(file, "P2_B=%u\n", player2_keys.button_b);
     fprintf(file, "P2_START=%u\n", player2_keys.start);
     fprintf(file, "P2_SELECT=%u\n", player2_keys.select);
-    
     fclose(file);
 }
 
-void GTK3MainWindow::load_video_settings() {
+void GTKMainWindow::load_video_settings() {
     FILE* file = fopen("video_settings.cfg", "r");
     if (!file) {
-        // CHANGED: Set pixel perfect defaults when no config file exists
         integer_scaling = true;
         maintain_aspect_ratio = true;
-        preferred_backend = RenderBackend::CAIRO_SOFTWARE;
         return;
     }
-    
+
     char line[256];
     while (fgets(line, sizeof(line), file)) {
         if (line[0] == '#' || line[0] == '\n') continue;
-        
+
         char key[64];
         char value[64];
         if (sscanf(line, "%63[^=]=%63s", key, value) == 2) {
@@ -1728,74 +1380,78 @@ void GTK3MainWindow::load_video_settings() {
                 maintain_aspect_ratio = (strcmp(value, "true") == 0);
             } else if (strcmp(key, "integer_scaling") == 0) {
                 integer_scaling = (strcmp(value, "true") == 0);
-            } else if (strcmp(key, "preferred_backend") == 0) {
-                preferred_backend = string_to_backend(value);
-                // CHANGED: If AUTO is loaded, convert it to Cairo
-                if (preferred_backend == RenderBackend::AUTO) {
-                    preferred_backend = RenderBackend::CAIRO_SOFTWARE;
-                }
-            } else if (strcmp(key, "backend_switching_enabled") == 0) {
-                backend_switching_enabled = (strcmp(value, "true") == 0);
             }
+            // preferred_backend / backend_switching_enabled from the GTK3
+            // frontend are ignored: there is only one renderer now.
         }
     }
-    
     fclose(file);
 }
 
-void GTK3MainWindow::save_video_settings() {
+void GTKMainWindow::save_video_settings() {
     FILE* file = fopen("video_settings.cfg", "w");
     if (!file) return;
-    
-    fprintf(file, "# WarpNES GTK3 Video Settings\n");
+
+    fprintf(file, "# WarpNES GTK Video Settings\n");
     fprintf(file, "current_resolution_index=%d\n", current_resolution_index);
     fprintf(file, "custom_width=%d\n", custom_width);
     fprintf(file, "custom_height=%d\n", custom_height);
     fprintf(file, "use_custom_resolution=%s\n", use_custom_resolution ? "true" : "false");
     fprintf(file, "maintain_aspect_ratio=%s\n", maintain_aspect_ratio ? "true" : "false");
-    // CHANGED: Default to true for pixel perfect mode
     fprintf(file, "integer_scaling=%s\n", integer_scaling ? "true" : "false");
-    
-    const char* backend_str = "CAIRO_SOFTWARE";  // CHANGED: Default to Cairo
-    switch (preferred_backend) {
-        case RenderBackend::SDL_HARDWARE: backend_str = "SDL_HARDWARE"; break;
-        case RenderBackend::CAIRO_SOFTWARE: backend_str = "CAIRO_SOFTWARE"; break;
-        case RenderBackend::AUTO: backend_str = "CAIRO_SOFTWARE"; break;  // CHANGED: Auto now defaults to Cairo
-    }
-    fprintf(file, "preferred_backend=%s\n", backend_str);
-    fprintf(file, "backend_switching_enabled=%s\n", backend_switching_enabled ? "true" : "false");
-    
     fclose(file);
 }
-void GTK3MainWindow::set_status_message(const char* message) {
-    if (status_message_id) {
-        gtk_statusbar_remove(GTK_STATUSBAR(status_bar), 0, status_message_id);
+
+// ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
+void GTKMainWindow::setFilter(FilterType filter) {
+    current_filter = filter;
+
+    delete[] filter_buffer;
+    filter_buffer = nullptr;
+
+    switch (filter) {
+        case FilterType::NONE:
+        case FilterType::BILINEAR:
+            filter_scale = 1;
+            break;
+        case FilterType::HQ2X:
+        case FilterType::SCALE2X:
+        case FilterType::CRT_SCANLINES:
+            filter_scale = 2;
+            filter_buffer = new uint32_t[256 * 240 * 4];
+            break;
+        case FilterType::HQ3X:
+        case FilterType::SCALE3X:
+            filter_scale = 3;
+            filter_buffer = new uint32_t[256 * 240 * 9];
+            break;
+        case FilterType::SUPER_4XSAI:
+            filter_scale = 4;
+            filter_buffer = new uint32_t[256 * 240 * 16];
+            break;
+        case FilterType::NTSC:
+            filter_scale = 1;
+            filter_buffer = new uint32_t[256 * 240];
+            init_ntsc_filter();
+            break;
     }
-    
-    strncpy(status_message, message, sizeof(status_message) - 1);
-    status_message[sizeof(status_message) - 1] = '\0';
-    
-    status_message_id = gtk_statusbar_push(GTK_STATUSBAR(status_bar), 0, status_message);
+
+    char status_msg[128];
+    snprintf(status_msg, sizeof(status_msg), "Filter changed to %s",
+             filter == FilterType::NONE ? "None" :
+             filter == FilterType::HQ2X ? "hq2x" :
+             filter == FilterType::HQ3X ? "hq3x" :
+             filter == FilterType::SCALE2X ? "Scale2x" :
+             filter == FilterType::SCALE3X ? "Scale3x" :
+             filter == FilterType::CRT_SCANLINES ? "CRT Scanlines" :
+             filter == FilterType::NTSC ? "NTSC Composite" :
+             filter == FilterType::SUPER_4XSAI ? "Super 4xSaI" : "Bilinear");
+    set_status_message(status_msg);
 }
 
-// Utility functions
-const char* GTK3MainWindow::backend_to_string(RenderBackend backend) {
-    switch (backend) {
-        case RenderBackend::SDL_HARDWARE: return "SDL Hardware";
-        case RenderBackend::CAIRO_SOFTWARE: return "Cairo Software";
-        case RenderBackend::AUTO: return "Auto";
-        default: return "Unknown";
-    }
-}
-
-RenderBackend GTK3MainWindow::string_to_backend(const char* str) {
-    if (strcmp(str, "SDL_HARDWARE") == 0) return RenderBackend::SDL_HARDWARE;
-    if (strcmp(str, "CAIRO_SOFTWARE") == 0) return RenderBackend::CAIRO_SOFTWARE;
-    return RenderBackend::AUTO;
-}
-
-
-uint32_t GTK3MainWindow::rgb565_to_rgb888(uint16_t color) {
+uint32_t GTKMainWindow::rgb565_to_rgb888(uint16_t color) {
     uint8_t r = (color >> 11) & 0x1F;
     uint8_t g = (color >> 5) & 0x3F;
     uint8_t b = color & 0x1F;
@@ -1807,7 +1463,7 @@ uint32_t GTK3MainWindow::rgb565_to_rgb888(uint16_t color) {
     return (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-void GTK3MainWindow::apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_scale2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
     // Simple Scale2x algorithm
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -1842,7 +1498,7 @@ void GTK3MainWindow::apply_scale2x_filter(uint16_t* input, uint32_t* output, int
     }
 }
 
-void GTK3MainWindow::apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_hq2x_filter(uint16_t* input, uint32_t* output, int width, int height) {
     // Simplified hq2x-style filter
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -1900,7 +1556,7 @@ void GTK3MainWindow::apply_hq2x_filter(uint16_t* input, uint32_t* output, int wi
     }
 }
 
-void GTK3MainWindow::apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_hq3x_filter(uint16_t* input, uint32_t* output, int width, int height) {
     // Simplified hq3x implementation
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -1921,88 +1577,9 @@ void GTK3MainWindow::apply_hq3x_filter(uint16_t* input, uint32_t* output, int wi
     }
 }
 
-void GTK3MainWindow::update_filter_texture() {
-    if (!sdl_renderer || !filter_buffer) return;
-    
-    int output_width = 256 * filter_scale;
-    int output_height = 240 * filter_scale;
-    
-    if (!filtered_texture) {
-        filtered_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
-                                           SDL_TEXTUREACCESS_STREAMING,
-                                           output_width, output_height);
-        if (!filtered_texture) return;
-    }
-    
-    void* pixels;
-    int pitch;
-    if (SDL_LockTexture(filtered_texture, NULL, &pixels, &pitch) == 0) {
-        memcpy(pixels, filter_buffer, output_width * output_height * sizeof(uint32_t));
-        SDL_UnlockTexture(filtered_texture);
-    }
-}
-
-void GTK3MainWindow::setFilter(FilterType filter) {
-    current_filter = filter;
-    
-    // Clean up old filter resources
-    if (filtered_texture) {
-        SDL_DestroyTexture(filtered_texture);
-        filtered_texture = nullptr;
-    }
-    
-    delete[] filter_buffer;
-    filter_buffer = nullptr;
-    
-    // Set up new filter
-    switch (filter) {
-        case FilterType::NONE:
-            filter_scale = 1;
-            break;
-        case FilterType::HQ2X:
-        case FilterType::SCALE2X:
-        case FilterType::CRT_SCANLINES:
-            filter_scale = 2;
-            filter_buffer = new uint32_t[256 * 240 * 4]; // 2x scale
-            break;
-        case FilterType::HQ3X:
-        case FilterType::SCALE3X:
-            filter_scale = 3;
-            filter_buffer = new uint32_t[256 * 240 * 9]; // 3x scale
-            break;
-        case FilterType::SUPER_4XSAI:  // ADD THIS CASE
-            filter_scale = 4;
-            filter_buffer = new uint32_t[256 * 240 * 16]; // 4x scale
-            break;
-        case FilterType::NTSC:
-            filter_scale = 1;
-            filter_buffer = new uint32_t[256 * 240]; // Same size, different processing
-            break;
-        case FilterType::BILINEAR:
-            filter_scale = 1;
-            break;
-    }
-    
-    // Initialize NTSC filter if needed
-    if (filter == FilterType::NTSC) {
-        init_ntsc_filter();
-    }
-    
-    char status_msg[128];
-    snprintf(status_msg, sizeof(status_msg), "Filter changed to %s", 
-             filter == FilterType::NONE ? "None" :
-             filter == FilterType::HQ2X ? "hq2x" :
-             filter == FilterType::HQ3X ? "hq3x" :
-             filter == FilterType::SCALE2X ? "Scale2x" :
-             filter == FilterType::SCALE3X ? "Scale3x" :
-             filter == FilterType::CRT_SCANLINES ? "CRT Scanlines" :
-             filter == FilterType::NTSC ? "NTSC Composite" :
-             filter == FilterType::SUPER_4XSAI ? "Super 4xSaI" : "Bilinear");
-    set_status_message(status_msg);
-}
 
 
-void GTK3MainWindow::apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_crt_scanlines_filter(uint16_t* input, uint32_t* output, int width, int height) {
     const float scanline_intensity = 0.25f; // How dark the scanlines are (0.0 = invisible, 1.0 = black)
     const float phosphor_decay = 0.95f;     // Simulates phosphor persistence
     const float beam_width = 1.2f;          // Width of the electron beam
@@ -2045,7 +1622,7 @@ void GTK3MainWindow::apply_crt_scanlines_filter(uint16_t* input, uint32_t* outpu
 }
 
 // NTSC Composite filter implementation
-void GTK3MainWindow::apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_ntsc_filter(uint16_t* input, uint32_t* output, int width, int height) {
     // NTSC composite video simulation
     const float color_bleeding = 0.15f;     // How much colors bleed into adjacent pixels
     const float dot_crawl = 0.08f;          // Simulates dot crawl artifact
@@ -2122,7 +1699,7 @@ void GTK3MainWindow::apply_ntsc_filter(uint16_t* input, uint32_t* output, int wi
 }
 
 // Helper functions for NTSC filter
-void GTK3MainWindow::init_ntsc_filter() {
+void GTKMainWindow::init_ntsc_filter() {
     // Initialize NTSC settings with default values for authentic CRT TV look
     ntsc_settings.hue = 0.0f;
     ntsc_settings.saturation = 0.0f;
@@ -2136,7 +1713,7 @@ void GTK3MainWindow::init_ntsc_filter() {
     ntsc_settings.bleed = 0.0f;
 }
 
-uint32_t GTK3MainWindow::apply_ntsc_artifacts(uint32_t color, int x, int y) {
+uint32_t GTKMainWindow::apply_ntsc_artifacts(uint32_t color, int x, int y) {
     // Apply NTSC-specific color artifacts
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8) & 0xFF;
@@ -2154,7 +1731,7 @@ uint32_t GTK3MainWindow::apply_ntsc_artifacts(uint32_t color, int x, int y) {
     return (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-uint32_t GTK3MainWindow::blend_colors(uint32_t color1, uint32_t color2, float ratio) {
+uint32_t GTKMainWindow::blend_colors(uint32_t color1, uint32_t color2, float ratio) {
     // Blend two RGBA colors
     uint8_t r1 = (color1 >> 16) & 0xFF;
     uint8_t g1 = (color1 >> 8) & 0xFF;
@@ -2171,7 +1748,7 @@ uint32_t GTK3MainWindow::blend_colors(uint32_t color1, uint32_t color2, float ra
     return (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-void GTK3MainWindow::apply_gamma_correction(uint32_t* color, float gamma) {
+void GTKMainWindow::apply_gamma_correction(uint32_t* color, float gamma) {
     // Apply gamma correction to simulate CRT monitor characteristics
     uint8_t r = (*color >> 16) & 0xFF;
     uint8_t g = (*color >> 8) & 0xFF;
@@ -2195,7 +1772,7 @@ void GTK3MainWindow::apply_gamma_correction(uint32_t* color, float gamma) {
     *color = (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-void GTK3MainWindow::apply_4xsai_filter(uint16_t* input, uint32_t* output, int width, int height) {
+void GTKMainWindow::apply_4xsai_filter(uint16_t* input, uint32_t* output, int width, int height) {
     // 4xSaI (4x Scale and Interpolate) filter
     // Creates 4x4 output for each input pixel using sophisticated interpolation
     
@@ -2329,7 +1906,7 @@ void GTK3MainWindow::apply_4xsai_filter(uint16_t* input, uint32_t* output, int w
     }
 }
 
-uint32_t GTK3MainWindow::interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4) {
+uint32_t GTKMainWindow::interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4) {
     // Advanced 4-point interpolation for smoother results
     uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
     uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
@@ -2344,7 +1921,7 @@ uint32_t GTK3MainWindow::interpolate_4xsai(uint32_t c1, uint32_t c2, uint32_t c3
     return (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-uint32_t GTK3MainWindow::mix_colors(uint32_t c1, uint32_t c2, float ratio) {
+uint32_t GTKMainWindow::mix_colors(uint32_t c1, uint32_t c2, float ratio) {
     // Linear interpolation between two colors
     uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
     uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
@@ -2356,7 +1933,7 @@ uint32_t GTK3MainWindow::mix_colors(uint32_t c1, uint32_t c2, float ratio) {
     return (0xFF << 24) | (r << 16) | (g << 8) | b;
 }
 
-bool GTK3MainWindow::colors_equal(uint32_t c1, uint32_t c2) {
+bool GTKMainWindow::colors_equal(uint32_t c1, uint32_t c2) {
     // Check if colors are similar enough to be considered equal
     // Allow small differences to account for compression artifacts
     uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
@@ -2365,452 +1942,14 @@ bool GTK3MainWindow::colors_equal(uint32_t c1, uint32_t c2) {
     return (abs(r1 - r2) < 8) && (abs(g1 - g2) < 8) && (abs(b1 - b2) < 8);
 }
 
-void GTK3MainWindow::on_game_genie_codes(GtkMenuItem* item, gpointer user_data) {
-    GTK3MainWindow* window = static_cast<GTK3MainWindow*>(user_data);
-    window->show_game_genie_dialog();
-}
-
-void GTK3MainWindow::show_game_genie_dialog() {
-    if (!engine || !engine->isROMLoaded()) {
-        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                                        GTK_DIALOG_MODAL,
-                                                        GTK_MESSAGE_ERROR,
-                                                        GTK_BUTTONS_OK,
-                                                        "No ROM loaded. Please load a ROM first.");
-        gtk_dialog_run(GTK_DIALOG(error_dialog));
-        gtk_widget_destroy(error_dialog);
-        return;
-    }
-
-    if (!gameGenie) {
-        gameGenie = new GameGenie(engine);
-        std::string codesFile = engine->getROMBaseName() + ".gg";
-        gameGenie->loadCodesFromFile(codesFile);
-    }
-
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Game Genie Codes",
-                                                   GTK_WINDOW(window),
-                                                   GTK_DIALOG_MODAL,
-                                                   "_Close", GTK_RESPONSE_CLOSE,
-                                                   nullptr);
-    
-    gtk_window_set_default_size(GTK_WINDOW(dialog), 650, 450);
-    
-    GtkWidget* content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget* main_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(content_area), main_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(main_vbox), 10);
-    
-    char title_text[256];
-    snprintf(title_text, sizeof(title_text), "Game Genie Codes for: %s", engine->getROMBaseName().c_str());
-    GtkWidget* title_label = gtk_label_new(title_text);
-    gtk_box_pack_start(GTK_BOX(main_vbox), title_label, FALSE, FALSE, 0);
-    
-    char info_text[128];
-    snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
-             gameGenie->getCodeCount(), gameGenie->getEnabledCodeCount());
-    GtkWidget* info_label = gtk_label_new(info_text);
-    gtk_box_pack_start(GTK_BOX(main_vbox), info_label, FALSE, FALSE, 0);
-    
-    GtkWidget* entry_frame = gtk_frame_new("Add New Code");
-    gtk_box_pack_start(GTK_BOX(main_vbox), entry_frame, FALSE, FALSE, 0);
-    
-    GtkWidget* entry_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_add(GTK_CONTAINER(entry_frame), entry_vbox);
-    gtk_container_set_border_width(GTK_CONTAINER(entry_vbox), 10);
-    
-    GtkWidget* code_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    gtk_box_pack_start(GTK_BOX(entry_vbox), code_hbox, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(code_hbox), gtk_label_new("Code:"), FALSE, FALSE, 0);
-    GtkWidget* code_entry = gtk_entry_new();
-    gtk_entry_set_max_length(GTK_ENTRY(code_entry), 8);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(code_entry), "SXIOPO (6 or 8 letters)");
-    gtk_box_pack_start(GTK_BOX(code_hbox), code_entry, TRUE, TRUE, 0);
-    
-    GtkWidget* desc_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    gtk_box_pack_start(GTK_BOX(entry_vbox), desc_hbox, FALSE, FALSE, 0);
-    
-    gtk_box_pack_start(GTK_BOX(desc_hbox), gtk_label_new("Description:"), FALSE, FALSE, 0);
-    GtkWidget* desc_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(desc_entry), "What does this code do?");
-    gtk_box_pack_start(GTK_BOX(desc_hbox), desc_entry, TRUE, TRUE, 0);
-    
-    GtkWidget* add_button = gtk_button_new_with_label("Add Code");
-    gtk_box_pack_start(GTK_BOX(entry_vbox), add_button, FALSE, FALSE, 0);
-    
-    GtkWidget* list_frame = gtk_frame_new("Active Codes");
-    gtk_box_pack_start(GTK_BOX(main_vbox), list_frame, TRUE, TRUE, 0);
-    
-    GtkWidget* scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(list_frame), scrolled_window);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
-                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    
-    GtkListStore* list_store = gtk_list_store_new(5, G_TYPE_BOOLEAN, G_TYPE_STRING, 
-                                                  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INT);
-    GtkWidget* tree_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(list_store));
-    gtk_container_add(GTK_CONTAINER(scrolled_window), tree_view);
-    
-    GtkCellRenderer* toggle_renderer = gtk_cell_renderer_toggle_new();
-    GtkTreeViewColumn* toggle_column = gtk_tree_view_column_new_with_attributes(
-        "Enabled", toggle_renderer, "active", 0, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), toggle_column);
-    gtk_tree_view_column_set_min_width(toggle_column, 70);
-    
-    GtkCellRenderer* text_renderer = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn* code_column = gtk_tree_view_column_new_with_attributes(
-        "Code", text_renderer, "text", 1, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), code_column);
-    gtk_tree_view_column_set_min_width(code_column, 80);
-    
-    GtkTreeViewColumn* desc_column = gtk_tree_view_column_new_with_attributes(
-        "Description", text_renderer, "text", 2, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), desc_column);
-    gtk_tree_view_column_set_min_width(desc_column, 200);
-    
-    GtkTreeViewColumn* addr_column = gtk_tree_view_column_new_with_attributes(
-        "Address", text_renderer, "text", 3, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(tree_view), addr_column);
-    gtk_tree_view_column_set_min_width(addr_column, 80);
-    
-    // Create and populate dialog data structure
-    GameGenieDialogData* dialog_data = new GameGenieDialogData;
-    dialog_data->window = this;
-    dialog_data->code_entry = code_entry;
-    dialog_data->desc_entry = desc_entry;
-    dialog_data->tree_view = tree_view;
-    dialog_data->list_store = list_store;
-    dialog_data->info_label = info_label;
-    dialog_data->game_genie = gameGenie;
-    
-    // Populate initial list
-    refresh_codes_list(list_store, gameGenie, info_label);
-    
-    // Connect toggle renderer callback
-    g_signal_connect(toggle_renderer, "toggled", G_CALLBACK(on_toggle_game_genie_code), dialog_data);
-    
-    GtkWidget* button_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_box_pack_start(GTK_BOX(main_vbox), button_hbox, FALSE, FALSE, 0);
-    
-    GtkWidget* load_button = gtk_button_new_with_label("Load from File");
-    gtk_box_pack_start(GTK_BOX(button_hbox), load_button, FALSE, FALSE, 0);
-    
-    GtkWidget* save_button = gtk_button_new_with_label("Save to File");
-    gtk_box_pack_start(GTK_BOX(button_hbox), save_button, FALSE, FALSE, 0);
-    
-    GtkWidget* remove_button = gtk_button_new_with_label("Remove Selected");
-    gtk_box_pack_start(GTK_BOX(button_hbox), remove_button, FALSE, FALSE, 0);
-    
-    GtkWidget* clear_button = gtk_button_new_with_label("Clear All");
-    gtk_box_pack_start(GTK_BOX(button_hbox), clear_button, FALSE, FALSE, 0);
-    
-    // Connect button callbacks using proper static functions
-    g_signal_connect(add_button, "clicked", G_CALLBACK(on_add_game_genie_code), dialog_data);
-    g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_game_genie_file), dialog_data);
-    g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_game_genie_file), dialog_data);
-    g_signal_connect(remove_button, "clicked", G_CALLBACK(on_remove_game_genie_code), dialog_data);
-    g_signal_connect(clear_button, "clicked", G_CALLBACK(on_clear_game_genie_codes), dialog_data);
-    
-    // Cleanup callback when dialog is destroyed
-    g_signal_connect(dialog, "destroy", G_CALLBACK(on_game_genie_dialog_destroy), dialog_data);
-    
-    gtk_widget_show_all(dialog);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-}
-
-void GTK3MainWindow::on_add_game_genie_code(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    
-    const char* code_text = gtk_entry_get_text(GTK_ENTRY(data->code_entry));
-    const char* desc_text = gtk_entry_get_text(GTK_ENTRY(data->desc_entry));
-    
-    if (strlen(code_text) == 0) {
-        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                       GTK_DIALOG_MODAL,
-                                                       GTK_MESSAGE_ERROR,
-                                                       GTK_BUTTONS_OK,
-                                                       "Please enter a Game Genie code.");
-        gtk_dialog_run(GTK_DIALOG(error_dialog));
-        gtk_widget_destroy(error_dialog);
-        return;
-    }
-    
-    std::string code(code_text);
-    std::string description(strlen(desc_text) > 0 ? desc_text : "User entered code");
-    
-    if (data->game_genie->addCode(code, description)) {
-        gtk_entry_set_text(GTK_ENTRY(data->code_entry), "");
-        gtk_entry_set_text(GTK_ENTRY(data->desc_entry), "");
-        
-        refresh_codes_list(data->list_store, data->game_genie, data->info_label);
-        
-        char status_msg[256];
-        snprintf(status_msg, sizeof(status_msg), "Added Game Genie code: %s", code.c_str());
-        data->window->set_status_message(status_msg);
-    } else {
-        GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                       GTK_DIALOG_MODAL,
-                                                       GTK_MESSAGE_ERROR,
-                                                       GTK_BUTTONS_OK,
-                                                       "Invalid Game Genie code format.\n\n"
-                                                       "Codes must be 6 or 8 letters using only: "
-                                                       "A P Z L G I T Y E O X U K S V N");
-        gtk_dialog_run(GTK_DIALOG(error_dialog));
-        gtk_widget_destroy(error_dialog);
-    }
-}
-
-void GTK3MainWindow::on_game_genie_dialog_destroy(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    delete data;
-}
-
-void GTK3MainWindow::on_load_game_genie_file(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    data->window->load_game_genie_codes_file();
-    refresh_codes_list(data->list_store, data->game_genie, data->info_label);
-}
-
-void GTK3MainWindow::on_save_game_genie_file(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    data->window->save_game_genie_codes_file();
-}
-
-void GTK3MainWindow::on_remove_game_genie_code(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(data->tree_view));
-    GtkTreeModel* model;
-    GtkTreeIter iter;
-    
-    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        gint index;
-        gtk_tree_model_get(model, &iter, 4, &index, -1);
-        
-        GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
-        
-        char confirm_msg[256];
-        snprintf(confirm_msg, sizeof(confirm_msg), 
-                 "Remove Game Genie code:\n%s - %s?", 
-                 info.code.c_str(), info.description.c_str());
-        
-        GtkWidget* confirm_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                         GTK_DIALOG_MODAL,
-                                                         GTK_MESSAGE_QUESTION,
-                                                         GTK_BUTTONS_YES_NO,
-                                                         "%s", confirm_msg);
-        
-        int response = gtk_dialog_run(GTK_DIALOG(confirm_dialog));
-        gtk_widget_destroy(confirm_dialog);
-        
-        if (response == GTK_RESPONSE_YES) {
-            data->game_genie->removeCodeByIndex(index);
-            refresh_codes_list(data->list_store, data->game_genie, data->info_label);
-            data->window->set_status_message("Game Genie code removed");
-        }
-    } else {
-        GtkWidget* info_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                      GTK_DIALOG_MODAL,
-                                                      GTK_MESSAGE_INFO,
-                                                      GTK_BUTTONS_OK,
-                                                      "Please select a code to remove.");
-        gtk_dialog_run(GTK_DIALOG(info_dialog));
-        gtk_widget_destroy(info_dialog);
-    }
-}
-
-void GTK3MainWindow::on_clear_game_genie_codes(GtkWidget* widget, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    
-    if (data->game_genie->getCodeCount() == 0) {
-        GtkWidget* info_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                      GTK_DIALOG_MODAL,
-                                                      GTK_MESSAGE_INFO,
-                                                      GTK_BUTTONS_OK,
-                                                      "No codes to clear.");
-        gtk_dialog_run(GTK_DIALOG(info_dialog));
-        gtk_widget_destroy(info_dialog);
-        return;
-    }
-    
-    char confirm_msg[128];
-    snprintf(confirm_msg, sizeof(confirm_msg), 
-             "Clear all %zu Game Genie codes?\nThis cannot be undone.", 
-             data->game_genie->getCodeCount());
-    
-    GtkWidget* confirm_dialog = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                     GTK_DIALOG_MODAL,
-                                                     GTK_MESSAGE_QUESTION,
-                                                     GTK_BUTTONS_YES_NO,
-                                                     "%s", confirm_msg);
-    
-    int response = gtk_dialog_run(GTK_DIALOG(confirm_dialog));
-    gtk_widget_destroy(confirm_dialog);
-    
-    if (response == GTK_RESPONSE_YES) {
-        data->game_genie->clearAllCodes();
-        refresh_codes_list(data->list_store, data->game_genie, data->info_label);
-        data->window->set_status_message("All Game Genie codes cleared");
-    }
-}
-
-void GTK3MainWindow::on_toggle_game_genie_code(GtkCellRendererToggle* renderer, 
-                                               gchar* path_str, gpointer user_data) {
-    GameGenieDialogData* data = static_cast<GameGenieDialogData*>(user_data);
-    GtkTreeModel* model = GTK_TREE_MODEL(data->list_store);
-    GtkTreePath* path = gtk_tree_path_new_from_string(path_str);
-    GtkTreeIter iter;
-    
-    if (gtk_tree_model_get_iter(model, &iter, path)) {
-        gint index;
-        gtk_tree_model_get(model, &iter, 4, &index, -1);
-        
-        data->game_genie->toggleCode(index);
-        
-        gboolean enabled = data->game_genie->isCodeEnabled(index);
-        gtk_list_store_set(GTK_LIST_STORE(model), &iter, 0, enabled, -1);
-        
-        // Update info label
-        char info_text[128];
-        snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
-                 data->game_genie->getCodeCount(), 
-                 data->game_genie->getEnabledCodeCount());
-        gtk_label_set_text(GTK_LABEL(data->info_label), info_text);
-        
-        char status_msg[128];
-        GameGenie::CodeInfo info = data->game_genie->getCodeInfo(index);
-        snprintf(status_msg, sizeof(status_msg), "Code %s %s", 
-                 info.code.c_str(), enabled ? "enabled" : "disabled");
-        data->window->set_status_message(status_msg);
-    }
-    
-    gtk_tree_path_free(path);
-}
-
-// Add this helper function:
-void GTK3MainWindow::refresh_codes_list(GtkListStore* store, GameGenie* gg, GtkWidget* info_label) {
-    gtk_list_store_clear(store);
-    
-    for (size_t i = 0; i < gg->getCodeCount(); i++) {
-        GameGenie::CodeInfo info = gg->getCodeInfo(i);
-        
-        char addr_str[16];
-        snprintf(addr_str, sizeof(addr_str), "$%04X", info.address);
-        
-        GtkTreeIter iter;
-        gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter,
-                         0, info.enabled,
-                         1, info.code.c_str(),
-                         2, info.description.c_str(),
-                         3, addr_str,
-                         4, (int)i,
-                         -1);
-    }
-    
-    if (info_label) {
-        char info_text[128];
-        snprintf(info_text, sizeof(info_text), "Currently loaded: %zu codes (%zu active)", 
-                 gg->getCodeCount(), gg->getEnabledCodeCount());
-        gtk_label_set_text(GTK_LABEL(info_label), info_text);
-    }
-}
-
-void GTK3MainWindow::load_game_genie_codes_file() {
-    if (!gameGenie) return;
-    
-    GtkWidget* dialog = gtk_file_chooser_dialog_new("Load Game Genie Codes",
-                                                   GTK_WINDOW(window),
-                                                   GTK_FILE_CHOOSER_ACTION_OPEN,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_Open", GTK_RESPONSE_ACCEPT,
-                                                   nullptr);
-    
-    GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Game Genie Files (*.gg)");
-    gtk_file_filter_add_pattern(filter, "*.gg");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
-    
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        
-        if (gameGenie->loadCodesFromFile(filename)) {
-            char status_msg[256];
-            snprintf(status_msg, sizeof(status_msg), "Loaded Game Genie codes from %s", filename);
-            set_status_message(status_msg);
-        } else {
-            GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                                           GTK_DIALOG_MODAL,
-                                                           GTK_MESSAGE_ERROR,
-                                                           GTK_BUTTONS_OK,
-                                                           "Failed to load Game Genie codes file.");
-            gtk_dialog_run(GTK_DIALOG(error_dialog));
-            gtk_widget_destroy(error_dialog);
-        }
-        
-        g_free(filename);
-    }
-    
-    gtk_widget_destroy(dialog);
-}
-
-void GTK3MainWindow::save_game_genie_codes_file() {
-    if (!gameGenie) return;
-    
-    GtkWidget* dialog = gtk_file_chooser_dialog_new("Save Game Genie Codes",
-                                                   GTK_WINDOW(window),
-                                                   GTK_FILE_CHOOSER_ACTION_SAVE,
-                                                   "_Cancel", GTK_RESPONSE_CANCEL,
-                                                   "_Save", GTK_RESPONSE_ACCEPT,
-                                                   nullptr);
-    
-    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
-    
-    // Suggest default filename
-    if (engine && engine->isROMLoaded()) {
-        std::string defaultName = engine->getROMBaseName() + ".gg";
-        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dialog), defaultName.c_str());
-    }
-    
-    GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Game Genie Files (*.gg)");
-    gtk_file_filter_add_pattern(filter, "*.gg");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
-    
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        
-        if (gameGenie->saveCodesToFile(filename)) {
-            char status_msg[256];
-            snprintf(status_msg, sizeof(status_msg), "Saved Game Genie codes to %s", filename);
-            set_status_message(status_msg);
-        } else {
-            GtkWidget* error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                                           GTK_DIALOG_MODAL,
-                                                           GTK_MESSAGE_ERROR,
-                                                           GTK_BUTTONS_OK,
-                                                           "Failed to save Game Genie codes file.");
-            gtk_dialog_run(GTK_DIALOG(error_dialog));
-            gtk_widget_destroy(error_dialog);
-        }
-        
-        g_free(filename);
-    }
-    
-    gtk_widget_destroy(dialog);
-}
-
 
 // Main function
 int main(int argc, char* argv[]) {
     Configuration::initialize("config.cfg");
-    
-    printf("WarpNES GTK3 NES Emulator\n");
-    
+
+    printf("WarpNES GTK4 NES Emulator\n");
+
     const char* rom_filename = nullptr;
-    
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--neszapper") == 0) {
             printf("NES Zapper support noted (not yet implemented)\n");
@@ -2818,23 +1957,11 @@ int main(int argc, char* argv[]) {
             rom_filename = argv[i];
         }
     }
-    
-    GTK3MainWindow main_window;
-    
-    if (!main_window.initialize()) {
-        fprintf(stderr, "Failed to initialize GTK3 window\n");
-        return 1;
-    }
-    
-    printf("GTK3 window initialized successfully\n");
-    
-    if (rom_filename) {
-        printf("Loading ROM: %s\n", rom_filename);
-        main_window.run(rom_filename);
-    } else {
+
+    if (!rom_filename) {
         printf("No ROM specified - use File > Open ROM to load a game\n");
-        main_window.run(nullptr);
     }
-    
-    return 0;
+
+    GTKMainWindow main_window;
+    return main_window.run(argc, argv, rom_filename);
 }

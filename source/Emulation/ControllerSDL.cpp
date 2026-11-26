@@ -10,6 +10,7 @@ Controller::Controller() : strobe(1)
         for (int button = 0; button < 8; button++)
         {
             buttonStates[player][button] = false;
+            joystickStates[player][button] = false;
         }
         buttonIndex[player] = 0;
         joysticks[player] = nullptr;
@@ -221,6 +222,17 @@ bool Controller::getButtonState(Player player, ControllerButton button) const
     return buttonStates[player][(int)button];
 }
 
+void Controller::setJoystickButtonState(Player player, ControllerButton button, bool state)
+{
+    joystickStates[player][(int)button] = state;
+    buttonStates[player][(int)button] = state;
+}
+
+bool Controller::getJoystickButtonState(Player player, ControllerButton button) const
+{
+    return joystickStates[player][(int)button];
+}
+
 void Controller::writeByte(uint8_t value)
 {
     if ((value & (1 << 0)) == 0 && (strobe & (1 << 0)) == 1)
@@ -291,10 +303,10 @@ void Controller::processJoystickEvent(const SDL_Event& event)
             if (player != PLAYER_1 && player != PLAYER_2) return;
             {
                 Uint8 hatValue = event.jhat.value;
-                setButtonState(player, BUTTON_UP, (hatValue & SDL_HAT_UP) != 0);
-                setButtonState(player, BUTTON_DOWN, (hatValue & SDL_HAT_DOWN) != 0);
-                setButtonState(player, BUTTON_LEFT, (hatValue & SDL_HAT_LEFT) != 0);
-                setButtonState(player, BUTTON_RIGHT, (hatValue & SDL_HAT_RIGHT) != 0);
+                setJoystickButtonState(player, BUTTON_UP, (hatValue & SDL_HAT_UP) != 0);
+                setJoystickButtonState(player, BUTTON_DOWN, (hatValue & SDL_HAT_DOWN) != 0);
+                setJoystickButtonState(player, BUTTON_LEFT, (hatValue & SDL_HAT_LEFT) != 0);
+                setJoystickButtonState(player, BUTTON_RIGHT, (hatValue & SDL_HAT_RIGHT) != 0);
             }
             break;
 
@@ -394,20 +406,20 @@ void Controller::updateJoystickState()
             
             if (SDL_JoystickNumButtons(joysticks[player]) >= 10) 
             {
-                setButtonState(player, BUTTON_A, SDL_JoystickGetButton(joysticks[player], mapping.buttonA));
-                setButtonState(player, BUTTON_B, SDL_JoystickGetButton(joysticks[player], mapping.buttonB));
-                setButtonState(player, BUTTON_START, SDL_JoystickGetButton(joysticks[player], mapping.buttonStart));
-                setButtonState(player, BUTTON_SELECT, SDL_JoystickGetButton(joysticks[player], mapping.buttonSelect));
+                setJoystickButtonState(player, BUTTON_A, SDL_JoystickGetButton(joysticks[player], mapping.buttonA));
+                setJoystickButtonState(player, BUTTON_B, SDL_JoystickGetButton(joysticks[player], mapping.buttonB));
+                setJoystickButtonState(player, BUTTON_START, SDL_JoystickGetButton(joysticks[player], mapping.buttonStart));
+                setJoystickButtonState(player, BUTTON_SELECT, SDL_JoystickGetButton(joysticks[player], mapping.buttonSelect));
             }
             
             // Update directional input
             if (SDL_JoystickNumHats(joysticks[player]) > 0)
             {
                 Uint8 hatState = SDL_JoystickGetHat(joysticks[player], 0);
-                setButtonState(player, BUTTON_UP, (hatState & SDL_HAT_UP) != 0);
-                setButtonState(player, BUTTON_DOWN, (hatState & SDL_HAT_DOWN) != 0);
-                setButtonState(player, BUTTON_LEFT, (hatState & SDL_HAT_LEFT) != 0);
-                setButtonState(player, BUTTON_RIGHT, (hatState & SDL_HAT_RIGHT) != 0);
+                setJoystickButtonState(player, BUTTON_UP, (hatState & SDL_HAT_UP) != 0);
+                setJoystickButtonState(player, BUTTON_DOWN, (hatState & SDL_HAT_DOWN) != 0);
+                setJoystickButtonState(player, BUTTON_LEFT, (hatState & SDL_HAT_LEFT) != 0);
+                setJoystickButtonState(player, BUTTON_RIGHT, (hatState & SDL_HAT_RIGHT) != 0);
             }
             else if (SDL_JoystickNumAxes(joysticks[player]) >= 2)
             {
@@ -459,36 +471,36 @@ void Controller::handleJoystickAxis(Player player, int axis, Sint16 value)
     {
         if (value < -joystickDeadzone)  // Use configurable deadzone
         {
-            setButtonState(player, BUTTON_LEFT, true);
-            setButtonState(player, BUTTON_RIGHT, false);
+            setJoystickButtonState(player, BUTTON_LEFT, true);
+            setJoystickButtonState(player, BUTTON_RIGHT, false);
         }
         else if (value > joystickDeadzone)  // Use configurable deadzone
         {
-            setButtonState(player, BUTTON_RIGHT, true);
-            setButtonState(player, BUTTON_LEFT, false);
+            setJoystickButtonState(player, BUTTON_RIGHT, true);
+            setJoystickButtonState(player, BUTTON_LEFT, false);
         }
         else
         {
-            setButtonState(player, BUTTON_LEFT, false);
-            setButtonState(player, BUTTON_RIGHT, false);
+            setJoystickButtonState(player, BUTTON_LEFT, false);
+            setJoystickButtonState(player, BUTTON_RIGHT, false);
         }
     }
     else if (axis == 1) // Y axis
     {
         if (value < -joystickDeadzone)  // Use configurable deadzone
         {
-            setButtonState(player, BUTTON_UP, true);
-            setButtonState(player, BUTTON_DOWN, false);
+            setJoystickButtonState(player, BUTTON_UP, true);
+            setJoystickButtonState(player, BUTTON_DOWN, false);
         }
         else if (value > joystickDeadzone)  // Use configurable deadzone
         {
-            setButtonState(player, BUTTON_DOWN, true);
-            setButtonState(player, BUTTON_UP, false);
+            setJoystickButtonState(player, BUTTON_DOWN, true);
+            setJoystickButtonState(player, BUTTON_UP, false);
         }
         else
         {
-            setButtonState(player, BUTTON_UP, false);
-            setButtonState(player, BUTTON_DOWN, false);
+            setJoystickButtonState(player, BUTTON_UP, false);
+            setJoystickButtonState(player, BUTTON_DOWN, false);
         }
     }
 }
@@ -499,24 +511,24 @@ void Controller::handleJoystickButton(Player player, int button, bool pressed)
     const JoystickMapping& mapping = (player == PLAYER_1) ? player1JoystickButtons : player2JoystickButtons;
     
     if (button == mapping.buttonA) {
-        setButtonState(player, BUTTON_A, pressed);
+        setJoystickButtonState(player, BUTTON_A, pressed);
     } else if (button == mapping.buttonB) {
-        setButtonState(player, BUTTON_B, pressed);
+        setJoystickButtonState(player, BUTTON_B, pressed);
     } else if (button == mapping.buttonStart) {
-        setButtonState(player, BUTTON_START, pressed);
+        setJoystickButtonState(player, BUTTON_START, pressed);
     } else if (button == mapping.buttonSelect) {
-        setButtonState(player, BUTTON_SELECT, pressed);
+        setJoystickButtonState(player, BUTTON_SELECT, pressed);
     }
     
     // Keep some fallback mappings for common controllers
     switch (button)
     {
-        case 0: setButtonState(player, BUTTON_B, pressed); break;
-        case 1: setButtonState(player, BUTTON_A, pressed); break;
-        case 8: setButtonState(player, BUTTON_SELECT, pressed); break;
-        case 9: setButtonState(player, BUTTON_START, pressed); break;
-        case 4: setButtonState(player, BUTTON_A, pressed); break;
-        case 5: setButtonState(player, BUTTON_B, pressed); break;
+        case 0: setJoystickButtonState(player, BUTTON_B, pressed); break;
+        case 1: setJoystickButtonState(player, BUTTON_A, pressed); break;
+        case 8: setJoystickButtonState(player, BUTTON_SELECT, pressed); break;
+        case 9: setJoystickButtonState(player, BUTTON_START, pressed); break;
+        case 4: setJoystickButtonState(player, BUTTON_A, pressed); break;
+        case 5: setJoystickButtonState(player, BUTTON_B, pressed); break;
         default: break;
     }
 }
@@ -526,28 +538,28 @@ void Controller::handleControllerButton(Player player, SDL_GameControllerButton 
     switch (button)
     {
         case SDL_CONTROLLER_BUTTON_A:
-            setButtonState(player, BUTTON_A, pressed);
+            setJoystickButtonState(player, BUTTON_A, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_B:
-            setButtonState(player, BUTTON_B, pressed);
+            setJoystickButtonState(player, BUTTON_B, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_BACK:
-            setButtonState(player, BUTTON_SELECT, pressed);
+            setJoystickButtonState(player, BUTTON_SELECT, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_START:
-            setButtonState(player, BUTTON_START, pressed);
+            setJoystickButtonState(player, BUTTON_START, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            setButtonState(player, BUTTON_UP, pressed);
+            setJoystickButtonState(player, BUTTON_UP, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            setButtonState(player, BUTTON_DOWN, pressed);
+            setJoystickButtonState(player, BUTTON_DOWN, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-            setButtonState(player, BUTTON_LEFT, pressed);
+            setJoystickButtonState(player, BUTTON_LEFT, pressed);
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-            setButtonState(player, BUTTON_RIGHT, pressed);
+            setJoystickButtonState(player, BUTTON_RIGHT, pressed);
             break;
     }
 }

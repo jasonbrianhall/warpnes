@@ -109,6 +109,13 @@ public:
     void updateJoystickState();
 
     /**
+     * State reported by the joystick/gamepad alone (no keyboard). Frontends
+     * that poll the keyboard each frame should OR this with their key state
+     * instead of reading back getButtonState(), which includes the keyboard.
+     */
+    bool getJoystickButtonState(Player player, ControllerButton button) const;
+
+    /**
      * Debug function to print the current state of both controllers
      */
     void printButtonStates() const;
@@ -131,6 +138,8 @@ public:
 private:
     // Controller state for each player
     std::array<std::array<bool, 8>, 2> buttonStates;
+    std::array<std::array<bool, 8>, 2> joystickStates;
+    void setJoystickButtonState(Player player, ControllerButton button, bool state);
     std::array<uint8_t, 2> buttonIndex;
     uint8_t strobe;
 
