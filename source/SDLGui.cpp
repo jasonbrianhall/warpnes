@@ -3,7 +3,7 @@
  */
 #include "SDLGui.hpp"
 #include "SDLInput.hpp"
-#include "GuiFont5x8.h"
+#include "GuiFontDejaVu.h"
 
 #include <SDL2/SDL.h>   // scancodes only
 
@@ -44,7 +44,7 @@ static const uint16_t C_GRAY = rgb(128, 128, 128);
 static const uint16_t C_DIR = rgb(0, 0, 160);
 static const uint16_t C_ACCENT = rgb(176, 0, 0);
 
-static const int CHAR_W = 6;     // 5 pixels + 1 space
+static const int CHAR_W = 6;     // GUI font cell width (GuiFontDejaVu.h)
 static const int LINE_H = 10;
 static const int BAR_H = 11;
 
@@ -84,16 +84,36 @@ static void bevel(int x, int y, int w, int h, bool raised)
     }
 }
 
+// Mix two RGB565 colours: a/4 of c over d (a = 0..4)
+static inline uint16_t mix565(uint16_t d, uint16_t c, int a)
+{
+    int r = ((d >> 11) * (4 - a) + (c >> 11) * a) / 4;
+    int g = (((d >> 5) & 63) * (4 - a) + ((c >> 5) & 63) * a) / 4;
+    int b = ((d & 31) * (4 - a) + (c & 31) * a) / 4;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// Text in the GUI font (DejaVu Sans Mono, anti-aliased). y is the top of
+// the old 8-pixel glyph box: the 6x10 cell starts a line above it, so
+// the baseline stays where it was.
 static void text(int x, int y, const std::string& s, uint16_t c)
 {
     for (size_t i = 0; i < s.size(); i++, x += CHAR_W) {
         unsigned char ch = (unsigned char)s[i];
         if (ch == ' ') continue;
         if (ch < 33 || ch > 126) ch = '?';   // outside ASCII (DOS code page names)
-        const unsigned char* g = font5x8[ch - 33];
-        for (int row = 0; row < 8; row++)
-            for (int col = 0; col < 5; col++)
-                if (g[row] & (1 << col)) pset(x + col, y + row, c);
+        const unsigned int* g = guiFont[ch - 32];
+        for (int row = 0; row < GUI_FONT_H; row++) {
+            int py = y - 1 + row;
+            if (py < cvY0 || py >= cvY1) continue;
+            unsigned int bits = g[row];
+            for (int col = 0; col < GUI_FONT_W && bits; col++, bits >>= 3) {
+                int a = bits & 7, px = x + col;
+                if (!a || px < 0 || px >= cvW) continue;
+                uint16_t& d = cv[py * cvW + px];
+                d = a >= GUI_FONT_LEVELS ? c : mix565(d, c, a);
+            }
+        }
     }
 }
 
