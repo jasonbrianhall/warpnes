@@ -262,7 +262,11 @@ uint8_t Controller::readByte()
 void Controller::processKeyboardEvent(const SDL_Event& event)
 {
     bool pressed = (event.type == SDL_KEYDOWN);
+#if SDL_MAJOR_VERSION >= 3
+    SDL_Scancode key = event.key.scancode;          // SDL3 (MS-DOS build)
+#else
     SDL_Scancode key = event.key.keysym.scancode;
+#endif
 
     // Handle Player 1 keyboard input
     if (key == player1Keys.up)         setButtonState(PLAYER_1, BUTTON_UP, pressed);

@@ -2,6 +2,12 @@
 #include <iostream>
 
 #include <SDL2/SDL.h>
+#ifdef __DJGPP__
+// MS-DOS (SDL3's DOS port, through msdos/compat/SDL2/SDL.h): SDL_main sets up
+// the near pointers SDL needs; the frame goes straight to the screen (DOSVideo).
+#include <SDL3/SDL_main.h>
+#include "DOSVideo.hpp"
+#endif
 
 #include "Emulation/WarpNES.hpp"
 #include "Emulation/ControllerSDL.hpp"
@@ -251,6 +257,16 @@ static bool initialize()
         return false;
     }
 
+#ifdef __DJGPP__
+    // MS-DOS: the window is the whole screen, in a VESA or VGA mode; there is
+    // no SDL renderer, the frame is put on the screen by DOSVideo.cpp.
+    window = dos_create_window(APP_TITLE);
+    if (window == nullptr)
+    {
+        std::cout << "dos_create_window() failed during initialize(): " << SDL_GetError() << std::endl;
+        return false;
+    }
+#else
     // Create the window
     window = SDL_CreateWindow(APP_TITLE,
                               SDL_WINDOWPOS_UNDEFINED,
@@ -284,6 +300,7 @@ static bool initialize()
         std::cout << "SDL_CreateTexture() failed during initialize(): " << SDL_GetError() << std::endl;
         return false;
     }
+#endif // !__DJGPP__
 
     if (Configuration::getAudioEnabled())
     {
@@ -303,8 +320,10 @@ static bool initialize()
         SDL_PauseAudio(0);
     }
 
+#ifndef __DJGPP__
     scalingCache = new SDLScalingCache(renderer);
     scalingCache->initialize();
+#endif
 
     // Initialize the internal controller
     controller.initializeController();
@@ -321,16 +340,20 @@ static void shutdown()
     // Cleanup internal controller
     controller.cleanup();
 
+#ifndef __DJGPP__
     if (scalingCache) {
         delete scalingCache;
         scalingCache = nullptr;
     }
+#endif
 
     SDL_CloseAudio();
 
+#ifndef __DJGPP__
     SDL_DestroyTexture(scanlineTexture);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
+#endif
     SDL_DestroyWindow(window);
 
     SDL_Quit();
@@ -391,6 +414,7 @@ static void mainLoop(const char* romFilename)
             case SDL_QUIT:
                 running = false;
                 break;
+#ifndef __DJGPP__
             case SDL_WINDOWEVENT:
                 switch (event.window.event)
                 {
@@ -399,6 +423,7 @@ static void mainLoop(const char* romFilename)
                     break;
                 }
                 break;
+#endif
             // Process joystick events (same as your working version)
             case SDL_JOYAXISMOTION:
             case SDL_JOYBUTTONDOWN:
@@ -555,7 +580,8 @@ static void mainLoop(const char* romFilename)
             f8KeyPressed = false;
         }
         
-        // Toggle fullscreen with F11
+#ifndef __DJGPP__
+        // Toggle fullscreen with F11 (MS-DOS: always full screen)
         if (keys[SDL_SCANCODE_F11] && !f11KeyPressed) {
             Uint32 windowFlags = SDL_GetWindowFlags(window);
             if (windowFlags & SDL_WINDOW_FULLSCREEN_DESKTOP) {
@@ -578,6 +604,7 @@ static void mainLoop(const char* romFilename)
         } else if (!keys[SDL_SCANCODE_F]) {
             fKeyPressed = false;
         }
+#endif
         
         // Toggle optimized scaling (press O key)
         if (keys[SDL_SCANCODE_O] && !optimizedScalingKeyPressed) {
@@ -596,7 +623,11 @@ static void mainLoop(const char* romFilename)
         
         // CHANGED: Use 16-bit rendering like DOS version
         engine.render16(renderBuffer16);
-        
+
+#ifdef __DJGPP__
+        // MS-DOS: straight onto the VESA/VGA screen
+        dos_present(window, renderBuffer16, RENDER_WIDTH, RENDER_HEIGHT);
+#else
         // CHANGED: Convert 16-bit to 32-bit for SDL
         convertRGB565ToARGB8888(renderBuffer16, renderBuffer, RENDER_WIDTH, RENDER_HEIGHT);
 
@@ -617,6 +648,7 @@ static void mainLoop(const char* romFilename)
 
         // Present the rendered frame
         SDL_RenderPresent(renderer);
+#endif
 
         // Frame timing
         int now = SDL_GetTicks();
@@ -636,6 +668,9 @@ static void mainLoop(const char* romFilename)
 
 int main(int argc, char** argv)
 {
+#ifdef __DJGPP__
+    setvbuf(stdout, NULL, _IONBF, 0); // WARPNES ROM.NES > LOG.TXT keeps everything, even after a crash
+#endif
     if (argc < 2) {
         std::cout << "Usage: " << argv[0] << " <rom_file>" << std::endl;
         return -1;
