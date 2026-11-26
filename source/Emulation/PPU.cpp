@@ -578,8 +578,14 @@ void PPU::renderBackgroundScanline(int scanline)
             patternHi = engine.readCHRAbsolute(base + 8);
         } else {
             uint16_t patternAddr = patternTable + tileIndex * 16 + fineY;
-            patternLo = readCHR(patternAddr);
-            patternHi = readCHR(patternAddr + 8);
+            const uint8_t* page = engine.chrPage(patternAddr >> 10);
+            if (page) {
+                patternLo = page[patternAddr & 0x3FF];
+                patternHi = page[(patternAddr + 8) & 0x3FF];
+            } else {
+                patternLo = readCHR(patternAddr);
+                patternHi = readCHR(patternAddr + 8);
+            }
         }
 
         // The four colours this tile can use, converted to RGB565 once per
@@ -1373,7 +1379,12 @@ void PPU::renderSingleSprite(int scanline, int spriteIndex, bool behindBackgroun
     
     uint16_t patternAddr = spritePatternAddr(tileIndex, spriteRow);
     uint8_t patternLo, patternHi;
-    if (mapperVisibleFetch) {
+    const uint8_t* page = engine.chrPage(patternAddr >> 10);
+    if (page) {
+        // Plain CHR read, no mapper side effects either way
+        patternLo = page[patternAddr & 0x3FF];
+        patternHi = page[(patternAddr + 8) & 0x3FF];
+    } else if (mapperVisibleFetch) {
         patternLo = readCHR(patternAddr);
         patternHi = readCHR(patternAddr + 8);
     } else {

@@ -134,6 +134,21 @@ public:
     // the loop jumps from one step to the next.
     uint32_t advance(uint32_t n)
     {
+        // Silent channel (output is 0 at every duty step): move the duty
+        // position on arithmetically instead of step by step. Muted channels
+        // often have tiny periods, which made this loop run every 2 cycles.
+        if (lengthValue == 0 || envelope.volume() == 0 || muted())
+        {
+            uint32_t p2 = 2u * ((uint32_t)timerPeriod + 1);
+            if (n < countdown) {
+                countdown -= n;
+            } else {
+                uint32_t r = n - countdown;
+                dutyValue = (dutyValue + 1 + r / p2) & 7;
+                countdown = p2 - r % p2;
+            }
+            return 0;
+        }
         uint32_t sum = 0;
         while (n > 0)
         {

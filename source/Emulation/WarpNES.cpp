@@ -330,6 +330,7 @@ void WarpNES::writeCHRData(uint16_t address, uint8_t value) {
 
 // Modify loadROM to initialize SRAM:
 bool WarpNES::loadROM(const std::string &filename) {
+  prgMapGen++;
   std::ifstream file(filename, std::ios::binary);
   if (!file.is_open()) {
     std::cerr << "Failed to open ROM file: " << filename << std::endl;
@@ -1073,6 +1074,7 @@ void WarpNES::checkSprite0Hit(int scanline, int cycle) {
 }
 
 void WarpNES::reset() {
+  prgMapGen++;
   if (!romLoaded)
     return;
 
@@ -2199,6 +2201,198 @@ void WarpNES::checkPendingInterrupts() {
   }
 }
 
+// ROM offset that a CPU read of $8000-$FFFF maps to, or -1 for open bus
+int32_t WarpNES::prgOffset(uint16_t address) {
+    // PRG ROM with FIXED MMC1 mapping
+    if (nesHeader.mapper == 1) {
+      // 16 KB bank for this half. On 512 KB boards (SUROM/SXROM) bit 4 of
+      // the CHR bank register drives PRG A18, selecting the outer 256 KB.
+      uint32_t banks16 = prgSize / 0x4000;
+      uint32_t outer = (prgSize >= 0x80000 && (mmc1.chrBank0 & 0x10)) ? 16 : 0;
+      uint32_t inner = mmc1.prgBank & 0x0F;
+      bool hi = address >= 0xC000;
+      uint32_t b;
+      switch ((mmc1.control >> 2) & 0x03) {
+      case 0: case 1: b = (inner & 0x0E) | (hi ? 1 : 0); break;
+      case 2: b = hi ? inner : 0; break;
+      default: b = hi ? 15 : inner; break;
+      }
+      b = (outer | b) % banks16;
+      return (int32_t)(b * 0x4000 + (address & 0x3FFF));
+    }
+    if (false) {
+      uint32_t romAddr;
+      uint8_t totalBanks = prgSize / 0x4000;
+      uint8_t prgMode = (mmc1.control >> 2) & 0x03;
+
+      if (address < 0xC000) {
+        // $8000-$BFFF
+        switch (prgMode) {
+        case 0:
+        case 1:
+          // 32KB mode
+          romAddr = (mmc1.currentPRGBank * 0x8000) + (address - 0x8000);
+          break;
+        case 2:
+          // Fixed first bank at $8000
+          romAddr = address - 0x8000;
+          break;
+        case 3:
+        default:
+          // Switchable bank at $8000
+          romAddr = (mmc1.currentPRGBank * 0x4000) + (address - 0x8000);
+          break;
+        }
+      } else {
+        // $C000-$FFFF
+        switch (prgMode) {
+        case 0:
+        case 1:
+          // 32KB mode
+          romAddr = (mmc1.currentPRGBank * 0x8000) + (address - 0x8000);
+          break;
+        case 2:
+          // Switchable bank at $C000 (bit 4 is PRG-RAM disable, not a bank bit)
+          romAddr = (((mmc1.prgBank & 0x0F) % totalBanks) * 0x4000) + (address - 0xC000);
+          break;
+        case 3:
+        default:
+          uint8_t lastBank = totalBanks - 1;
+          romAddr = (lastBank * 0x4000) + (address - 0xC000);
+          break;
+        }
+      }
+
+      // Bounds checking
+      if (romAddr >= prgSize) {
+        return -1;
+      }
+
+      return (int32_t)(romAddr);
+    } else if (nesHeader.mapper == 0) {
+      // NROM - simple mapping
+      uint32_t romAddr = address - 0x8000;
+      if (prgSize == 16384) {
+        // 16KB ROM mirrored
+        romAddr &= 0x3FFF;
+      }
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    } else if (nesHeader.mapper == 2) {
+      // UxROM mapping
+      uint32_t romAddr;
+
+      if (address < 0xC000) {
+        // $8000-$BFFF: Switchable 16KB PRG bank
+        romAddr = (uxrom.prgBank * 0x4000) + (address - 0x8000);
+      } else {
+        // $C000-$FFFF: Fixed to LAST 16KB PRG bank
+        uint8_t totalBanks = prgSize / 0x4000;
+        uint8_t lastBank = totalBanks - 1;
+        romAddr = (lastBank * 0x4000) + (address - 0xC000);
+      }
+
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    } else if (isMMC3Family()) {
+      // MMC3 mapping - 8KB banks
+      uint8_t bankIndex = (address - 0x8000) / 0x2000; // 0-3
+      uint16_t bankOffset = (address - 0x8000) % 0x2000;
+      uint32_t romAddr =
+          (mmc3.currentPRGBanks[bankIndex] * 0x2000) + bankOffset;
+
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    } else if (nesHeader.mapper == 10) {
+      // MMC4: 16 KB switchable at $8000, last 16 KB fixed at $C000
+      uint32_t banks16 = prgSize / 0x4000;
+      uint32_t bank = (address < 0xC000) ? (mmc2.prgBank % banks16) : (banks16 - 1);
+      return (int32_t)(bank * 0x4000 + (address & 0x3FFF));
+    } else if (nesHeader.mapper == 9) {
+      // MMC2 mapping
+      uint32_t romAddr;
+
+      if (address < 0xA000) {
+        // $8000-$9FFF: Switchable 8KB PRG bank
+        romAddr = (mmc2.prgBank * 0x2000) + (address - 0x8000);
+      } else if (address < 0xC000) {
+        // $A000-$BFFF: Fixed to last 8KB of ROM - 3
+        uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
+        romAddr = ((totalBanks - 3) * 0x2000) + (address - 0xA000);
+      } else if (address < 0xE000) {
+        // $C000-$DFFF: Fixed to last 8KB of ROM - 2
+        uint8_t totalBanks = prgSize / 0x2000;
+        romAddr = ((totalBanks - 2) * 0x2000) + (address - 0xC000);
+      } else {
+        // $E000-$FFFF: Fixed to last 8KB of ROM - 1
+        uint8_t totalBanks = prgSize / 0x2000;
+        romAddr = ((totalBanks - 1) * 0x2000) + (address - 0xE000);
+      }
+
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    } else if (nesHeader.mapper == 7) {
+      // AxROM - 32KB PRG banks
+      uint32_t banks = prgSize / 0x8000;
+      if (banks == 0) banks = 1;
+      uint32_t romAddr = ((axromReg & 0x0F) % banks) * 0x8000 + (address - 0x8000);
+      return (int32_t)(romAddr % prgSize);
+    } else if (nesHeader.mapper == 66) {
+      // GxROM mapping - 32KB PRG banks
+      uint32_t romAddr = ((gxrom.prgBank * 0x8000) + (address - 0x8000)) % prgSize;
+      return (int32_t)(romAddr);
+    } else if (nesHeader.mapper == 3) {
+      // CNROM - 32KB PRG ROM (no PRG banking)
+      uint32_t romAddr = address - 0x8000;
+
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    } else if (nesHeader.mapper == 40) {
+      // Mapper 40: Different banking layout for SMB2j
+      uint32_t romAddr;
+      uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
+
+      if (address < 0xA000) {
+        // $8000-$9FFF: Switchable 8KB bank
+        romAddr = (mapper40.prgBank * 0x2000) + (address - 0x8000);
+      } else if (address < 0xC000) {
+        // $A000-$BFFF: Fixed to last bank - 2
+        uint8_t bank = totalBanks - 2;
+        romAddr = (bank * 0x2000) + (address - 0xA000);
+      } else if (address < 0xE000) {
+        // $C000-$DFFF: Fixed to last bank - 1
+        uint8_t bank = totalBanks - 1;
+        romAddr = (bank * 0x2000) + (address - 0xC000);
+      } else {
+        // $E000-$FFFF: Fixed to last bank (vectors here)
+        uint8_t bank = totalBanks - 1;
+        romAddr = (bank * 0x2000) + (address - 0xE000);
+      }
+
+      if (romAddr < prgSize) {
+        return (int32_t)(romAddr);
+      }
+    }
+  return -1;
+}
+
+void WarpNES::refillPRGSlot(int slot) {
+  uint16_t base = 0x8000 + slot * 0x2000;
+  int32_t o0 = prgOffset(base);
+  // Only cache slots that map linearly onto 8 KB of ROM
+  bool linear = o0 >= 0 && o0 + 0x1FFF < (int32_t)prgSize &&
+                prgOffset(base + 0x0400) == o0 + 0x0400 &&
+                prgOffset(base + 0x1000) == o0 + 0x1000 &&
+                prgOffset(base + 0x1FFF) == o0 + 0x1FFF;
+  prgSlotPtr[slot] = linear ? prgROM + o0 : nullptr;
+  prgSlotGen[slot] = prgMapGen;
+}
+
 uint8_t WarpNES::readByte(uint16_t address) {
   if (ext && address >= 0x4020) {
     if (address >= 0x8000) return ext->cpuRead(address);
@@ -2248,187 +2442,20 @@ uint8_t WarpNES::readByte(uint16_t address) {
     }
     return 0; // Open bus if SRAM not available
   } else if (address >= 0x8000) {
-    // PRG ROM with FIXED MMC1 mapping
-    if (nesHeader.mapper == 1) {
-      // 16 KB bank for this half. On 512 KB boards (SUROM/SXROM) bit 4 of
-      // the CHR bank register drives PRG A18, selecting the outer 256 KB.
-      uint32_t banks16 = prgSize / 0x4000;
-      uint32_t outer = (prgSize >= 0x80000 && (mmc1.chrBank0 & 0x10)) ? 16 : 0;
-      uint32_t inner = mmc1.prgBank & 0x0F;
-      bool hi = address >= 0xC000;
-      uint32_t b;
-      switch ((mmc1.control >> 2) & 0x03) {
-      case 0: case 1: b = (inner & 0x0E) | (hi ? 1 : 0); break;
-      case 2: b = hi ? inner : 0; break;
-      default: b = hi ? 15 : inner; break;
-      }
-      b = (outer | b) % banks16;
-      return prgROM[b * 0x4000 + (address & 0x3FFF)];
-    }
-    if (false) {
-      uint32_t romAddr;
-      uint8_t totalBanks = prgSize / 0x4000;
-      uint8_t prgMode = (mmc1.control >> 2) & 0x03;
-
-      if (address < 0xC000) {
-        // $8000-$BFFF
-        switch (prgMode) {
-        case 0:
-        case 1:
-          // 32KB mode
-          romAddr = (mmc1.currentPRGBank * 0x8000) + (address - 0x8000);
-          break;
-        case 2:
-          // Fixed first bank at $8000
-          romAddr = address - 0x8000;
-          break;
-        case 3:
-        default:
-          // Switchable bank at $8000
-          romAddr = (mmc1.currentPRGBank * 0x4000) + (address - 0x8000);
-          break;
-        }
-      } else {
-        // $C000-$FFFF
-        switch (prgMode) {
-        case 0:
-        case 1:
-          // 32KB mode
-          romAddr = (mmc1.currentPRGBank * 0x8000) + (address - 0x8000);
-          break;
-        case 2:
-          // Switchable bank at $C000 (bit 4 is PRG-RAM disable, not a bank bit)
-          romAddr = (((mmc1.prgBank & 0x0F) % totalBanks) * 0x4000) + (address - 0xC000);
-          break;
-        case 3:
-        default:
-          uint8_t lastBank = totalBanks - 1;
-          romAddr = (lastBank * 0x4000) + (address - 0xC000);
-          break;
-        }
-      }
-
-      // Bounds checking
-      if (romAddr >= prgSize) {
-        return 0;
-      }
-
-      return prgROM[romAddr];
-    } else if (nesHeader.mapper == 0) {
-      // NROM - simple mapping
-      uint32_t romAddr = address - 0x8000;
-      if (prgSize == 16384) {
-        // 16KB ROM mirrored
-        romAddr &= 0x3FFF;
-      }
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    } else if (nesHeader.mapper == 2) {
-      // UxROM mapping
-      uint32_t romAddr;
-
-      if (address < 0xC000) {
-        // $8000-$BFFF: Switchable 16KB PRG bank
-        romAddr = (uxrom.prgBank * 0x4000) + (address - 0x8000);
-      } else {
-        // $C000-$FFFF: Fixed to LAST 16KB PRG bank
-        uint8_t totalBanks = prgSize / 0x4000;
-        uint8_t lastBank = totalBanks - 1;
-        romAddr = (lastBank * 0x4000) + (address - 0xC000);
-      }
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    } else if (isMMC3Family()) {
-      // MMC3 mapping - 8KB banks
-      uint8_t bankIndex = (address - 0x8000) / 0x2000; // 0-3
-      uint16_t bankOffset = (address - 0x8000) % 0x2000;
-      uint32_t romAddr =
-          (mmc3.currentPRGBanks[bankIndex] * 0x2000) + bankOffset;
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    } else if (nesHeader.mapper == 10) {
-      // MMC4: 16 KB switchable at $8000, last 16 KB fixed at $C000
-      uint32_t banks16 = prgSize / 0x4000;
-      uint32_t bank = (address < 0xC000) ? (mmc2.prgBank % banks16) : (banks16 - 1);
-      return prgROM[bank * 0x4000 + (address & 0x3FFF)];
-    } else if (nesHeader.mapper == 9) {
-      // MMC2 mapping
-      uint32_t romAddr;
-
-      if (address < 0xA000) {
-        // $8000-$9FFF: Switchable 8KB PRG bank
-        romAddr = (mmc2.prgBank * 0x2000) + (address - 0x8000);
-      } else if (address < 0xC000) {
-        // $A000-$BFFF: Fixed to last 8KB of ROM - 3
-        uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
-        romAddr = ((totalBanks - 3) * 0x2000) + (address - 0xA000);
-      } else if (address < 0xE000) {
-        // $C000-$DFFF: Fixed to last 8KB of ROM - 2
-        uint8_t totalBanks = prgSize / 0x2000;
-        romAddr = ((totalBanks - 2) * 0x2000) + (address - 0xC000);
-      } else {
-        // $E000-$FFFF: Fixed to last 8KB of ROM - 1
-        uint8_t totalBanks = prgSize / 0x2000;
-        romAddr = ((totalBanks - 1) * 0x2000) + (address - 0xE000);
-      }
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    } else if (nesHeader.mapper == 7) {
-      // AxROM - 32KB PRG banks
-      uint32_t banks = prgSize / 0x8000;
-      if (banks == 0) banks = 1;
-      uint32_t romAddr = ((axromReg & 0x0F) % banks) * 0x8000 + (address - 0x8000);
-      return prgROM[romAddr % prgSize];
-    } else if (nesHeader.mapper == 66) {
-      // GxROM mapping - 32KB PRG banks
-      uint32_t romAddr = ((gxrom.prgBank * 0x8000) + (address - 0x8000)) % prgSize;
-      return prgROM[romAddr];
-    } else if (nesHeader.mapper == 3) {
-      // CNROM - 32KB PRG ROM (no PRG banking)
-      uint32_t romAddr = address - 0x8000;
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    } else if (nesHeader.mapper == 40) {
-      // Mapper 40: Different banking layout for SMB2j
-      uint32_t romAddr;
-      uint8_t totalBanks = prgSize / 0x2000; // 8KB banks
-
-      if (address < 0xA000) {
-        // $8000-$9FFF: Switchable 8KB bank
-        romAddr = (mapper40.prgBank * 0x2000) + (address - 0x8000);
-      } else if (address < 0xC000) {
-        // $A000-$BFFF: Fixed to last bank - 2
-        uint8_t bank = totalBanks - 2;
-        romAddr = (bank * 0x2000) + (address - 0xA000);
-      } else if (address < 0xE000) {
-        // $C000-$DFFF: Fixed to last bank - 1
-        uint8_t bank = totalBanks - 1;
-        romAddr = (bank * 0x2000) + (address - 0xC000);
-      } else {
-        // $E000-$FFFF: Fixed to last bank (vectors here)
-        uint8_t bank = totalBanks - 1;
-        romAddr = (bank * 0x2000) + (address - 0xE000);
-      }
-
-      if (romAddr < prgSize) {
-        return prgROM[romAddr];
-      }
-    }
+    // PRG ROM through a per-8KB-slot pointer cache (rebuilt after any write
+    // that could switch banks); prgOffset has the per-mapper mapping
+    int slot = (address >> 13) & 3;
+    if (prgSlotGen[slot] != prgMapGen) refillPRGSlot(slot);
+    if (prgSlotPtr[slot]) return prgSlotPtr[slot][address & 0x1FFF];
+    int32_t off = prgOffset(address);
+    return off >= 0 ? prgROM[off] : 0;
   }
 
   return 0; // Open bus
 }
 
 void WarpNES::writeByte(uint16_t address, uint8_t value) {
+  if (address >= 0x4020) prgMapGen++;  // may switch PRG banks
   if (ext && address >= 0x4020) {
     if (ext->hasAudio) syncAPU();
     bool handled = ext->cpuWrite(address, value);
@@ -2786,6 +2813,7 @@ void WarpNES::saveState(const std::string &filename) {
 }
 
 bool WarpNES::loadState(const std::string &filename) {
+  prgMapGen++;
   if (!romLoaded) {
     std::cerr << "Error: Cannot load state - no ROM loaded" << std::endl;
     return false;
@@ -3220,6 +3248,239 @@ uint8_t WarpNES::readCHRData(uint16_t address) {
     return 0;
   }
   }
+}
+// CHR offset a pattern fetch maps to, or -1 when it isn't a plain read of
+// chrROM (open bus, TQROM RAM, MMC2/MMC4 latch data, Mappers.cpp boards)
+int32_t WarpNES::chrOffset(uint16_t address) {
+  if (address >= 0x2000)
+    return -1;
+  if (ext)
+    return -1;
+  if (nesHeader.mapper == 119 && address < 0x2000) {
+    // TQROM: bank values with bit 6 set select the 8 KB CHR-RAM
+    uint8_t raw = mmc3RawCHRBank(address >> 10);
+    if (raw & 0x40) return -1;
+  }
+
+  // Handle CHR reads based on mapper type
+  switch (nesHeader.mapper) {
+  case 0: // NROM
+  {
+    if (nesHeader.chrROMPages == 0) {
+      // NROM with CHR-RAM - direct access
+      if (address < chrSize) {
+        return (int32_t)(address); // chrROM is actually CHR-RAM
+      }
+    } else {
+      // NROM with CHR-ROM - direct access, no banking
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    }
+    return -1;
+  }
+
+  case 5: // MMC5
+    if (nesHeader.chrROMPages == 0) {
+      return -1;
+    }
+    return (int32_t)(mapMMC5CHR(address));
+  case 1: // MMC1
+  {
+    {
+      // CHR-ROM - use banking
+      uint32_t chrAddr;
+      if (address < 0x1000) {
+        // $0000-$0FFF: Use currentCHRBank0
+        chrAddr = (mmc1.currentCHRBank0 * 0x1000) + address;
+      } else {
+        // $1000-$1FFF: Use currentCHRBank1
+        chrAddr = (mmc1.currentCHRBank1 * 0x1000) + (address - 0x1000);
+      }
+
+      if (chrAddr < chrSize) {
+        return (int32_t)(chrAddr);
+      }
+    }
+    return -1;
+  }
+  case 2: // UxROM
+  {
+    // UxROM always uses CHR-RAM - direct access, no banking
+    if (address < chrSize) {
+      return (int32_t)(address); // chrROM is actually CHR-RAM
+    }
+    return -1;
+  }
+
+  case 3: // CNROM
+  {
+    if (nesHeader.chrROMPages == 0) {
+      // CNROM with CHR-RAM - direct access
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    } else {
+      // CNROM with CHR-ROM - 8KB banking
+      uint32_t chrAddr = ((cnrom.chrBank * 0x2000) + address) % chrSize;
+      return (int32_t)(chrAddr);
+    }
+    return -1;
+  }
+
+  case 4: // MMC3
+  case 118:
+  case 119:
+  {
+    {
+      // CHR-ROM or CHR-RAM, 1 KB banking
+      uint8_t bankIndex = address / 0x400;   // Which 1KB bank (0-7)
+      uint16_t bankOffset = address % 0x400; // Offset within bank
+
+      if (bankIndex < 8) {
+        uint8_t physicalBank = mmc3.currentCHRBanks[bankIndex];
+        uint32_t chrAddr = (physicalBank * 0x400) + bankOffset;
+
+        if (chrAddr >= chrSize) {
+
+          chrAddr = chrAddr % chrSize;
+        }
+
+        return (int32_t)(chrAddr);
+      }
+    }
+  }
+  case 66: // GxROM
+  {
+    if (nesHeader.chrROMPages == 0) {
+      // GxROM with CHR-RAM - direct access
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    } else {
+      // GxROM with CHR-ROM - 8KB banking
+      uint32_t chrAddr = ((gxrom.chrBank * 0x2000) + address) % chrSize;
+      return (int32_t)(chrAddr);
+    }
+    return -1;
+  }
+
+  case 7: // AxROM
+  {
+    // AxROM uses CHR-RAM - direct access, no banking
+    if (address < chrSize) {
+      return (int32_t)(address); // chrROM is actually CHR-RAM
+    }
+    return -1;
+  }
+
+  case 9: // MMC2
+  case 10: // MMC4
+  {
+    if (nesHeader.chrROMPages == 0) {
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    } else {
+      uint32_t chrAddr;
+
+      if (address < 0x1000) {
+        chrAddr = (mmc2.currentCHRBank0 * 0x1000) + address;
+      } else {
+        chrAddr = (mmc2.currentCHRBank1 * 0x1000) + (address - 0x1000);
+      }
+
+      if (chrAddr >= chrSize) {
+        return -1;
+      }
+
+      uint8_t data = chrROM[chrAddr];
+      return -1;
+    }
+    return -1;
+  }
+  case 11: // Color Dreams
+  {
+    if (nesHeader.chrROMPages == 0) {
+      // Color Dreams with CHR-RAM - direct access
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    } else {
+      // Color Dreams with CHR-ROM - banking (implementation depends on variant)
+      if (address < chrSize) {
+        return (int32_t)(address); // Simplified - no banking for now
+      }
+    }
+    return -1;
+  }
+
+  case 13: // CPROM
+  {
+    // CPROM uses CHR-RAM with banking
+    if (address < chrSize) {
+      return (int32_t)(address); // Direct access for now
+    }
+    return -1;
+  }
+
+  case 28: // Action 53
+  case 30: // UNROM 512
+  {
+    // Modern homebrew mappers - usually CHR-RAM
+    if (address < chrSize) {
+      return (int32_t)(address); // Direct access
+    }
+    return -1;
+  }
+
+  case 40: // Mapper 40
+  {
+    // Mapper 40 uses fixed CHR-ROM (no banking)
+    if (address < chrSize) {
+      return (int32_t)(address);
+    }
+    return -1;
+  }
+
+  default: {
+    // Unknown mapper - handle gracefully
+    if (nesHeader.chrROMPages == 0) {
+      // Assume CHR-RAM with direct access
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    } else {
+      // Assume CHR-ROM with direct access (no banking)
+      if (address < chrSize) {
+        return (int32_t)(address);
+      }
+    }
+
+    return -1;
+  }
+  }
+}
+
+// 1 KB CHR page pointers for the renderer, rebuilt after any write that could
+// switch banks (same counter as the PRG cache). Null = use readCHRData.
+const uint8_t* WarpNES::chrPage(int page) {
+  if (chrPagesGen != prgMapGen) {
+    bool usable = !ext && !isMMC2Family() && nesHeader.mapper != 5 && nesHeader.mapper != 119;
+    for (int p = 0; p < 8; p++) {
+      const uint8_t* ptr = nullptr;
+      if (usable) {
+        int32_t o = chrOffset(p * 0x400);
+        if (o >= 0 && o + 0x3FF < (int32_t)chrSize &&
+            chrOffset(p * 0x400 + 0x200) == o + 0x200 &&
+            chrOffset(p * 0x400 + 0x3FF) == o + 0x3FF)
+          ptr = chrROM + o;
+      }
+      chrPagePtr[p] = ptr;
+    }
+    chrPagesGen = prgMapGen;
+  }
+  return chrPagePtr[page];
 }
 
 uint8_t WarpNES::readCHRDataFromBank(uint16_t address, uint8_t bank) {

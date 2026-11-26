@@ -104,6 +104,8 @@ public:
     return 0;
   }
   uint8_t getMapper() const { return nesHeader.mapper; }
+  // Renderer fast path: pointer to 1 KB CHR page (0-7), or null
+  const uint8_t* chrPage(int page);
   void writeCNROMRegister(uint16_t address, uint8_t value);
   uint8_t readCHRDataFromBank(uint16_t address, uint8_t bank);
   void writeCHRData(uint16_t address, uint8_t value);
@@ -215,6 +217,15 @@ private:
 
   // Memory mapping
   uint8_t readByte(uint16_t address);
+  int32_t prgOffset(uint16_t address);
+  void refillPRGSlot(int slot);
+  // PRG read cache: slot pointers valid while prgSlotGen == prgMapGen
+  const uint8_t* prgSlotPtr[4] = {nullptr, nullptr, nullptr, nullptr};
+  uint32_t prgSlotGen[4] = {0, 0, 0, 0};
+  uint32_t prgMapGen = 1;
+  int32_t chrOffset(uint16_t address);
+  const uint8_t* chrPagePtr[8] = {};
+  uint32_t chrPagesGen = 0;
   void writeByte(uint16_t address, uint8_t value);
   uint16_t readWord(uint16_t address);
   void writeWord(uint16_t address, uint16_t value);
