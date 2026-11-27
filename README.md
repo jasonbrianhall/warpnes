@@ -61,6 +61,7 @@ This is a hobby project that implements basic NES functionality. Don't expect co
 - **Ctrl+R** - Reset game
 - **Ctrl+P** - Pause
 - **F11** - Fullscreen toggle (Linux only)
+- **Alt+X** - Quit
 
 ## Building
 

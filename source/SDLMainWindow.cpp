@@ -672,6 +672,8 @@ static void handleEvent(const SDL_Event& event, uint32_t now)
         ge.scancode = sc;
         ge.ctrl = (mod & KMOD_CTRL) != 0;
         ge.shift = (mod & KMOD_SHIFT) != 0;
+        // Alt+X quits, even with the menu open
+        if ((mod & KMOD_ALT) && sc == SDL_SCANCODE_X) { running = false; break; }
         if (gui.active()) gui.handle(ge, now);
         else if (!event.key.repeat) hotkey(sc, ge.ctrl, ge.shift);
         break;
