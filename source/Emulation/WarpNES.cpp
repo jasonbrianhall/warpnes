@@ -434,8 +434,10 @@ bool WarpNES::parseNESHeader(std::ifstream &file) {
       std::cout << "ROM Format: Archaic iNES" << std::endl;
     }
   } else {
-    std::cout << "ROM Format: Unknown/Invalid" << std::endl;
-    return false;
+    // Junk in byte 7 (e.g. "DiskDude!" headers from old dumping tools).
+    // Other emulators ignore bytes 7-15 here, so treat it as archaic iNES;
+    // the mapper parse below falls back to header[6] only.
+    std::cout << "ROM Format: Archaic iNES (junk in header bytes 7-15)" << std::endl;
   }
 
   // Parse basic header info
@@ -531,7 +533,16 @@ bool WarpNES::loadPRGROM(std::ifstream &file) {
   prgROM = new uint8_t[prgSize];
   file.read(reinterpret_cast<char *>(prgROM), prgSize);
 
-  return file.good();
+  // Some bad headers claim more PRG than the file holds; mirror what we got.
+  std::streamsize got = file.gcount();
+  if (got < (std::streamsize)prgSize) {
+    if (got < 0x4000) return false;
+    std::cout << "WARNING: header claims " << prgSize << " bytes PRG, file has "
+              << got << "; mirroring" << std::endl;
+    for (uint32_t i = got; i < prgSize; i++) prgROM[i] = prgROM[i % got];
+    file.clear();
+  }
+  return true;
 }
 
 bool WarpNES::loadCHRROM(std::ifstream &file) {

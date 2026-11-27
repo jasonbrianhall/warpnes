@@ -404,7 +404,7 @@ void GTKMainWindow::create_menubar() {
     g_action_map_add_action_entries(G_ACTION_MAP(window), entries, G_N_ELEMENTS(entries), this);
 
     const char* open_accels[] = {"<Control>o", nullptr};
-    const char* quit_accels[] = {"<Control>q", nullptr};
+    const char* quit_accels[] = {"<Control>q", "<Alt>x", nullptr};
     const char* reset_accels[] = {"<Control>r", nullptr};
     const char* pause_accels[] = {"Pause", "<Control>p", nullptr};
     const char* fullscreen_accels[] = {"F11", nullptr};

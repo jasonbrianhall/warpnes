@@ -1201,6 +1201,12 @@ void AllegroMainWindow::handleInput()
     f11Pressed = f11CurrentlyPressed;
     #endif
     
+    // Alt+X quits
+    if ((key[KEY_ALT] || key[KEY_ALTGR]) && key[KEY_X]) {
+        gameRunning = false;
+        return;
+    }
+
     // Handle ESC key globally with proper state tracking
     static bool escPressed = false;
     bool escCurrentlyPressed = (key[KEY_ESC] != 0);
